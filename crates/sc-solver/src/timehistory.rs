@@ -5,18 +5,20 @@ pub struct NewmarkCfg {
 }
 
 impl NewmarkCfg {
-    pub fn average_accel(dt: f64) -> Self {
+    /// 平均加速度法（無条件安定）。dt は後で設定する。
+    pub fn average_accel() -> Self {
         Self {
             beta: 0.25,
             gamma: 0.5,
-            dt,
+            dt: 0.0,
         }
     }
-    pub fn linear_accel(dt: f64) -> Self {
+    /// 線形加速度法（条件付安定）。dt は後で設定する。
+    pub fn linear_accel() -> Self {
         Self {
             beta: 1.0 / 6.0,
             gamma: 0.5,
-            dt,
+            dt: 0.0,
         }
     }
 }
@@ -36,6 +38,15 @@ pub struct GroundMotion {
     pub dt: f64,
     pub accel_x: Vec<f64>,
     pub accel_y: Option<Vec<f64>>,
+}
+
+/// 時刻歴応答解析の結果（設計書 §10.5）。
+/// 時系列の全量は結果I/O（§6）へストリーミングし、メモリに全保持しない。
+pub struct ResponseResult {
+    pub time: Vec<f64>,
+    pub peak_disp: Vec<[f64; 6]>,
+    pub story_drift_angle: Vec<f64>,
+    pub cumulative_ductility: Vec<f64>,
 }
 
 pub struct RayleighDamping {
@@ -67,15 +78,31 @@ mod tests {
     /// 現状は Newmark/HHT 設定の決定性のみ確認。
     #[test]
     fn test_timehistory_config_deterministic() {
-        let cfg1 = NewmarkCfg::average_accel(0.01);
-        let cfg2 = NewmarkCfg::linear_accel(0.02);
+        let cfg1 = NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt: 0.01,
+        };
+        let cfg2 = NewmarkCfg {
+            beta: 1.0 / 6.0,
+            gamma: 0.5,
+            dt: 0.02,
+        };
         let cfg3 = HhtCfg::new(0.005);
         for _ in 0..10 {
-            let c1 = NewmarkCfg::average_accel(0.01);
+            let c1 = NewmarkCfg {
+                beta: 0.25,
+                gamma: 0.5,
+                dt: 0.01,
+            };
             assert_eq!(cfg1.beta.to_bits(), c1.beta.to_bits());
             assert_eq!(cfg1.gamma.to_bits(), c1.gamma.to_bits());
             assert_eq!(cfg1.dt.to_bits(), c1.dt.to_bits());
-            let c2 = NewmarkCfg::linear_accel(0.02);
+            let c2 = NewmarkCfg {
+                beta: 1.0 / 6.0,
+                gamma: 0.5,
+                dt: 0.02,
+            };
             assert_eq!(cfg2.beta.to_bits(), c2.beta.to_bits());
             let c3 = HhtCfg::new(0.005);
             assert_eq!(cfg3.alpha.to_bits(), c3.alpha.to_bits());
