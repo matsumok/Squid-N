@@ -1,0 +1,9 @@
+[package]
+name = "sc-edit"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+sc-core = { path = "../sc-core" }
+serde = { workspace = true }
+schemars = { workspace = true }

@@ -5,7 +5,7 @@ members = [
     "crates/sc-material", "crates/sc-section", "crates/sc-element",
     "crates/sc-skeleton", "crates/sc-load", "crates/sc-solver",
     "crates/sc-design-jp", "crates/sc-gpu", "crates/sc-ml",
-    "crates/sc-mcp", "crates/sc-app",
+    "crates/sc-edit", "crates/sc-mcp", "crates/sc-app",
     "xtask",
 ]
 
