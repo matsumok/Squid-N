@@ -4,6 +4,8 @@ use crate::damping::Damping;
 use crate::eigen::{self, ModalResult};
 use crate::linear::StaticOnce;
 use crate::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
+
+pub type StaticResult = StaticOnce;
 use sc_core::dof::DofMap;
 use sc_core::ids::LoadCaseId;
 use sc_core::model::{LoadCombination, Model};

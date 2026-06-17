@@ -5,4 +5,14 @@ edition = "2021"
 
 [features]
 default = []
-gui = []
+gui = ["egui", "eframe", "egui_extras"]
+
+[dependencies]
+sc-core = { path = "../sc-core" }
+sc-element = { path = "../sc-element" }
+sc-solver = { path = "../sc-solver" }
+sc-design-jp = { path = "../sc-design-jp" }
+egui = { workspace = true, optional = true }
+eframe = { workspace = true, optional = true }
+egui_extras = { workspace = true, optional = true }
+smallvec = { workspace = true }
