@@ -1,5 +1,6 @@
 use crate::assemble::{assemble_global_f, assemble_global_k};
 use crate::constraint::Reducer;
+use crate::eigen::{self, ModalResult};
 use crate::linear::StaticOnce;
 use sc_core::dof::DofMap;
 use sc_core::ids::LoadCaseId;
@@ -107,6 +108,11 @@ impl<'m> Analysis<'m> {
         }
 
         Ok(StaticOnce { disp, member_forces })
+    }
+
+    /// Solve eigenvalue problem (subspace iteration) for n_modes lowest modes.
+    pub fn eigen(&self, n_modes: usize) -> Result<ModalResult, SolveError> {
+        eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, n_modes)
     }
 
     /// Solve a load combination by assembling the weighted sum of load case

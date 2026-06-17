@@ -20,6 +20,18 @@ pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, 
     assemble_csc(dofmap.n_active(), all_triplets)
 }
 
+pub fn assemble_global_m(model: &Model, dofmap: &DofMap, opt: sc_element::behavior::MassOption) -> SparseColMat<usize, f64> {
+    let mut all_triplets = Vec::new();
+    for elem in &model.elements {
+        let (behavior, _state) = build_behavior(elem, model);
+        let gdofs = behavior.global_dofs(dofmap);
+        let m_local = behavior.mass_matrix(opt);
+        let triplets = m_local.to_triplets(&gdofs);
+        all_triplets.extend(triplets);
+    }
+    assemble_csc(dofmap.n_active(), all_triplets)
+}
+
 pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<f64> {
     let n_active = dofmap.n_active();
     let mut f = vec![0.0; n_active];

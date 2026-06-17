@@ -18,6 +18,7 @@ pub struct Ctx<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct ElemState {}
 
+#[derive(Clone, Copy)]
 pub enum MassOption {
     Lumped,
     Consistent,

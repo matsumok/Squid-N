@@ -5,4 +5,5 @@
 pub mod analysis;
 pub mod assemble;
 pub mod constraint;
+pub mod eigen;
 pub mod linear;
