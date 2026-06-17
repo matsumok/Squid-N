@@ -175,10 +175,28 @@ impl Model {
     pub fn validate(&self) -> Result<(), crate::error::CoreError> {
         use crate::error::CoreError;
 
+        for (i, node) in self.nodes.iter().enumerate() {
+            if node.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "nodes[{}] has NodeId({})",
+                    i, node.id.0
+                )));
+            }
+        }
+
         let mut seen_nodes = std::collections::HashSet::new();
         for node in &self.nodes {
             if !seen_nodes.insert(node.id) {
                 return Err(CoreError::DuplicateId(format!("NodeId({})", node.id.0)));
+            }
+        }
+
+        for (i, elem) in self.elements.iter().enumerate() {
+            if elem.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "elements[{}] has ElemId({})",
+                    i, elem.id.0
+                )));
             }
         }
 
@@ -213,10 +231,28 @@ impl Model {
             }
         }
 
+        for (i, story) in self.stories.iter().enumerate() {
+            if story.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "stories[{}] has StoryId({})",
+                    i, story.id.0
+                )));
+            }
+        }
+
         let mut seen_stories = std::collections::HashSet::new();
         for story in &self.stories {
             if !seen_stories.insert(story.id) {
                 return Err(CoreError::DuplicateId(format!("StoryId({})", story.id.0)));
+            }
+        }
+
+        for (i, slab) in self.slabs.iter().enumerate() {
+            if slab.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "slabs[{}] has SlabId({})",
+                    i, slab.id.0
+                )));
             }
         }
 
@@ -227,10 +263,28 @@ impl Model {
             }
         }
 
+        for (i, sec) in self.sections.iter().enumerate() {
+            if sec.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "sections[{}] has SectionId({})",
+                    i, sec.id.0
+                )));
+            }
+        }
+
         let mut seen_sections = std::collections::HashSet::new();
         for sec in &self.sections {
             if !seen_sections.insert(sec.id) {
                 return Err(CoreError::DuplicateId(format!("SectionId({})", sec.id.0)));
+            }
+        }
+
+        for (i, mat) in self.materials.iter().enumerate() {
+            if mat.id.index() != i {
+                return Err(CoreError::IndexMismatch(format!(
+                    "materials[{}] has MaterialId({})",
+                    i, mat.id.0
+                )));
             }
         }
 
@@ -343,6 +397,30 @@ mod tests {
                 end_cond: [EndCondition::Fixed, EndCondition::Fixed],
                 force_regime: ForceRegime::Auto,
             }],
+            ..Default::default()
+        };
+        assert!(model.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_index_mismatch() {
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0; 3],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(5),
+                    coord: [1.0; 3],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+            ],
             ..Default::default()
         };
         assert!(model.validate().is_err());

@@ -43,13 +43,10 @@ fn main() -> anyhow::Result<()> {
 
         if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_table()) {
             for (dep_name, _) in deps {
-                if dep_name == "sc-core" || dep_name == "sc-math" {
-                    continue; // base layer, always allowed
-                }
                 if let Some(&dep_layer) = layer_map.get(dep_name.as_str()) {
                     if dep_layer <= layer_idx {
                         errors.push(format!(
-                            "{} (layer {}) depends on {} (layer {}) which is same/upstream -> OK",
+                            "OK: {} (layer {}) depends on {} (layer {})",
                             name, layer_idx, dep_name, dep_layer
                         ));
                     } else {
@@ -64,11 +61,13 @@ fn main() -> anyhow::Result<()> {
 
         if let Some(deps) = parsed.get("dev-dependencies").and_then(|d| d.as_table()) {
             for (dep_name, _) in deps {
-                if dep_name == "sc-core" || dep_name == "sc-math" {
-                    continue;
-                }
                 if let Some(&dep_layer) = layer_map.get(dep_name.as_str()) {
-                    if dep_layer > layer_idx {
+                    if dep_layer <= layer_idx {
+                        errors.push(format!(
+                            "OK: {} (layer {}) dev-depends on {} (layer {})",
+                            name, layer_idx, dep_name, dep_layer
+                        ));
+                    } else {
                         errors.push(format!(
                             "VIOLATION: {} (layer {}) dev-depends on DOWNSTREAM {} (layer {})",
                             name, layer_idx, dep_name, dep_layer
