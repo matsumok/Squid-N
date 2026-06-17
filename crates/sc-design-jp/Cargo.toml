@@ -3,6 +3,10 @@ name = "sc-design-jp"
 version = "0.0.1"
 edition = "2021"
 
+[features]
+default = []
+p7 = []
+
 [dependencies]
 sc-core = { path = "../sc-core" }
 sc-element = { path = "../sc-element" }
