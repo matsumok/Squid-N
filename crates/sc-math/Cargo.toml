@@ -1,0 +1,11 @@
+[package]
+name = "sc-math"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+faer      = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

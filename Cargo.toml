@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sc-core", "crates/sc-math", "crates/sc-io",
+    "crates/sc-material", "crates/sc-section", "crates/sc-element",
+    "crates/sc-skeleton", "crates/sc-load", "crates/sc-solver",
+    "crates/sc-design-jp", "crates/sc-gpu", "crates/sc-ml",
+    "crates/sc-mcp", "crates/sc-app",
+    "xtask",
+]
+
+[workspace.dependencies]
+faer        = "0.24"
+nalgebra    = "0.33"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rmp-serde   = "1"
+ron         = "0.8"
+smallvec    = { version = "1", features = ["serde"] }
+thiserror   = "1"
+zip         = "2"
+sha2        = "0.10"
+tracing     = "0.1"
+approx      = "0.5"
+insta       = "1"
+arrow       = "59"
+parquet     = "59"
+egui        = "0.34"
+eframe      = "0.34"
+egui_extras = "0.34"
+rmcp        = { version = "1", features = ["server", "macros", "transport-io"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+schemars    = "0.8"
+bincode     = "1"
+anyhow      = "1"
+toml        = "0.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
