@@ -347,6 +347,7 @@ pub struct ShellElement {
     pub t: f64,
     pub e: f64,
     pub nu: f64,
+    pub density: f64,
     pub frame: ShellFrame,
     pub drilling_factor: f64,
     pub membrane_active: bool,
@@ -396,6 +397,7 @@ impl ShellElement {
             t,
             e,
             nu,
+            density: mat.map(|m| m.density).unwrap_or(0.0),
             frame,
             drilling_factor: DEFAULT_DRILLING_FACTOR,
             membrane_active,
@@ -894,8 +896,50 @@ impl crate::behavior::ElementBehavior for ShellElement {
 
     fn update_state(&mut self, _du: &LocalVec, _commit: bool, _ctx: &crate::behavior::Ctx) {}
 
-    fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
-        LocalMat::zeros(24)
+    fn mass_matrix(&self, opt: MassOption) -> LocalMat {
+        let area = element_area(&self.coords);
+        let m_total = self.density * self.t * area;
+        let mut mm = LocalMat::zeros(24);
+        match opt {
+            MassOption::Lumped => {
+                let m_node = m_total / 4.0;
+                for i in 0..4 {
+                    let bo = i * 6;
+                    mm.set(bo, bo, m_node);
+                    mm.set(bo + 1, bo + 1, m_node);
+                    mm.set(bo + 2, bo + 2, m_node);
+                }
+            }
+            MassOption::Consistent => {
+                // Consistent mass uses 2×2 Gauss integration of NᵀρtN
+                for gi in 0..2 {
+                    for gj in 0..2 {
+                        let gp = gi * 2 + gj;
+                        let xi = GAUSS_PTS_2[gp].0;
+                        let eta = GAUSS_PTS_2[gp].1;
+                        let det_j = jacobian_det(&jacobian(xi, eta, &self.coords));
+                        let weight = det_j;
+                        let n = shape_2d(xi, eta);
+                        let rho_t = self.density * self.t;
+                        for a in 0..4 {
+                            let bo_a = a * 6;
+                            let na = n[a];
+                            for b in 0..4 {
+                                let bo_b = b * 6;
+                                let nb = n[b];
+                                let contrib = na * nb * rho_t * weight;
+                                for d in 0..3 {
+                                    let ia = bo_a + d;
+                                    let ib = bo_b + d;
+                                    mm.set(ia, ib, mm.get(ia, ib) + contrib);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        mm
     }
 
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
@@ -935,6 +979,7 @@ mod tests {
             t,
             e: 1000.0,
             nu: 0.3,
+            density: 0.0,
             frame,
             drilling_factor: DEFAULT_DRILLING_FACTOR,
             membrane_active: true,
@@ -1287,6 +1332,7 @@ mod tests {
             t: 10.0,
             e: 1000.0,
             nu: 0.3,
+            density: 0.0,
             frame,
             drilling_factor: DEFAULT_DRILLING_FACTOR,
             membrane_active: true,

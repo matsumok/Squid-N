@@ -59,6 +59,7 @@ pub struct BeamElement {
     pub as_y: f64,
     pub as_z: f64,
     pub length: f64,
+    pub density: f64,
     pub nodes: [NodeId; 2],
     pub axis: LocalFrame,
     pub rigid: RigidZone,
@@ -166,6 +167,7 @@ impl BeamElement {
             as_y,
             as_z,
             length: len,
+            density: mat.density,
             nodes: [n0, n1],
             axis,
             rigid: RigidZone::default(),
@@ -651,8 +653,63 @@ impl ElementBehavior for BeamElement {
         }
     }
 
-    fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
-        LocalMat::zeros(12)
+    fn mass_matrix(&self, opt: MassOption) -> LocalMat {
+        let m = self.density * self.a * self.length;
+        let mut mm = LocalMat::zeros(12);
+        match opt {
+            MassOption::Lumped => {
+                for d in [0, 1, 2, 6, 7, 8] {
+                    mm.set(d, d, m / 2.0);
+                }
+            }
+            MassOption::Consistent => {
+                let c1 = m / 6.0;
+                let c2 = m / 420.0;
+                let l = self.length;
+                let l2 = l * l;
+                // Axial (Ux):  indices 0,6
+                mm.set(0, 0, 2.0 * c1);
+                mm.set(0, 6, 1.0 * c1);
+                mm.set(6, 0, 1.0 * c1);
+                mm.set(6, 6, 2.0 * c1);
+                // Torsion (Rx): indices 3,9
+                let ct = self.density * self.j * l / 6.0;
+                mm.set(3, 3, 2.0 * ct);
+                mm.set(3, 9, 1.0 * ct);
+                mm.set(9, 3, 1.0 * ct);
+                mm.set(9, 9, 2.0 * ct);
+                // Bending Uy-Rz: indices 1,5,7,11
+                //   local order: [Uy_i=1, Rz_i=5, Uy_j=7, Rz_j=11]
+                let b4 = |mm: &mut LocalMat, i0: usize, j0: usize, sign: f64| {
+                    // row0 (Uy_i)
+                    mm.set(i0, j0, 156.0 * c2);
+                    mm.set(i0, j0 + 1, 22.0 * l * c2 * sign);
+                    mm.set(i0, j0 + 2, 54.0 * c2);
+                    mm.set(i0, j0 + 3, -13.0 * l * c2 * sign);
+                    // row1 (Rz_i / Ry_i)
+                    mm.set(i0 + 1, j0, 22.0 * l * c2 * sign);
+                    mm.set(i0 + 1, j0 + 1, 4.0 * l2 * c2);
+                    mm.set(i0 + 1, j0 + 2, 13.0 * l * c2 * sign);
+                    mm.set(i0 + 1, j0 + 3, -3.0 * l2 * c2);
+                    // row2 (Uy_j)
+                    mm.set(i0 + 2, j0, 54.0 * c2);
+                    mm.set(i0 + 2, j0 + 1, 13.0 * l * c2 * sign);
+                    mm.set(i0 + 2, j0 + 2, 156.0 * c2);
+                    mm.set(i0 + 2, j0 + 3, -22.0 * l * c2 * sign);
+                    // row3 (Rz_j / Ry_j)
+                    mm.set(i0 + 3, j0, -13.0 * l * c2 * sign);
+                    mm.set(i0 + 3, j0 + 1, -3.0 * l2 * c2);
+                    mm.set(i0 + 3, j0 + 2, -22.0 * l * c2 * sign);
+                    mm.set(i0 + 3, j0 + 3, 4.0 * l2 * c2);
+                };
+                // Uy-Rz plane (sign = +1)
+                b4(&mut mm, 1, 1, 1.0);
+                // Uz-Ry plane (sign = -1)
+                // local order: [Uz_i=2, Ry_i=4, Uz_j=8, Ry_j=10]
+                b4(&mut mm, 2, 2, -1.0);
+            }
+        }
+        mm
     }
 
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
@@ -683,6 +740,7 @@ mod tests {
             as_y: 66666.67,
             as_z: 66666.67,
             length: 3000.0,
+            density: 0.0,
             nodes: [NodeId(0), NodeId(1)],
             axis: LocalFrame {
                 rot: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
