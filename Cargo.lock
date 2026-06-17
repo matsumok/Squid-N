@@ -1308,6 +1308,14 @@ version = "0.0.1"
 [[package]]
 name = "sc-element"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "sc-core",
+ "sc-math",
+ "serde",
+ "smallvec",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "sc-gpu"
@@ -1362,6 +1370,15 @@ version = "0.0.1"
 [[package]]
 name = "sc-solver"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "faer",
+ "sc-core",
+ "sc-element",
+ "sc-math",
+ "smallvec",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "scoped-tls"

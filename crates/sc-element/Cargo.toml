@@ -4,3 +4,11 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+sc-core   = { path = "../sc-core" }
+sc-math   = { path = "../sc-math" }
+serde     = { workspace = true }
+smallvec  = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

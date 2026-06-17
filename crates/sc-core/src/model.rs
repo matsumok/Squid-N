@@ -125,6 +125,19 @@ pub struct Material {
     pub young: f64,
     pub poisson: f64,
     pub density: f64,
+    #[serde(default)]
+    pub shear: Option<f64>,
+}
+
+impl Material {
+    pub fn shear_modulus(&self) -> f64 {
+        self.shear
+            .unwrap_or_else(|| self.young / (2.0 * (1.0 + self.poisson)))
+    }
+}
+
+pub fn rect_shear_area(area: f64) -> f64 {
+    area * 5.0 / 6.0
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -135,6 +148,16 @@ pub struct Section {
     pub iy: f64,
     pub iz: f64,
     pub j: f64,
+    #[serde(default)]
+    pub depth: f64,
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub as_y: f64,
+    #[serde(default)]
+    pub as_z: f64,
+    #[serde(default)]
+    pub panel_thickness: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -400,6 +423,59 @@ mod tests {
             ..Default::default()
         };
         assert!(model.validate().is_err());
+    }
+
+    #[test]
+    fn test_shear_modulus_explicit() {
+        let mat = Material {
+            id: MaterialId(0),
+            name: "Test".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: Some(80000.0),
+        };
+        assert_eq!(mat.shear_modulus(), 80000.0);
+    }
+
+    #[test]
+    fn test_shear_modulus_derived() {
+        let mat = Material {
+            id: MaterialId(0),
+            name: "Test".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+        };
+        let expected = 205000.0 / (2.0 * (1.0 + 0.3));
+        assert!((mat.shear_modulus() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rect_shear_area() {
+        let area = 80000.0;
+        let as_ = rect_shear_area(area);
+        assert!((as_ - area * 5.0 / 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_section_new_fields_default() {
+        let sec = Section {
+            id: SectionId(0),
+            name: "Test".to_string(),
+            area: 100.0,
+            iy: 1000.0,
+            iz: 2000.0,
+            j: 500.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+        };
+        assert_eq!(sec.depth, 0.0);
+        assert!(sec.panel_thickness.is_none());
     }
 
     #[test]
