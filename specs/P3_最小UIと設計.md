@@ -125,6 +125,21 @@ impl eframe::App for App {
 }
 ```
 
+**eframe 0.34 の実 API（確認済み・そのまま使える）。** 起動は `eframe::run_native`:
+
+```rust
+// sc-app/src/main.rs
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions::default();
+    // 0.34: 第3引数のクロージャは Result<Box<dyn App>, _> を返す
+    eframe::run_native(
+        "structcalc",
+        options,
+        Box::new(|_cc| Ok(Box::new(sc_app::app::App::default()))),
+    )
+}
+```
+
 **DoD（T0）:** `cargo run -p sc-app --features gui` でウィンドウが開き、タブ切替できる。
 （feature `gui` は P0 §2.4 の opt-in。コア解析は GUI 無しでビルド可能を維持。）
 
@@ -140,14 +155,24 @@ impl eframe::App for App {
 // sc-app/src/tables/nodes.rs
 pub fn nodes_table(ui: &mut egui::Ui, app: &mut crate::app::App) {
     use egui_extras::{TableBuilder, Column};
+    let n = app.model.nodes.len();
     TableBuilder::new(ui)
         .striped(true)
-        .column(Column::auto())          // ID
+        .column(Column::auto())            // ID
         .columns(Column::initial(80.0), 3) // X, Y, Z
-        .column(Column::auto())          // 拘束
+        .column(Column::auto())            // 拘束
+        .header(20.0, |mut h| {
+            for t in ["ID","X","Y","Z","拘束"] { h.col(|ui| { ui.strong(t); }); }
+        })
+        // ★仮想スクロール（egui_extras 0.34 の確定 API）：表示中の行だけ描く
         .body(|body| {
-            // ★大量行（数万部材）の仮想スクロール：body.rows(row_height, n_rows, |mut row| {..})
-            //   表示中の行だけ描画する（全行ウィジェット化しない）。
+            body.rows(18.0, n, |mut row| {
+                let i = row.index();                   // 0.34: row.index() で行番号
+                let node = &app.model.nodes[i];
+                row.col(|ui| { ui.label(node.id.0.to_string()); });
+                for k in 0..3 { row.col(|ui| { ui.label(format!("{:.1}", node.coord[k])); }); }
+                row.col(|ui| { ui.label(format!("{:?}", node.restraint)); });
+            });
         });
 }
 ```
