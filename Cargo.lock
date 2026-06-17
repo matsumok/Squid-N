@@ -4852,6 +4852,10 @@ dependencies = [
 [[package]]
 name = "sc-material"
 version = "0.0.1"
+dependencies = [
+ "approx",
+ "serde",
+]
 
 [[package]]
 name = "sc-math"
@@ -4886,6 +4890,7 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "sc-core",
+ "sc-material",
  "serde",
  "serde_json",
 ]
