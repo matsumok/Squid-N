@@ -2045,6 +2045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sc-edit"
+version = "0.0.1"
+dependencies = [
+ "sc-core",
+ "schemars 0.8.22",
+ "serde",
+]
+
+[[package]]
 name = "sc-element"
 version = "0.0.1"
 dependencies = [
@@ -2103,6 +2112,7 @@ version = "0.0.1"
 dependencies = [
  "rmcp",
  "sc-core",
+ "sc-edit",
  "sc-io",
  "sc-solver",
  "schemars 0.8.22",

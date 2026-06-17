@@ -5,14 +5,15 @@ edition = "2021"
 
 [features]
 default = []
-mcp = ["dep:rmcp", "dep:schemars", "dep:tokio"]
+mcp = ["dep:rmcp", "dep:tokio"]
 
 [dependencies]
 sc-core = { path = "../sc-core" }
 sc-solver = { path = "../sc-solver" }
 sc-io = { path = "../sc-io" }
+sc-edit = { path = "../sc-edit" }
 rmcp = { workspace = true, optional = true }
 serde_json = { workspace = true }
-schemars = { workspace = true, optional = true }
+schemars = { workspace = true }
 tokio = { workspace = true, optional = true }
 serde = { workspace = true }

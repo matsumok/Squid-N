@@ -10,7 +10,7 @@ fn main() -> anyhow::Result<()> {
 
     let layers: &[&[&str]] = &[
         &["sc-core", "sc-math"],
-        &["sc-material"],
+        &["sc-material", "sc-edit"],
         &["sc-section"],
         &["sc-element"],
         &["sc-skeleton", "sc-load", "sc-solver"],
