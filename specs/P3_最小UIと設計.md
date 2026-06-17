@@ -1,0 +1,390 @@
+# P3 最小UI／設計 実装仕様書
+
+**対象フェーズ:** v0.5 プロトタイプ / P3 最小UI/設計（設計書 §18）。**これで v0.5 完結。**
+**対象読者:** Rust ジュニアエンジニア（egui/wgpu 経験は不要なように手順化）
+**親文書:** `../構造計算一貫プログラム_実装設計書.md`（以降「設計書」。`§x.y` はその章番号）
+**先行フェーズ:** [P0](P0_基盤.md) / [P1](P1_線形要素.md) / [P1.5](P1.5_板要素.md) / [P2](P2_線形解析と荷重.md)
+**前提環境:** Rust stable 1.8x 以降 / `egui`・`egui_extras`・`eframe` / `wgpu`
+
+---
+
+## 0. このフェーズについて
+
+### 0.1 目的
+
+構造技術者が**表入力でモデルを作り、解析を実行し、結果と一次設計（許容応力度）の判定を確認できる**
+最小GUIを作る。設計書 §14 / §11.1。
+
+- **sc-app（egui）**：テーブル入力（節点・部材・断面・荷重）、3Dビューア、CMQ図／応力図、解析実行・結果閲覧、検定比の色分け表。
+- **sc-design-jp**：**許容応力度計算（一次設計）**。危険断面位置（P1 §6.2.3）の内力に対し、長期・短期の許容応力度で**検定比**を出す。
+
+### 0.2 完了像（ゴール）
+
+設計書 §18 P3 完了基準「**一次設計が一通り通る**」を次で判定:
+
+1. **表入力**：節点・部材・断面・荷重をテーブルで作成・編集でき、`sc-core::Model` に反映される（§3）。
+2. **解析実行**：GUI から P2 の `Analysis`（線形静的・固有値・Ai一気通貫）を起動し結果を閲覧（§4）。
+3. **可視化**：3Dで形状・変形図・モード形、部材の N/Q/M 図、大梁の CMQ 図を表示（§5）。
+4. **許容応力度**：代表断面で検定比が手計算（規準例題）と一致し、色分け表で一覧（§6, §7）。
+5. **編集トランザクション**：表編集が Undo/Redo でき、編集コマンドが MCP 編集API（P8）と共通の経路（§3.3）。
+
+### 0.3 スコープ境界（含む／含まない）
+
+| 項目 | P3 で | 備考 |
+|---|---|---|
+| egui テーブル入力（節点/部材/断面/荷重） | **含む** | §3 |
+| 編集トランザクション（Undo/Redo・コマンド） | **含む** | §3.3。MCP と共通化の土台 |
+| 3Dビューア（形状・変形・モード形） | **含む** | §5 |
+| 応力図（N/Q/M）・CMQ図 | **含む** | §5.3。設計書 §14/R10 |
+| 解析実行・結果閲覧（P2 連携） | **含む** | §4 |
+| 許容応力度計算（RC/S 一次設計、検定比） | **含む** | §6。SRC は基本骨格のみ |
+| 検定比の色分け一覧表 | **含む** | §7 |
+| 保有水平耐力・Ds・限界耐力 | **含まない → P7/v2** | 二次設計は P7 |
+| MCP サーバ本体・ST-Bridge | **含まない → P8** | 編集コマンドの**形**だけ P3 で用意 |
+| 応力コンター・ヒンジ状態の可視化 | **一部 → P5/P7** | 非線形結果が出てから本格化 |
+| 配布・インストーラ | **含まない → P9** | |
+
+> **GUI フレームワーク（設計書 §14）:** 第一候補 **egui + egui_extras**。Tauri は代替として保留。
+> P3 は egui で進める（PoC でテーブル編集の操作性・大量行スクロールを確認。判断は UI リード）。
+
+---
+
+## 1. タスク一覧と依存順序
+
+```
+T0 sc-app 雛形（eframe 起動・タブ枠）(§2)
+   └─> T1 テーブル入力（節点/部材/断面/荷重）+ バリデーション (§3.1,§3.2)
+          └─> T2 編集トランザクション（コマンド・Undo/Redo）(§3.3)
+   └─> T3 解析実行・結果閲覧（P2 Analysis 連携）(§4)
+   └─> T4 3Dビューア（wgpu：形状・変形・モード形）(§5.1,§5.2)
+          └─> T5 応力図 N/Q/M・CMQ図 (§5.3)
+T6 sc-design-jp DesignCheck トレイト + 許容応力度（RC/S）(§6)
+   └─> T7 検定比 色分け一覧表（GUI）(§7)
+T0..T7 ─> T8 テスト・DoD (§8)
+```
+
+| ID | タスク | クレート | 依存 |
+|---|---|---|---|
+| T0 | sc-app 雛形（eframe・タブ） | sc-app（新規） | P0 |
+| T1 | テーブル入力＋バリデーション | sc-app | T0 |
+| T2 | 編集トランザクション（Undo/Redo） | sc-app | T1 |
+| T3 | 解析実行・結果閲覧 | sc-app | T0, P2 |
+| T4 | 3Dビューア（形状・変形・モード形） | sc-app | T0, P2 |
+| T5 | 応力図 N/Q/M・CMQ図 | sc-app | T4, P1/P2 |
+| T6 | DesignCheck＋許容応力度（RC/S） | sc-design-jp（新規） | P1 §6.2.3 |
+| T7 | 検定比 色分け表 | sc-app | T6 |
+| T8 | テスト・DoD | 全体 | 上記 |
+
+---
+
+## 2. T0: sc-app 雛形
+
+`eframe`（egui のアプリ枠）で起動し、タブUIの骨格を作る。
+
+```
+sc-app/src/
+├── main.rs        # eframe 起動
+├── app.rs         # App 状態（Model・解析結果・選択状態・Undoスタック）
+├── tables/        # 節点/部材/断面/荷重 テーブル（§3）
+├── viewer/        # 3Dビューア（§5）
+├── command.rs     # 編集トランザクション（§3.3）
+└── design_view.rs # 検定比表（§7）
+```
+
+```rust
+// sc-app/src/app.rs
+pub struct App {
+    pub model: sc_core::model::Model,
+    pub results: Option<ResultsBundle>,     // P2 の解析結果を保持（下記定義）
+    pub selection: Selection,               // 選択中の節点・部材（下記定義）
+    pub undo: command::UndoStack,           // §3.3
+    pub active_tab: Tab,
+}
+pub enum Tab { Nodes, Members, Sections, Loads, Viewer, Design }
+
+/// 解析結果のまとめ。GUI が表・図・検定で参照する。
+pub struct ResultsBundle {
+    /// 荷重ケース/組合せごとの静的結果（P2 §3 の StaticResult）。
+    pub statics: Vec<(sc_core::ids::LoadCaseId, sc_solver::analysis::StaticResult)>,
+    /// 固有値結果（P2 §4 の ModalResult）。固有値未実行なら None。
+    pub modal: Option<sc_solver::eigen::ModalResult>,
+    /// 部材ごと・ケースごとの復元内力（P1 §6.2.3 の MemberForces）。N/Q/M・CMQ 図が読む。
+    pub member_forces: Vec<(sc_core::ids::ElemId, sc_element::beam::MemberForces)>,
+    /// 検定結果（P3 §6 の CheckResult）。位置別・組合せ別。検定比表（§7）が読む。
+    pub checks: Vec<(sc_core::ids::ElemId, f64 /*pos*/, sc_design_jp::CheckResult)>,
+}
+
+/// 選択状態（3D ピック ↔ テーブル 連動）。
+#[derive(Default)]
+pub struct Selection { pub nodes: Vec<sc_core::ids::NodeId>, pub members: Vec<sc_core::ids::ElemId> }
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        // 上部タブ → 各タブ描画。左ペインに3D、右に表、など（レイアウトは UI リード調整可）
+    }
+}
+```
+
+**DoD（T0）:** `cargo run -p sc-app --features gui` でウィンドウが開き、タブ切替できる。
+（feature `gui` は P0 §2.4 の opt-in。コア解析は GUI 無しでビルド可能を維持。）
+
+---
+
+## 3. T1/T2: テーブル入力と編集トランザクション
+
+設計書 §14.1/§14.2。**構造技術者が慣れた表（スプレッドシート）入力**を `egui_extras::TableBuilder` で。
+
+### 3.1 テーブル（節点の例）
+
+```rust
+// sc-app/src/tables/nodes.rs
+pub fn nodes_table(ui: &mut egui::Ui, app: &mut crate::app::App) {
+    use egui_extras::{TableBuilder, Column};
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::auto())          // ID
+        .columns(Column::initial(80.0), 3) // X, Y, Z
+        .column(Column::auto())          // 拘束
+        .body(|body| {
+            // ★大量行（数万部材）の仮想スクロール：body.rows(row_height, n_rows, |mut row| {..})
+            //   表示中の行だけ描画する（全行ウィジェット化しない）。
+        });
+}
+```
+
+### 3.2 入力バリデーション（即時赤表示）
+
+- 各セルの編集時に検証（数値範囲・参照ID存在・重複ID）。不正は**赤背景**で即フィードバック。
+- 検証は `sc_core::Model::validate`（P0 §3.11）と同じ規則を**セル単位**で適用。
+
+### 3.3 編集トランザクション（コマンド・Undo/Redo）★MCP と共通化の土台
+
+設計書 §14.2：**表編集はすべて `sc-core::Model` への「コマンド（編集トランザクション）」として適用**し、
+Undo履歴と MCP 編集API（P8）を共通化する。
+
+```rust
+// sc-app/src/command.rs
+/// モデルへの編集を表すコマンド。apply で適用、invert で逆操作（Undo用）を返す。
+pub trait EditCommand {
+    fn apply(&self, model: &mut sc_core::model::Model) -> Box<dyn EditCommand>; // 返り値＝逆コマンド
+    fn label(&self) -> &str;
+}
+
+// 例: 節点座標変更 / 部材追加 / 断面割当 / 荷重設定 …
+pub struct SetNodeCoord { pub node: sc_core::ids::NodeId, pub coord: [f64;3] }
+impl EditCommand for SetNodeCoord { /* apply: 旧値を保持した逆コマンドを返す */ }
+
+pub struct UndoStack { done: Vec<Box<dyn EditCommand>>, undone: Vec<Box<dyn EditCommand>> }
+impl UndoStack {
+    pub fn run(&mut self, model: &mut sc_core::model::Model, cmd: Box<dyn EditCommand>) {
+        let inv = cmd.apply(model); self.done.push(inv); self.undone.clear();
+    }
+    pub fn undo(&mut self, model: &mut sc_core::model::Model) { /* done.pop().apply → undone へ */ }
+    pub fn redo(&mut self, model: &mut sc_core::model::Model) { /* 対称 */ }
+}
+```
+
+> **設計意図:** P8 の MCP `model.edit` も**この `EditCommand` を生成して `UndoStack::run` に流す**。
+> こうすると GUI 編集と MCP 編集が同一経路（単一ライタ。設計書 付録A R29）になり、整合する。
+
+**DoD（T1/T2）:** 1万部材テーブルが滑らかにスクロール・編集可能（設計書 §14.2）。不正入力が赤表示。
+編集→Undo→Redo でモデルが元に戻る／やり直せる。
+
+---
+
+## 4. T3: 解析実行・結果閲覧
+
+P2 の `Analysis` を GUI から起動する。
+
+```rust
+// sc-app/src/app.rs（解析実行）
+impl crate::app::App {
+    fn run_linear_static(&mut self, lc: sc_core::ids::LoadCaseId) {
+        let mut analysis = sc_solver::analysis::Analysis::prepare(&self.model).unwrap();
+        let res = analysis.linear_static(lc).unwrap();
+        self.results = Some(/* res を ResultsBundle に格納 */);
+    }
+    fn run_eigen(&mut self, n: usize) { /* analysis.eigen(n) */ }
+    fn run_seismic(&mut self, dir: SeismicDir) { /* analysis.seismic_static(dir, AiMode::SemiPrecise) */ }
+}
+```
+
+- 解析は時間がかかり得るので、**別スレッド＋進捗表示**（簡易で可。本格非同期は P8 の MCP ジョブ）。
+- 結果は変位・反力・部材応力・固有周期・層せん断・層間変形をテーブル＋図で閲覧。
+
+**DoD（T3）:** GUI から線形静的・固有値・地震（Ai一気通貫）を実行し、結果が表・図に出る。
+
+---
+
+## 5. T4/T5: 3Dビューア・応力図
+
+設計書 §14.1。3D は **wgpu**（egui と同一GPUコンテキスト）。
+
+### 5.1 描画基盤（T4）
+
+- `egui` の中に wgpu のカスタム描画（`egui_wgpu` のコールバック）でモデルを描く。
+- カメラ（回転・ズーム・パン）、節点・部材のピック（選択 → テーブルと連動）。
+
+### 5.2 変形図・モード形（T4）
+
+- 線形静的の変位、固有値のモード形を**倍率付き**で重ね描き。
+- モード形はモード選択ドロップダウン＋固有周期表示。
+
+### 5.3 応力図・CMQ図（T5）— 設計書 §14/R10
+
+- 部材ローカルに **N／Q／M 図**を描く（P1 §6.2.3 の応力復元・評価位置を使用）。
+- **CMQ 図**：各大梁の荷重項（両端固定端モーメント C/M・せん断 Q）を描く（P2 §5.1 の `Cmq`）。
+  床荷重分配の検証用。**フェースモーメント位置**（P1 §6.7）も併記。
+
+**DoD（T4/T5）:** 3Dで変形図・モード形が見える。単純梁で M 図が放物線、CMQ 図が荷重項の理論形。
+
+---
+
+## 6. T6: 許容応力度計算（sc-design-jp）
+
+設計書 §11.1/§11.2。**一次設計**。危険断面位置（P1 §6.2.3）の内力に対し、長期・短期の許容応力度で検定。
+
+> **⚠ 要検証（規準値・出典明記）:** 設計式・許容応力度・係数は**建築基準法施行令・告示・AIJ 規準
+> （RC計算規準／鋼構造設計規準）**に準拠。**規準の数値・係数は版管理された外部データ**にし、
+> 法令の条文番号・規準ページを実装コメントに残す（設計書 §11 冒頭）。**規準値を記憶で埋めない。**
+
+### 6.1 トレイト（設計書 §11.2）
+
+```rust
+// sc-design-jp/src/lib.rs
+pub trait DesignCheck {
+    /// 危険断面の内力・断面・材料・文脈から検定結果を返す。
+    fn check(&self, forces: &MemberForcesAt, sec: &sc_core::model::Section,
+             mat: &sc_core::model::Material, ctx: &DesignCtx) -> CheckResult;
+}
+
+/// ある評価位置1点の内力。
+pub struct MemberForcesAt { pub pos: f64, pub n: f64, pub q: f64, pub m: f64 }
+
+/// 検定結果＝検定比・判定・適用根拠（条文）。
+pub struct CheckResult {
+    pub ratio: f64,          // 検定比 demand/capacity
+    pub ok: bool,            // ratio <= 1.0
+    pub basis: String,       // 適用条文・規準ページ（出典）
+    pub detail: String,      // σ, 許容応力度 等の内訳
+}
+
+pub struct DesignCtx { pub term: LoadTerm, /* 規準版など外部設定 */ }
+
+/// 荷重の継続性区分（許容応力度が異なる）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadTerm { Long, Short }
+```
+
+### 6.2 実装の分割（材種 × 検定項目）
+
+- **RC**：曲げ・せん断・付着・定着（長期/短期）。
+- **S（鋼）**：曲げ・せん断・座屈（横座屈・局部座屈）・接合部。
+- **SRC**：P3 は骨格のみ（本実装は後続）。
+- **柱梁接合部パネルのせん断検定（S）** は P1 §6.7 の `τ` を入力に取るが、**本格検定は P7**。P3 は
+  許容応力度の部材検定を主対象。
+
+### 6.3 検定位置（設計書 §11.2）
+
+- 検定は P1 §6.2.3 の**危険断面位置（既定：柱フェース・中央）**の内力で行う（節点芯ではない）。
+- 位置はユーザ追加・変更可。**全位置・全荷重組合せで検定比**を出す。
+
+### 6.4 検算例（テスト用・厳密部分）
+
+鋼梁の長期曲げ（弾性、検定比 = σ/fb）:
+
+| 量 | 式 | 値 |
+|---|---|---|
+| 断面係数 `Z`（矩形 B=200,D=400） | `B·D²/6` | `200·400²/6 = 5.3333e6 mm³` |
+| 曲げ応力 `σ`（M=100 kN·m=1e8 N·mm） | `M/Z` | `1e8 / 5.3333e6 = 18.75 N/mm²` |
+| 検定比 | `σ / fb` | `18.75 / fb`（`fb`＝長期許容曲げ応力度＝**要検証**で規準値） |
+
+- `σ = M/Z = 18.75 N/mm²` は厳密（相対 1e-9 で一致）。
+- 許容応力度 `fb` は規準値（例：SN400 の F 値から）→ **出典明記・外部データ**。検定比はその比。
+
+**DoD（T6）:** 代表断面（RC梁曲げ・RC柱せん断・鋼梁曲げ）で検定比が**規準例題と一致**。
+境界値（ちょうど 1.0）の判定（OK/NG の境目）を試験。`σ=M/Z` 等の力学量は厳密一致。
+
+---
+
+## 7. T7: 検定比 色分け一覧表（GUI）
+
+- `sc-design-jp` の `CheckResult` を、**位置別・荷重組合せ別**にテーブル表示。
+- 検定比で**色分け**（例：≤0.8 緑／0.8–1.0 黄／>1.0 赤）。クリックで内訳（σ・許容値・適用条文）。
+- 3Dビューアと連動（NG 部材をハイライト）。
+
+**DoD（T7）:** 検定比表が色分け表示され、NG 部材が一目で分かる。内訳に適用根拠（条文）が出る。
+
+---
+
+## 8. T8: テスト・DoD（フェーズ全体）
+
+> **★DoD の種別を区別する（重要）:** GUI には「`cargo test` で自動化できる部分」と「目視確認に
+> なる部分」が混在する。ジュニアが「3Dを自動テストできない＝テスト不能」と誤解しないよう、
+> 各 DoD に **【自動】**（ウィンドウ不要の純テスト）／**【目視】**（手動受け入れ）を明示する。
+> バグが出やすい Undo・検定ロジックは**必ず【自動】**にする。
+
+### 8.1 表入力・編集（→ T1/T2）
+- 【目視】1万部材テーブルの仮想スクロール・編集が滑らか。不正入力が赤表示。
+- 【自動】**`EditCommand` の apply→invert→再apply の往復でモデルが元に戻る**（command モジュールの
+  純 `cargo test`。ウィンドウ不要）。これが §3.3 の正確性の要。Undo/Redo スタックの整合も自動テスト。
+
+### 8.2 解析・可視化（→ T3/T4/T5）
+- 【目視】3Dで形状・変形図・モード形が見える。応力図 N/Q/M・CMQ 図が表示される。
+- 【自動】GUI から起動する解析パスは、P2 の `Analysis` を直接呼ぶ統合テスト（ヘッドレス）で検証
+  （単純梁の M 図データ＝放物線、CMQ データ＝荷重項の理論値）。描画自体は【目視】。
+
+### 8.3 許容応力度（→ T6）★ヘッドレスで自動化
+- 【自動】代表断面の検定比が規準例題一致。`σ=M/Z=18.75 N/mm²` 等の力学量は厳密（相対 1e-9）。
+  境界値（ちょうど 1.0）の OK/NG 判定を試験。`sc-design-jp` は GUI 非依存なので全て自動テスト。
+
+### 8.4 検定比表（→ T7）
+- 【目視】色分け表示・内訳・3D連動。（色分けロジック＝検定比→色 の関数は【自動】で単体テスト可）
+
+### 8.5 フェーズ DoD チェックリスト
+| # | ゴール（§0.2） | 判定 | 章 |
+|---|---|---|---|
+| 1 | 表入力でモデル作成・反映 | §8.1 | §3 |
+| 2 | GUI から解析実行・結果閲覧 | §8.2 | §4 |
+| 3 | 3D形状/変形/モード・N/Q/M・CMQ図 | §8.2 | §5 |
+| 4 | 許容応力度 検定比 規準例題一致 | §8.3 | §6 |
+| 5 | 編集トランザクション（Undo/Redo・MCP共通） | §8.1 | §3.3 |
+
+> **全チェック緑＝ P3 完了＝ v0.5 プロトタイプ完結**（表入力→解析→一次設計が一通り通る）。
+> 次は v1.0：P4（材料・断面）。
+
+---
+
+## 9. 補足（ジュニア向け）
+
+### 9.1 即時モードGUI（egui）の考え方（→ §2,§3）
+egui は「毎フレーム UI を関数で描き直す」即時モード。状態は `App` が持ち、`update` で毎回描画する。
+保持モード（ウィジェット木を保持）と違い、表示は常に `App` の現在値から再生成される。大量行は
+`TableBuilder::body(...).rows(...)` の仮想スクロールで「見えている行だけ」描く。
+
+### 9.2 なぜ編集をコマンドにするか（→ §3.3）
+編集を `EditCommand`（apply＋逆操作）に統一すると、(1) Undo/Redo が逆コマンドの push/pop で済み、
+(2) GUI と MCP（P8）が同じ経路でモデルを変更でき（単一ライタ＝整合）、(3) 編集履歴を直列化・再現できる。
+
+### 9.3 検定比（demand/capacity）（→ §6）
+検定比 = 作用（応力・力）／許容（許容応力度・耐力）。≤1.0 で OK。一次設計（許容応力度）は弾性応力を
+許容応力度と比べる。力学量（σ=M/Z 等）は厳密だが、許容応力度は規準値（外部データ・要検証）。
+
+---
+
+## 10. 用語（P3 で増えるもの）
+| 用語 | 意味 |
+|---|---|
+| 即時モードGUI | 毎フレーム描き直す方式の GUI（egui） |
+| 仮想スクロール | 表示中の行だけ描画する大量行対策 |
+| 編集トランザクション | モデル変更を表すコマンド（apply＋逆操作）。Undo/MCP と共通 |
+| 許容応力度計算 | 一次設計。弾性応力を許容応力度と比較 |
+| 検定比 | 作用／許容（demand/capacity）。≤1.0 で OK |
+| 長期／短期 | 荷重の継続性区分。許容応力度が異なる |
+| CMQ図 | 部材荷重の荷重項（固定端モーメント・せん断）の図 |
+| フェースモーメント | 柱・梁フェース位置のモーメント（P1 §6.7） |
+
+---
+
+*本仕様書は P3（最小UI／設計）を対象とし、v0.5 プロトタイプを完結させる。次は v1.0 の P4（材料・断面）。*
+*許容応力度の規準値・SRC・パネルせん断検定の本格実装は外部データ化＋後続フェーズ（P7）で深掘りする。*
