@@ -2,6 +2,8 @@ use crate::assemble::{assemble_global_f, assemble_global_k};
 use crate::constraint::Reducer;
 use crate::eigen::{self, ModalResult};
 use crate::linear::StaticOnce;
+
+pub type StaticResult = StaticOnce;
 use sc_core::dof::DofMap;
 use sc_core::ids::LoadCaseId;
 use sc_core::model::{LoadCombination, Model};
