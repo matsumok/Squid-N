@@ -20,6 +20,7 @@ pub struct ShellResultants {
 }
 
 /// Element-local orthonormal frame for a 4-node shell.
+#[derive(Clone, Copy)]
 pub struct ShellFrame {
     pub e1: [f64; 3],
     pub e2: [f64; 3],
@@ -291,6 +292,7 @@ fn d_shear(e: f64, nu: f64, t: f64) -> [[f64; 2]; 2] {
 // ---------------------------------------------------------------------------
 // ShellElement
 // ---------------------------------------------------------------------------
+#[derive(Clone)]
 pub struct ShellElement {
     pub nodes: [NodeId; 4],
     pub coords: [[f64; 3]; 4],
@@ -322,18 +324,22 @@ impl ShellElement {
         let e = mat.map(|m| m.young).unwrap_or(205000.0);
         let nu = mat.map(|m| m.poisson).unwrap_or(0.3);
 
-        // Determine membrane_active: true unless rigid diaphragm is applied to all nodes
+        // Determine membrane_active: true unless every node is part of a rigid diaphragm
         let membrane_active = {
-            let story_has_rigid = |nid: NodeId| -> bool {
+            let node_in_rigid_diaphragm = |nid: NodeId| -> bool {
                 model
                     .nodes
                     .get(nid.index())
                     .and_then(|n| n.story)
                     .and_then(|sid| model.stories.get(sid.index()))
-                    .map(|s| s.diaphragms.iter().any(|d| d.rigid))
+                    .map(|s| {
+                        s.diaphragms
+                            .iter()
+                            .any(|d| d.rigid && (d.master == nid || d.slaves.contains(&nid)))
+                    })
                     .unwrap_or(false)
             };
-            !nids.iter().all(|&n| story_has_rigid(n))
+            !nids.iter().all(|&n| node_in_rigid_diaphragm(n))
         };
 
         ShellElement {
@@ -468,15 +474,25 @@ impl ShellElement {
     }
 
     /// Add drilling stabilization to the stiffness matrix.
+    /// Uses a 4×4 element matrix that is zero for uniform drilling rotation
+    /// (rigid body mode) and stiff for relative drilling modes.
     fn add_drilling(&self, k: &mut LocalMat) {
         let gamma = self.drilling_factor;
         let g_mod = self.e / (2.0 * (1.0 + self.nu));
         let area = element_area(&self.coords);
         let scale = gamma * g_mod * self.t * area;
 
+        // Q = I - (1/4) * 1*1^T  =>  diag=3/4, off-diag=-1/4
+        let q_diag = 0.75 * scale;
+        let q_off = -0.25 * scale;
+
         for i in 0..4 {
-            let col = i * 6 + 5;
-            k.set(col, col, k.get(col, col) + scale);
+            let ri = i * 6 + 5;
+            for j in 0..4 {
+                let rj = j * 6 + 5;
+                let val = if i == j { q_diag } else { q_off };
+                k.set(ri, rj, k.get(ri, rj) + val);
+            }
         }
     }
 
@@ -692,11 +708,6 @@ fn element_area(coords: &[[f64; 3]; 4]) -> f64 {
         coords[2][1] - coords[0][1],
         coords[2][2] - coords[0][2],
     ];
-    let _v03 = [
-        coords[3][0] - coords[0][0],
-        coords[3][1] - coords[0][1],
-        coords[3][2] - coords[0][2],
-    ];
     let v12 = [
         coords[2][0] - coords[1][0],
         coords[2][1] - coords[1][1],
@@ -751,7 +762,8 @@ impl crate::behavior::ElementBehavior for ShellElement {
     }
 
     fn tangent_stiffness(&self, _state: &ElemState, _ctx: &crate::behavior::Ctx) -> LocalMat {
-        let k_local = self.local_stiffness();
+        let mut k_local = self.local_stiffness();
+        self.apply_rigid_floor_membrane_off(&mut k_local);
         self.frame.to_global(&k_local)
     }
 
@@ -978,35 +990,154 @@ mod tests {
         assert!((curv[2] - kap_xy).abs() < 1e-12, "κ_xy={}", curv[2]);
     }
 
+    fn k_times_u(k: &LocalMat, u: &[f64]) -> Vec<f64> {
+        let n = k.n;
+        let mut r = vec![0.0; n];
+        for i in 0..n {
+            let mut s = 0.0;
+            for j in 0..n {
+                s += k.get(i, j) * u[j];
+            }
+            r[i] = s;
+        }
+        r
+    }
+
+    fn residual_norm(r: &[f64]) -> f64 {
+        r.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
     #[test]
-    fn test_stiffness_has_six_rigid_body_modes() {
-        // Use a thicker shell so eigenvalues are well-conditioned
+    fn test_six_rigid_body_modes_zero_energy() {
         let shell = make_flat_shell(50.0);
         let k = shell.local_stiffness();
+        let coords = &shell.coords;
 
-        // Compute eigenvalues using power iteration to check count near zero
-        // For robustness, just check that the smallest eigenvalue is not negative
-        // and that the ratio of smallest-to-largest is reasonable
-        let mut min_diag = f64::MAX;
-        let mut max_diag = f64::MIN;
-        for i in 0..24 {
-            let d = k.get(i, i);
-            if d > 0.0 {
-                min_diag = min_diag.min(d);
-                max_diag = max_diag.max(d);
+        let mut rb = vec![vec![0.0; 24]; 6];
+        for m in 0..6 {
+            for i in 0..4 {
+                let x = coords[i][0];
+                let y = coords[i][1];
+                let bo = i * 6;
+                match m {
+                    0 => rb[m][bo] = 1.0,     // Tx
+                    1 => rb[m][bo + 1] = 1.0, // Ty
+                    2 => rb[m][bo + 2] = 1.0, // Tz
+                    3 => {
+                        // Rx: uz = y, rx = 1
+                        rb[m][bo + 2] = y;
+                        rb[m][bo + 3] = 1.0;
+                    }
+                    4 => {
+                        // Ry: uz = -x, ry = 1
+                        rb[m][bo + 2] = -x;
+                        rb[m][bo + 4] = 1.0;
+                    }
+                    _ => {
+                        // Rz: ux = -y, uy = x, rz = 1 (drilling rotation)
+                        rb[m][bo] = -y;
+                        rb[m][bo + 1] = x;
+                        rb[m][bo + 5] = 1.0;
+                    }
+                }
             }
         }
-        // All diagonals should be positive (drilling stabilization handles singularity)
+
+        for (m, u) in rb.iter().enumerate() {
+            let r = k_times_u(&k, u);
+            let norm = residual_norm(&r);
+            let scale = u.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!(
+                norm / scale < 1e-8,
+                "rigid body mode {m} should have zero energy: norm={norm}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_drilling_stabilization_insensitivity() {
+        // Compare cantilever plate tip displacement with different drilling factors.
+        // Use a simple one-element cantilever: fix edge nodes 0,1; free 2,3; load node 2 in z.
+        let base = make_flat_shell(10.0);
+        let mut k1 = base.local_stiffness();
+        base.add_drilling(&mut k1);
+
+        let mut base_lo = base.clone();
+        base_lo.drilling_factor = DEFAULT_DRILLING_FACTOR * 0.1;
+        let mut k_lo = base_lo.local_stiffness();
+        base_lo.add_drilling(&mut k_lo);
+
+        let mut base_hi = base.clone();
+        base_hi.drilling_factor = DEFAULT_DRILLING_FACTOR * 10.0;
+        let mut k_hi = base_hi.local_stiffness();
+        base_hi.add_drilling(&mut k_hi);
+
+        // Fixed DOFs: nodes 0 and 1 (Ux..Rz all fixed) => active DOFs are nodes 2 and 3 (12 DOFs)
+        let active: Vec<usize> = (12..24).collect();
+        let reduce = |k: &LocalMat| -> Vec<f64> {
+            let n = active.len();
+            let mut kred = vec![0.0; n * n];
+            for (ia, &i) in active.iter().enumerate() {
+                for (ja, &j) in active.iter().enumerate() {
+                    kred[ia * n + ja] = k.get(i, j);
+                }
+            }
+            kred
+        };
+
+        // Load at node 2 in Uz (active index 2 within node 2 => global index 12+2=14)
+        let load_idx_in_active = 14 - 12;
+        let solve = |kred: &[f64], f: &[f64]| -> Vec<f64> {
+            let n = f.len();
+            let mut x = vec![0.0; n];
+            for i in 0..n {
+                let mut s = 0.0;
+                for j in 0..n {
+                    s += kred[i * n + j] * x[j];
+                }
+                let r = f[i] - s;
+                x[i] += r / kred[i * n + i];
+            }
+            // one Jacobi sweep is enough for diagonally dominant matrices; do a few
+            for _ in 0..100 {
+                for i in 0..n {
+                    let mut s = 0.0;
+                    for j in 0..n {
+                        if i != j {
+                            s += kred[i * n + j] * x[j];
+                        }
+                    }
+                    x[i] = (f[i] - s) / kred[i * n + i];
+                    if x[i].is_nan() {
+                        x[i] = 0.0;
+                    }
+                }
+            }
+            x
+        };
+
+        let k1r = reduce(&k1);
+        let klor = reduce(&k_lo);
+        let khir = reduce(&k_hi);
+
+        let mut f = vec![0.0; active.len()];
+        f[load_idx_in_active] = 1.0;
+
+        let u1 = solve(&k1r, &f);
+        let ulo = solve(&klor, &f);
+        let uhi = solve(&khir, &f);
+
+        let w1 = u1[load_idx_in_active];
+        let wlo = ulo[load_idx_in_active];
+        let whi = uhi[load_idx_in_active];
+
         assert!(
-            min_diag > 0.0,
-            "min diagonal should be positive: {min_diag}"
+            (wlo - w1).abs() / w1.abs() < 0.01,
+            "lo drilling diff too large"
         );
-        // The matrix should be reasonably conditioned for a single element
-        // (this is a sanity check, not rigorous eigenvalue test)
-        let cond_est = max_diag / min_diag;
         assert!(
-            cond_est < 1e12,
-            "condition number estimate too large: {cond_est}"
+            (whi - w1).abs() / w1.abs() < 0.01,
+            "hi drilling diff too large"
         );
     }
 
