@@ -31,6 +31,21 @@ pub struct MemberSkeleton {
     pub axial_dependency: AxialInteraction,
 }
 
+impl Default for MemberSkeleton {
+    fn default() -> Self {
+        MemberSkeleton {
+            points: vec![(0.0, 0.0), (1.0, 100.0)],
+            hysteresis: HysteresisRule::Takeda {
+                crack: (0.0, 0.0),
+                yield_point: (1.0, 100.0),
+                ultimate: (4.0, 80.0),
+                alpha: 0.4,
+            },
+            axial_dependency: AxialInteraction { skeletons: vec![] },
+        }
+    }
+}
+
 /// スケルトン算定に必要な部材情報。
 pub struct MemberData<'a> {
     pub section: &'a Section,
