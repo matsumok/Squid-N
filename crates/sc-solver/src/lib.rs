@@ -5,6 +5,7 @@
 pub mod analysis;
 pub mod assemble;
 pub mod constraint;
+pub mod damping;
 pub mod eigen;
 pub mod linear;
 pub mod pushover;
