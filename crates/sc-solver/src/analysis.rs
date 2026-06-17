@@ -1,7 +1,9 @@
 use crate::assemble::{assemble_global_f, assemble_global_k};
 use crate::constraint::Reducer;
+use crate::damping::Damping;
 use crate::eigen::{self, ModalResult};
 use crate::linear::StaticOnce;
+use crate::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
 use sc_core::dof::DofMap;
 use sc_core::ids::LoadCaseId;
 use sc_core::model::{LoadCombination, Model};
@@ -190,6 +192,17 @@ impl<'m> Analysis<'m> {
             disp,
             member_forces,
         })
+    }
+
+    /// 時刻歴応答解析（Newmark-β / HHT-α、減衰込み）。
+    pub fn time_history(
+        &mut self,
+        wave: &GroundMotion,
+        newmark: NewmarkCfg,
+        damping: Damping,
+    ) -> Result<ResponseResult, sc_math::solver::SolveError> {
+        let _ = (wave, newmark, damping);
+        todo!("Analysis::time_history")
     }
 
     /// Run seismic static analysis: approx or semi-precise Ai distribution.

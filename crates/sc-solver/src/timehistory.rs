@@ -5,18 +5,20 @@ pub struct NewmarkCfg {
 }
 
 impl NewmarkCfg {
-    pub fn average_accel(dt: f64) -> Self {
+    /// 平均加速度法（無条件安定）。dt は後で設定する。
+    pub fn average_accel() -> Self {
         Self {
             beta: 0.25,
             gamma: 0.5,
-            dt,
+            dt: 0.0,
         }
     }
-    pub fn linear_accel(dt: f64) -> Self {
+    /// 線形加速度法（条件付安定）。dt は後で設定する。
+    pub fn linear_accel() -> Self {
         Self {
             beta: 1.0 / 6.0,
             gamma: 0.5,
-            dt,
+            dt: 0.0,
         }
     }
 }
@@ -38,28 +40,11 @@ pub struct GroundMotion {
     pub accel_y: Option<Vec<f64>>,
 }
 
-pub struct RayleighDamping {
-    pub alpha_m: f64,
-    pub beta_k: f64,
-}
-
-impl RayleighDamping {
-    pub fn from_ratios(omega1: f64, omega2: f64, h1: f64, h2: f64) -> Self {
-        let d = omega2 * omega2 - omega1 * omega1;
-        let beta_k = 2.0 * (h2 * omega2 - h1 * omega1) / d;
-        let alpha_m = 2.0 * omega1 * omega2 * (h1 * omega2 - h2 * omega1) / d;
-        Self { alpha_m, beta_k }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_rayleigh() {
-        let d = RayleighDamping::from_ratios(10.0, 100.0, 0.05, 0.05);
-        let omega1 = 10.0;
-        let h_actual = (d.alpha_m / omega1 + d.beta_k * omega1) / 2.0;
-        assert!((h_actual - 0.05).abs() < 1e-6);
-    }
+/// 時刻歴応答解析の結果（設計書 §10.5）。
+/// 時系列の全量は結果I/O（§6）へストリーミングし、メモリに全保持しない。
+pub struct ResponseResult {
+    pub time: Vec<f64>,
+    pub peak_disp: Vec<[f64; 6]>,
+    pub story_drift_angle: Vec<f64>,
+    pub cumulative_ductility: Vec<f64>,
 }
