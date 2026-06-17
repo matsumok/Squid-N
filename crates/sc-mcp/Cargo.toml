@@ -1,0 +1,8 @@
+[package]
+name = "sc-mcp"
+version = "0.0.1"
+edition = "2021"
+
+[features]
+default = []
+mcp = []
