@@ -410,6 +410,7 @@ mod tests {
                 poisson: 0.3,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![
                 LoadCase {

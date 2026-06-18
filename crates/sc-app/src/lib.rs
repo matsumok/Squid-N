@@ -1,5 +1,4 @@
 pub mod app;
-pub mod command;
 
 #[cfg(feature = "gui")]
 pub mod design_view;
@@ -7,3 +6,5 @@ pub mod design_view;
 pub mod tables;
 #[cfg(feature = "gui")]
 pub mod viewer;
+
+pub use sc_edit::{EditCommand, UndoStack};

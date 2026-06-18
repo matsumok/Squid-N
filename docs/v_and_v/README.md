@@ -55,14 +55,24 @@
 | 10 | Ai分布 | sc-load | ai.rs | `test_*` | P2 | ✅ |
 | 11 | 床荷重分割 | sc-load | floor.rs | `test_*` | P2 | ✅ |
 | 12 | 荷重組合せ | sc-load | combo.rs | `test_combinations` | P2 | ✅ |
-| 13 | 許容応力度設計 | sc-design-jp | allowable_stress.rs | `test_*` | P7 | ✅ |
+| 13 | 許容応力度設計 | sc-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
 | 14 | 保有耐力 | sc-design-jp | holding_capacity.rs | `test_*` | P7 | ✅ |
 | 15 | プッシュオーバー | sc-solver | pushover.rs | — | P5 | 🔶 |
 | 16 | 壁（TVLEM） | sc-element | — | — | P5.5 | ❌ |
 | 17 | 時刻歴 | sc-solver | timehistory.rs | — | P6 | ❌ |
 | 18 | 限界耐力 | sc-design-jp | capacity_spectrum.rs | `test_capacity_spectrum` | P12 | ❌ |
+| 19 | 一軸履歴則（Concrete/Bilinear/MP） | sc-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
+| 20 | 部材履歴則（武田・原点指向・スリップ） | sc-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
+| 21 | ファイバ断面（M–φ 積分） | sc-section | fiber.rs | `test_section_*` | P4 | ✅ |
+| 22 | スケルトン自動算定（M–φ→M–θ） | sc-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
+
+> P4（材料・断面）の監査結果は `docs/v_and_v/p4_review.md` を参照。
+> #19: 包絡線（軟化・接線符号・連続性）・ひび割れ判定・MP 反転検知/ξ 更新を修正し、単軸履歴則 insta スナップショット追加で ✅。
+> #20: 武田・原点指向・スリップに `UniaxialMaterial`(trial/commit/revert) を実装。武田内側ルール（ポリゴン則）・TakedaDegrading（ピーク劣化）を本格化。insta スナップショットでループ固定し ✅。
+> #21: ファイバごとの独立状態化・弾性域厳密(1e-9)・降伏進展テスト追加で ✅。
+> #22: RC ファイバ（鉄筋点）組込み・ひずみイベント抽出・塑性ヒンジ M-θ 変換・せん断変形/鉄筋抜出し加算・手計算 My=at·σy·j・Mu=0.9·at·σy·j 照合追加で ✅。
 
 ## 1 次参照: 手計算／理論解
 

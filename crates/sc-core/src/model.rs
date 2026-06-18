@@ -160,6 +160,10 @@ pub struct Material {
     pub density: f64,
     #[serde(default)]
     pub shear: Option<f64>,
+    /// コンクリート設計基準強度 Fc [N/mm²]。
+    /// 鋼材では `None`。RC 設計（令91条）の許容圧縮・せん断に用いる。
+    #[serde(default)]
+    pub fc: Option<f64>,
 }
 
 impl Material {
@@ -470,6 +474,7 @@ mod tests {
             poisson: 0.3,
             density: 0.0,
             shear: Some(80000.0),
+            fc: None,
         };
         assert_eq!(mat.shear_modulus(), 80000.0);
     }
@@ -483,6 +488,7 @@ mod tests {
             poisson: 0.3,
             density: 0.0,
             shear: None,
+            fc: None,
         };
         let expected = 205000.0 / (2.0 * (1.0 + 0.3));
         assert!((mat.shear_modulus() - expected).abs() < 1e-9);

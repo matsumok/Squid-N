@@ -151,6 +151,7 @@ mod tests {
                 poisson: 0.3,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
@@ -318,6 +319,7 @@ mod tests {
                 poisson: 0.3,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
@@ -530,6 +532,7 @@ mod tests {
                 poisson: nu,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
@@ -614,6 +617,7 @@ mod tests {
                 poisson: 0.3,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
@@ -715,6 +719,7 @@ mod tests {
                 poisson: 0.3,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             stories: vec![Story {
                 id: StoryId(0),
@@ -849,6 +854,7 @@ mod tests {
                 poisson: nu,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
