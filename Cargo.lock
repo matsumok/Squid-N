@@ -4776,6 +4776,7 @@ dependencies = [
  "egui_extras",
  "sc-core",
  "sc-design-jp",
+ "sc-edit",
  "sc-element",
  "sc-solver",
  "smallvec",
@@ -4808,6 +4809,7 @@ dependencies = [
  "sc-core",
  "schemars 0.8.22",
  "serde",
+ "smallvec",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ sc-core = { path = "../sc-core" }
 sc-element = { path = "../sc-element" }
 sc-solver = { path = "../sc-solver" }
 sc-design-jp = { path = "../sc-design-jp" }
+sc-edit = { path = "../sc-edit" }
 egui = { workspace = true, optional = true }
 eframe = { workspace = true, optional = true }
 egui_extras = { workspace = true, optional = true }

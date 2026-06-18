@@ -1,4 +1,4 @@
-use crate::command::UndoStack;
+use sc_edit::UndoStack;
 
 pub enum Tab {
     Nodes,
@@ -16,7 +16,7 @@ pub struct Selection {
 }
 
 pub struct ResultsBundle {
-    pub statics: Vec<(sc_core::ids::LoadCaseId, sc_solver::analysis::StaticResult)>,
+    pub statics: Vec<(sc_core::ids::LoadCaseId, sc_solver::linear::StaticOnce)>,
     pub modal: Option<sc_solver::eigen::ModalResult>,
     pub member_forces: Vec<(sc_core::ids::ElemId, sc_element::beam::MemberForces)>,
     pub checks: Vec<(sc_core::ids::ElemId, f64, sc_design_jp::CheckResult)>,

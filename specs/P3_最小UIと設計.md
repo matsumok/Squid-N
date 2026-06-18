@@ -109,15 +109,15 @@ pub struct App {
     pub model: sc_core::model::Model,
     pub results: Option<ResultsBundle>,     // P2 の解析結果を保持（下記定義）
     pub selection: Selection,               // 選択中の節点・部材（下記定義）
-    pub undo: command::UndoStack,           // §3.3
+    pub undo: sc_edit::UndoStack,           // §3.3（sc-edit クレートに統一）
     pub active_tab: Tab,
 }
 pub enum Tab { Nodes, Members, Sections, Loads, Viewer, Design }
 
 /// 解析結果のまとめ。GUI が表・図・検定で参照する。
 pub struct ResultsBundle {
-    /// 荷重ケース/組合せごとの静的結果（P2 §3 の StaticResult）。
-    pub statics: Vec<(sc_core::ids::LoadCaseId, sc_solver::analysis::StaticResult)>,
+    /// 荷重ケース/組合せごとの静的結果（P2 §3 の StaticOnce）。
+    pub statics: Vec<(sc_core::ids::LoadCaseId, sc_solver::linear::StaticOnce)>,
     /// 固有値結果（P2 §4 の ModalResult）。固有値未実行なら None。
     pub modal: Option<sc_solver::eigen::ModalResult>,
     /// 部材ごと・ケースごとの復元内力（P1 §6.2.3 の MemberForces）。N/Q/M・CMQ 図が読む。
@@ -199,15 +199,19 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut crate::app::App) {
 設計書 §14.2：**表編集はすべて `sc-core::Model` への「コマンド（編集トランザクション）」として適用**し、
 Undo履歴と MCP 編集API（P8）を共通化する。
 
+> **所属クレート:** `EditCommand`/`UndoStack` は **`sc-edit` クレート**に置く。
+> `sc-app`（GUI）と P8 の MCP サーバはいずれも `sc-edit` を参照し、同一の `UndoStack::run` 経路で
+> モデルを変更する（単一ライタ＝整合。設計書 付録A R29）。`sc-app/src/command.rs` は廃止。
+
 ```rust
-// sc-app/src/command.rs
+// sc-edit/src/lib.rs（GUI・MCP 共通の単一ライタ）
 /// モデルへの編集を表すコマンド。apply で適用、invert で逆操作（Undo用）を返す。
 pub trait EditCommand {
     fn apply(&self, model: &mut sc_core::model::Model) -> Box<dyn EditCommand>; // 返り値＝逆コマンド
     fn label(&self) -> &str;
 }
 
-// 例: 節点座標変更 / 部材追加 / 断面割当 / 荷重設定 …
+// 例: 節点座標変更 / 部材追加 / 部材削除 …（参照不正時は Noop で安全にフォールバック）
 pub struct SetNodeCoord { pub node: sc_core::ids::NodeId, pub coord: [f64;3] }
 impl EditCommand for SetNodeCoord { /* apply: 旧値を保持した逆コマンドを返す */ }
 
@@ -293,11 +297,18 @@ impl crate::app::App {
     長期 許容圧縮 = Fc/3,   短期 = 2·Fc/3   （Fc=設計基準強度）
     長期 許容せん断は Fc により別式（令91条）
 
-■ 異形鉄筋（令90条）:
-    長期 許容引張 ft: SD295 = 195, SD345 = 215（D≤25）/195（D>25）…（令90条の表）
-    短期 = 長期 × 1.5（上限あり）
+■ 異形鉄筋（令90条・令96条）:
+    長期 許容引張 ft: SD295 = 195, SD345 = 215（D≤25）/195（D>25）, SD390 = 215 …（令90条の表）
+    短期 = min(長期 × 1.5, F値)   ※上限は F 値（令96条）。SD295=295, SD345=345, SD390=390
+        SD295: 195×1.5=292.5 < 295 ⇒ 292.5
+        SD345: 215×1.5=322.5 < 345 ⇒ 322.5
+        SD390: 215×1.5=322.5 < 390 ⇒ 322.5
 ```
 
+> **★F値テーブル（令98条/告示。板厚 t≤40mm の代表値）は本書で確定（公有）:**
+> SN400/SS400/SM400 = 235, SS490 = 285, SN490/SM490 = 325, SN520/SM520 = 355, SN550/SM570 = 450 [N/mm²]。
+> 鉄筋 F値（令96条）: SD295=295, SD345=345, SD390=390。これらは外部データではなく法令由来で確定可能。
+>
 > **Category B（AIJ 私的規準）だけ外部データ:** 横座屈・局部座屈の許容曲げ低減、付着・定着の詳細式は
 > AIJ 規準（RC計算規準／鋼構造設計規準）にあり著作権の対象 → ライセンス下で外部データ入力。
 > 上の**令由来の許容応力度（公有）と σ=M/Z 等の力学量は本書で確定**（調査不要）。
@@ -313,6 +324,11 @@ pub trait DesignCheck {
 }
 
 /// ある評価位置1点の内力。
+///
+/// ★単位規定（プログラム全体と共通・N·mm 系）:
+///   n: 軸力 [N], q: せん断力 [N], m: 曲げモーメント [N·mm], pos: 無次元位置 0..1
+/// 許容応力度は [N/mm²] で与えられるため、応力算定は σ = M[N·mm] / Z[mm³] のように
+/// 単位を N·mm 系で揃えること。M が kN·m で入ってくる場合は 1e6 を掛けて N·mm に変換してから渡す。
 pub struct MemberForcesAt { pub pos: f64, pub n: f64, pub q: f64, pub m: f64 }
 
 /// 検定結果＝検定比・判定・適用根拠（条文）。
@@ -330,10 +346,19 @@ pub struct DesignCtx { pub term: LoadTerm, /* 規準版など外部設定 */ }
 pub enum LoadTerm { Long, Short }
 ```
 
+> **★`Material.fc`（P3 で追加）:** `sc_core::model::Material` に `#[serde(default)] pub fc: Option<f64>`
+> を追加する。鋼材では `None`。RC 設計（令91条）の許容圧縮・せん断に用いる。
+> コンクリート強度 Fc はヤング率 `young` とは別物であり、`young` から Fc を類推してはならない。
+
 ### 6.2 実装の分割（材種 × 検定項目）
 
 - **RC**：曲げ・せん断・付着・定着（長期/短期）。
+  - **曲げ（暫定式）**: コンクリート縁応力 σc = M / Z（Z は `Section.iz`）を `Fc/3`（長期）・`2Fc/3`（短期）で検定。
+    本格な引張鉄筋検定 σs = M / (a_t·j)（j=7d/8）は `Section` に a_t が無いため P4 で `SectionShape` 経路が整ってから実装。
+  - **せん断（暫定式）**: τ = Q / (b·j), j = 7d/8 を `Fc/20`（長期, 0.55 上限）・その2倍（短期）で検定。
+    αs·fw 等の詳細式は AIJ（Category B）外部データ → P7。
 - **S（鋼）**：曲げ・せん断・座屈（横座屈・局部座屈）・接合部。
+  - 曲げ σ = M / Z を fb で、せん断 τ = Q / As を fs で検定（As は `Section.as_z`/`as_y`、無ければ `area`）。
 - **SRC**：P3 は骨格のみ（本実装は後続）。
 - **柱梁接合部パネルのせん断検定（S）** は P1 §6.7 の `τ` を入力に取るが、**本格検定は P7**。P3 は
   許容応力度の部材検定を主対象。
@@ -344,8 +369,6 @@ pub enum LoadTerm { Long, Short }
 - 位置はユーザ追加・変更可。**全位置・全荷重組合せで検定比**を出す。
 
 ### 6.4 検算例（テスト用・厳密部分）
-
-鋼梁の長期曲げ（弾性、検定比 = σ/fb）:
 
 鋼梁の長期曲げ（弾性、SN400・板厚≤40 ⇒ F=235、横座屈なしの単純ケース）:
 
@@ -358,6 +381,8 @@ pub enum LoadTerm { Long, Short }
 
 - すべて**厳密**（相対 1e-9）。`fb=F/1.5` は令90条（公有）で確定。横座屈低減（AIJ＝Category B）が
   要る断面では `fb` に低減係数を掛ける（その係数表のみ外部データ）。
+- ★対応テスト: `sc-design-jp` の `test_steel_check_bending_spec_p3_6_4`（`allowable_stress.rs`）。
+  `M=1e8 N·mm, Z=5.3333e6, σ=18.75, 検定比=0.1197` に厳密一致することを検証する。
 
 **DoD（T6）:** 代表断面（RC梁曲げ・RC柱せん断・鋼梁曲げ）で検定比が**規準例題と一致**。
 境界値（ちょうど 1.0）の判定（OK/NG の境目）を試験。`σ=M/Z` 等の力学量は厳密一致。

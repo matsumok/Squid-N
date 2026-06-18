@@ -46,7 +46,6 @@ pub fn solve_eigen(
     let mut x = init_subspace(n, q);
 
     let mut theta_prev = vec![f64::MAX; n_modes];
-    let mut eigvecs_q = vec![0.0; q * q];
 
     for _iteration in 0..EIGEN_MAX_ITER {
         let mut y = vec![0.0; n * q];
@@ -61,9 +60,7 @@ pub fn solve_eigen(
         let k_bar = proj_yty(&y, &k_red, n, q);
         let m_bar = proj_yty(&y, &m_red, n, q);
 
-        let (eigenvalues, eigvecs) = gevd_jacobi(&k_bar, &m_bar, q)?;
-
-        eigvecs_q = eigvecs;
+        let (eigenvalues, eigvecs_q) = gevd_jacobi(&k_bar, &m_bar, q)?;
 
         let mut x_new = vec![0.0; n * q];
         for i in 0..n {
@@ -465,6 +462,7 @@ mod tests {
                 poisson: 0.0,
                 density: 0.0,
                 shear: None,
+                fc: None,
             }],
             ..Default::default()
         }

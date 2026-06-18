@@ -1,3 +1,4 @@
+use sc_core::ids::{ElemId, NodeId};
 use sc_core::model::Model;
 
 pub trait EditCommand {
@@ -84,8 +85,7 @@ pub fn push_edit_command(model: &mut Model, stack: &mut UndoStack, cmd: Box<dyn 
     stack.run(model, cmd);
 }
 
-use sc_core::ids::NodeId;
-
+/// 節点座標変更。
 pub struct SetNodeCoord {
     pub node: NodeId,
     pub coord: [f64; 3],
@@ -94,6 +94,9 @@ pub struct SetNodeCoord {
 impl EditCommand for SetNodeCoord {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.node.index();
+        if idx >= model.nodes.len() || model.nodes[idx].id != self.node {
+            return Box::new(Noop);
+        }
         let old_coord = model.nodes[idx].coord;
         model.nodes[idx].coord = self.coord;
         Box::new(SetNodeCoord {
@@ -107,11 +110,62 @@ impl EditCommand for SetNodeCoord {
     }
 }
 
+/// 部材追加。逆操作は部材削除。
+pub struct AddMember {
+    pub elem: sc_core::model::ElementData,
+}
+
+impl EditCommand for AddMember {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        model.elements.push(self.elem.clone());
+        Box::new(DeleteMember { id: self.elem.id })
+    }
+
+    fn label(&self) -> &str {
+        "部材追加"
+    }
+}
+
+/// 部材削除。逆操作は部材追加。
+pub struct DeleteMember {
+    pub id: ElemId,
+}
+
+impl EditCommand for DeleteMember {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.elements.len() || model.elements[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let removed = model.elements.remove(idx);
+        Box::new(AddMember { elem: removed })
+    }
+
+    fn label(&self) -> &str {
+        "部材削除"
+    }
+}
+
+/// 何もしないコマンド（参照不正時の安全なフォールバック）。
+pub struct Noop;
+
+impl EditCommand for Noop {
+    fn apply(&self, _model: &mut Model) -> Box<dyn EditCommand> {
+        Box::new(Noop)
+    }
+
+    fn label(&self) -> &str {
+        "Noop"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sc_core::dof::Dof6Mask;
     use sc_core::ids::NodeId;
+    use sc_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
+    use smallvec::smallvec;
 
     fn empty_model() -> Model {
         Model::default()
@@ -120,7 +174,7 @@ mod tests {
     #[test]
     fn test_set_node_coord_roundtrip() {
         let mut model = empty_model();
-        model.nodes.push(sc_core::model::Node {
+        model.nodes.push(Node {
             id: NodeId(0),
             coord: [0.0, 0.0, 0.0],
             restraint: Dof6Mask::FREE,
@@ -141,5 +195,45 @@ mod tests {
 
         stack.redo(&mut model);
         assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 0.0]);
+    }
+
+    #[test]
+    fn test_set_node_coord_invalid_id_is_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        stack.run(
+            &mut model,
+            Box::new(SetNodeCoord {
+                node: NodeId(99),
+                coord: [1.0, 2.0, 3.0],
+            }),
+        );
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
+        assert!(model.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_add_delete_member_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        let elem = ElementData {
+            id: sc_core::ids::ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(0), NodeId(1)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+        };
+        stack.run(&mut model, Box::new(AddMember { elem }));
+        assert_eq!(model.elements.len(), 1);
+        stack.undo(&mut model);
+        assert_eq!(model.elements.len(), 0);
+        stack.redo(&mut model);
+        assert_eq!(model.elements.len(), 1);
     }
 }
