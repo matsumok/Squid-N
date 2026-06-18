@@ -184,22 +184,25 @@ mod tests {
     /// よって iy≠iz の断面で、δ = PL³/(3E·iy) に一致することを確認する。
     #[test]
     fn test_beam_to_global_transverse_uses_correct_inertia() {
-        let e = 1000.0_f64;
-        let l = 1000.0_f64;
-        let iy = 2000.0_f64;
-        let iz = 1000.0_f64; // iy≠iz：取り違えが顕在化する
-        let p = 100.0_f64;
+        // 現実的な鋼材大断面（iz=1e9 級）を用いる：to_global 修正の検証に加え、
+        // 端ばね静縮約のペナルティが大断面でも非正定値化しないこと（堅牢性）も同時に確認。
+        let e = 205000.0_f64;
+        let l = 1000.0_f64; // make_axial_cantilever の節点間距離
+        let iy = 2.0e9_f64;
+        let iz = 1.0e9_f64; // iy≠iz：取り違えが顕在化する
+        let p = 10000.0_f64;
         let mut model = make_axial_cantilever();
+        model.materials[0].young = e;
         model.sections[0].iy = iy;
         model.sections[0].iz = iz;
-        model.sections[0].as_y = 1.0e5; // せん断たわみを十分小さく
-        model.sections[0].as_z = 1.0e5;
+        model.sections[0].as_y = 1.0e9; // せん断たわみを十分小さく
+        model.sections[0].as_z = 1.0e9;
         model.load_cases[0].nodal[0].values = [0.0, p, 0.0, 0.0, 0.0, 0.0];
 
         let result = linear_static_once(&model, LoadCaseId(1)).unwrap();
         let uy = result.disp[1][1];
-        let expected = p * l.powi(3) / (3.0 * e * iy); // = 1.6667 mm（曲げ支配）
-        let buggy = p * l.powi(3) / (3.0 * e * iz); // = 3.333 mm（誤った値=iz使用）
+        let expected = p * l.powi(3) / (3.0 * e * iy); // 曲げ支配（iy 使用）
+        let buggy = p * l.powi(3) / (3.0 * e * iz); // 誤った値=iz 使用（2倍）
                                                     // iy ベースの値に一致し、iz ベース(2倍)を明確に排除する。
         assert!(
             (uy - expected).abs() / expected < 1e-3,

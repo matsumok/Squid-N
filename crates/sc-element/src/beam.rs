@@ -312,9 +312,15 @@ impl BeamElement {
         }
 
         // 回転ばね: 外部回転 ↔ 内部回転
+        // 剛接ペナルティは「部材回転剛性 E·I/L のスケールに対する倍率」で与える。
+        // 係数 1e8 なら剛性比 ~1e8（剛接を 8 桁の精度で再現＝結果への影響 ~1e-8<1e-6）
+        // でありながら、静縮約 K*=Kaa−Kab·Kbb⁻¹·Kba の丸め誤差（~ペナルティ·eps）が
+        // 他剛性成分を下回るため、現実的な大断面（iz≥1e7）でも全体 K が
+        // 非正定値化しない。1e12 だと iz が大きいとき誤差が並進剛性を超えて破綻する。
+        let rot_scale = self.e * self.iz.max(self.iy) / self.length.max(1.0);
         let spring_stiffness = |cond: &EndCondition| -> f64 {
             match cond {
-                EndCondition::Fixed => 1e12 * self.e * self.iz / self.length.max(1.0),
+                EndCondition::Fixed => 1e8 * rot_scale,
                 EndCondition::Pinned => 0.0,
                 EndCondition::SemiRigid { k_theta } => *k_theta,
             }
