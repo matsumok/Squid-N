@@ -1,4 +1,5 @@
 use crate::analysis::SeismicDir;
+use crate::arc_length::ArcLengthSolver;
 use crate::constraint::Reducer;
 use crate::transaction::{StateSnapshot, StatefulModel};
 use sc_core::dof::DofMap;
@@ -127,6 +128,7 @@ fn get_roof_disp(total_disp: &[f64], model: &Model, dofmap: &DofMap, dir: Seismi
 }
 
 /// プッシュオーバー解析（P5 §7）
+#[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis(
     model: &mut Model,
     dofmap: &DofMap,
@@ -135,6 +137,8 @@ pub fn pushover_analysis(
     max_steps: usize,
     max_disp: f64,
     use_kg: bool,
+    use_arc_length: bool,
+    arc_length_dl: f64,
 ) -> Result<PushoverResult, String> {
     let n_active = dofmap.n_active();
     if n_active == 0 {
@@ -273,6 +277,79 @@ pub fn pushover_analysis(
         }
         if !step_ok {
             // 収束に至らなかった step はスキップ
+        }
+    }
+
+    if use_arc_length {
+        let arc_solver = ArcLengthSolver::new(arc_length_dl);
+        let mut prev_du: Vec<f64> = Vec::new();
+        let mut arc_lambda = 1.0;
+
+        for _step in 0..20 {
+            let snap = StateSnapshot::capture(&behaviors);
+            let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
+            let k_red = reducer.reduce_k(&k_free);
+            let f_int = compute_f_int(model, dofmap, &behaviors);
+
+            let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
+            if solver.factorize(&k_red).is_err() {
+                model.restore(&snap, &mut behaviors);
+                break;
+            }
+
+            let result = arc_solver.step(
+                &q,
+                &mut |r: &[f64]| -> Result<Vec<f64>, String> {
+                    let r_red = reducer.reduce_f(r);
+                    let du_red = solver.solve(&r_red).map_err(|e| format!("{:?}", e))?;
+                    Ok(reducer.expand_u(&du_red))
+                },
+                &f_int,
+                &prev_du,
+                arc_lambda,
+            );
+
+            match result {
+                Ok(step_result) if step_result.converged => {
+                    let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
+                    for (_elem, b) in model.elements.iter_mut().zip(behaviors.iter_mut()) {
+                        let gdofs = b.global_dofs(dofmap);
+                        let mut du_elem = LocalVec {
+                            data: SmallVec::from_elem(0.0, 12),
+                        };
+                        for (i, &g) in gdofs.iter().enumerate() {
+                            if g != usize::MAX && g < step_result.du.len() {
+                                du_elem.data[i] = step_result.du[g];
+                            }
+                        }
+                        let dummy_ctx = Ctx {
+                            model: unsafe { &*model_ptr },
+                        };
+                        b.update_state(&du_elem, false, &dummy_ctx);
+                    }
+                    for b in behaviors.iter_mut() {
+                        b.commit_state();
+                    }
+                    for (&du, td) in step_result.du.iter().zip(total_disp.iter_mut()) {
+                        *td += du;
+                    }
+                    arc_lambda += step_result.dlambda;
+                    prev_du = step_result.du;
+
+                    let roof = get_roof_disp(&total_disp, model, dofmap, dir);
+                    capacity_curve.push(CapacityPoint {
+                        step: (n_steps + 1 + _step) as u32,
+                        roof_disp: roof,
+                        base_shear: arc_lambda,
+                        story_shear: vec![],
+                        story_drift: vec![],
+                    });
+                }
+                _ => {
+                    model.restore(&snap, &mut behaviors);
+                    break;
+                }
+            }
         }
     }
 

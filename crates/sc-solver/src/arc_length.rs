@@ -5,7 +5,7 @@ pub struct ArcLengthStep {
     pub converged: bool,
 }
 
-type SolverFn = dyn FnMut(&[f64]) -> Result<Vec<f64>, String>;
+pub type SolverFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
 
 /// 円筒型弧長法ソルバ（Crisfield 1981）
 pub struct ArcLengthSolver {
@@ -29,49 +29,39 @@ impl ArcLengthSolver {
     /// `solve`: K⁻¹·r を返す線形ソルバクロージャ
     /// `f_int`: 現在の内力ベクトル
     /// `prev_du`: 前ステップの変位増分（符号決定・根選択用）
-    pub fn step(
+    pub fn step<'b>(
         &self,
         q: &[f64],
-        solve: &mut SolverFn,
+        solve: &mut SolverFn<'b>,
         f_int: &[f64],
         prev_du: &[f64],
+        lambda: f64,
     ) -> Result<ArcLengthStep, String> {
         let n = q.len();
 
-        // 接線解 du_t = K⁻¹·q
         let du_t = solve(q)?;
         let ut_norm = dot(&du_t, &du_t).sqrt();
         if ut_norm < 1e-30 {
             return Err("Zero tangent displacement".into());
         }
 
-        // 予測子の符号：前ステップ接線方向との内積が正なら同符号
         let sign = if prev_du.is_empty() || dot(prev_du, &du_t) >= 0.0 {
             1.0
         } else {
             -1.0
         };
 
-        // 初期弧長増分 Δλ₀ = sign·Δl / ||du_t||
         let mut dlambda = sign * self.delta_l / ut_norm;
-
-        // 予測子変位 Δu₀ = Δλ₀ · du_t
         let mut du = scale(&du_t, dlambda);
-
-        // ステップ開始時の荷重係数（収束状態で f_int = λ_prev·q）
         let qq = dot(q, q);
-        let lambda_prev = if qq > 0.0 { dot(f_int, q) / qq } else { 0.0 };
 
         let mut converged = false;
         for _iter in 0..self.max_iter {
-            let lambda = lambda_prev + dlambda;
+            let current_lambda = lambda + dlambda;
+            let r: Vec<f64> = (0..n).map(|i| current_lambda * q[i] - f_int[i]).collect();
 
-            // 残差 r = λ·q - f_int
-            let r: Vec<f64> = (0..n).map(|i| lambda * q[i] - f_int[i]).collect();
-
-            // 収束判定：||r|| < tol * ||λ·q||
             let r_norm = dot(&r, &r).sqrt();
-            let ext_norm = (lambda * lambda * qq).sqrt() + 1e-30;
+            let ext_norm = (current_lambda * current_lambda * qq).sqrt() + 1e-30;
             if r_norm < self.tol * ext_norm {
                 converged = true;
                 break;
