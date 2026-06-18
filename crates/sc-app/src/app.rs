@@ -39,6 +39,20 @@ pub struct App {
     pub last_error: Option<String>,
     /// 節点座標の編集バッファ（model.nodes に同期）
     pub node_edit: Vec<[String; 3]>,
+    /// ビューアの表示モード
+    #[cfg(feature = "gui")]
+    pub view_mode: crate::viewer::ViewMode,
+    /// 変形図・モード形の倍率スライダー値
+    #[cfg(feature = "gui")]
+    pub deform_scale: f32,
+    /// モード形の表示インデックス
+    #[cfg(feature = "gui")]
+    pub view_mode_idx: usize,
+    /// ビューアのカメラ状態
+    #[cfg(feature = "gui")]
+    pub camera: crate::viewer::CameraState,
+    /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
+    pub beam_loads: Vec<sc_load::floor::BeamLoad>,
 }
 
 impl Default for App {
@@ -53,6 +67,15 @@ impl Default for App {
             last_lc: None,
             last_error: None,
             node_edit: Vec::new(),
+            #[cfg(feature = "gui")]
+            view_mode: crate::viewer::ViewMode::default(),
+            #[cfg(feature = "gui")]
+            deform_scale: 100.0,
+            #[cfg(feature = "gui")]
+            view_mode_idx: 0,
+            #[cfg(feature = "gui")]
+            camera: crate::viewer::CameraState::default(),
+            beam_loads: Vec::new(),
         }
     }
 }

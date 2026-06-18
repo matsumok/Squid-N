@@ -4778,6 +4778,7 @@ dependencies = [
  "sc-design-jp",
  "sc-edit",
  "sc-element",
+ "sc-load",
  "sc-solver",
  "smallvec",
 ]

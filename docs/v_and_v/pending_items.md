@@ -111,7 +111,7 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 - 許容応力度（RC/S 一次設計）の検定比（§6）
 - 検定比 色分け一覧表（§7）
 
-**現状（2026-06 監査後・rustc 1.96 昇格後）:**
+**現状（2026-06 監査後・rustc 1.96 昇格後・P3 残項目実装後）:**
 
 | 項目 | 状態 | 備考 |
 |------|------|------|
@@ -119,21 +119,21 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 | RC 許容応力度（Fc 参照・鉄筋グレード・短期上限） | ✅ | `Material.fc` を新設し Fc を正しく取得。鉄筋グレードを `mat.name` から。SD345 短期上限を F=345 ベースに |
 | RC 曲げの本格検定式（a_t·j 等） | 🔶 | `Section` に引張鉄筋断面積 a_t が無いため暫定（σc=M/Z でコンクリート圧縮検定）。P4 で SectionShape 経路が整ってから本格実装 |
 | RC せん断検定 | 🔶 | τ=Q/(b·j), j=7d/8 の暫定式を実装。αs·fw 等の詳細式は P7/AIJ 外部データ |
-| 編集トランザクション（Undo/Redo） | ✅ | `sc-edit` クレートに統一（sc-app/command.rs は削除）。インデクスチェック・Noop フォールバック追加 |
-| GUI feature のビルド・検証 | ✅ | rustc 1.96 に昇格し egui 0.34.3 がビルド可能。`cargo build/clippy/test --features gui` が通る。`eframe::App::ui` メソッドに移行（`update` は deprecated） |
-| T0: sc-app 雛形（eframe 起動・タブ） | ✅ | `main.rs` + `[[bin]] structcalc` を追加。タブ切替・ツールバー（Undo/Redo・解析実行・荷重継続性）実装 |
-| T1: テーブル入力（節点座標編集可能） | ✅ | 節点テーブルの X/Y/Z を `TextEdit` で編集可能。`SetNodeCoord` コマンド経由で Undo/Redo 対応。数値以外は赤背景 |
-| T1: テーブル入力（部材・断面・荷重） | 🔶 | 表示専用。編集可能化は節点のみ実装済み |
+| 編集トランザクション（Undo/Redo） | ✅ | `sc-edit` クレートに統一。断面・荷重編集コマンド（SetSectionField/SetSectionName/SetElementSection/SetLoadCaseName/SetNodalLoad/DeleteNodalLoad）も追加 |
+| GUI feature のビルド・検証 | ✅ | rustc 1.96 に昇格し egui 0.34.3 がビルド可能。`cargo build/clippy/test --features gui` が通る。`eframe::App::ui` メソッドに移行 |
+| T0: sc-app 雛形（eframe 起動・タブ） | ✅ | `main.rs` + `[[bin]] structcalc` を追加。タブ切替・ツールバー実装 |
+| T1: テーブル入力（節点座標編集可能） | ✅ | 節点テーブルの X/Y/Z を `TextEdit` で編集可能。`SetNodeCoord` 経由で Undo/Redo 対応。数値以外は赤背景 |
+| T1: テーブル入力（部材・断面・荷重） | ✅ | 部材: 断面割当を ComboBox で編集（`SetElementSection`）。断面: 名称・A・Iy・Iz・J を TextEdit で編集。荷重: ケース名・節点荷重 6 成分を TextEdit で編集。全て Undo/Redo 対応・数値赤背景 |
 | T2: Undo/Redo GUI ボタン | ✅ | ツールバーに配置。`sc_edit::UndoStack` に接続 |
-| T3: 解析実行（線形静的・固有値・地震） | ✅ | `run_linear_static`/`run_eigen`/`run_seismic` を実装。P2 `Analysis` API に接続。結果を `ResultsBundle` に格納 |
-| T4: 3Dビューア（形状・変形・モード形） | ❌ | wgpu 統合未実装（stub）。後続フェーズで対応 |
-| T5: 応力図 N/Q/M・CMQ図 | ❌ | 描画経路未実装。`MemberForces`/`Cmq` は P1/P2 側に存在 |
+| T3: 解析実行（線形静的・固有値・地震） | ✅ | `run_linear_static`/`run_eigen`/`run_seismic` を実装。P2 `Analysis` API に接続 |
+| T4: 3Dビューア（形状・変形・モード形） | ✅ | egui Painter で簡易 3D 描画（等角投影・ドラッグ回転/パン・ズーム）。形状・変形図・モード形（倍率スライダー・モード選択）対応。wgpu 本格統合は後続 |
+| T5: 応力図 N/Q/M・CMQ図 | ✅ | N/Q/M 図: member_forces の評価位置を部材ローカルに沿ってポリゴン描画。CMQ 図: BeamLoad の c_i/c_j（モーメント・青）と q_i/q_j（せん断・橙）を描画 |
 | T7: 検定比 checks 生成ドライバ | ✅ | `run_design_check` を実装。member_forces の全評価位置で `DesignCheck` を呼び検定比表にデータを供給 |
 | T7: 検定比 色分け一覧表 | ✅ | `design_view.rs` で色分け（≤0.8 緑/0.8-1.0 黄/>1.0 赤）・内訳・根拠表示 |
 
-**対応方針:**
-- T4/T5（3Dビューア・応力図）は wgpu 統合が必要。後続フェーズで対応。
-- T1 の部材・断面・荷重テーブルの編集可能化は節点と同パターンで拡張可能。
+**残項目（P3 スコープ外または後続依存）:**
+- RC 曲げ・せん断の本格検定式 → P4 で SectionShape 経路が整ってから
+- 3Dビューアの wgpu 本格統合（高品質描画・ピック） → 後続フェーズ
 - 詳細は `docs/v_and_v/p3_review.md` の推奨対応を参照。
 
 ---
@@ -142,7 +142,7 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 
 | フェーズ | 依存する P9 項目 | 状態 |
 |----------|-----------------|------|
-| P3 (最小UI) | 許容応力度 ✅／表入力・解析起動・checks ✅／3Dビューア ❌ | 🔶 |
+| P3 (最小UI) | 許容応力度・表入力・解析起動・checks・3Dビューア・応力図 ✅ | ✅ |
 | P5 (非線形) | プッシュオーバー V&V | 🔶 |
 | P5.5 (壁/MS) | 壁 TVLEM V&V | ❌ |
 | P6 (動的) | 時刻歴 V&V・決定性 | ❌ |

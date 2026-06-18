@@ -1,4 +1,4 @@
-use sc_core::ids::{ElemId, NodeId};
+use sc_core::ids::{ElemId, LoadCaseId, NodeId, SectionId};
 use sc_core::model::Model;
 
 pub trait EditCommand {
@@ -156,6 +156,254 @@ impl EditCommand for Noop {
 
     fn label(&self) -> &str {
         "Noop"
+    }
+}
+
+/// 断面プロパティ変更（名称・A・Iy・Iz・J 等）。
+pub struct SetSectionField {
+    pub id: SectionId,
+    pub field: SectionField,
+    pub value: f64,
+}
+
+/// 編集対象の断面プロパティ。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SectionField {
+    Area,
+    Iy,
+    Iz,
+    J,
+    Depth,
+    Width,
+    AsY,
+    AsZ,
+}
+
+impl EditCommand for SetSectionField {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let sec = &mut model.sections[idx];
+        let old = match self.field {
+            SectionField::Area => {
+                let o = sec.area;
+                sec.area = self.value;
+                o
+            }
+            SectionField::Iy => {
+                let o = sec.iy;
+                sec.iy = self.value;
+                o
+            }
+            SectionField::Iz => {
+                let o = sec.iz;
+                sec.iz = self.value;
+                o
+            }
+            SectionField::J => {
+                let o = sec.j;
+                sec.j = self.value;
+                o
+            }
+            SectionField::Depth => {
+                let o = sec.depth;
+                sec.depth = self.value;
+                o
+            }
+            SectionField::Width => {
+                let o = sec.width;
+                sec.width = self.value;
+                o
+            }
+            SectionField::AsY => {
+                let o = sec.as_y;
+                sec.as_y = self.value;
+                o
+            }
+            SectionField::AsZ => {
+                let o = sec.as_z;
+                sec.as_z = self.value;
+                o
+            }
+        };
+        Box::new(SetSectionField {
+            id: self.id,
+            field: self.field,
+            value: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "断面プロパティ変更"
+    }
+}
+
+/// 断面名称変更。
+pub struct SetSectionName {
+    pub id: SectionId,
+    pub name: String,
+}
+
+impl EditCommand for SetSectionName {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.sections[idx].name, self.name.clone());
+        Box::new(SetSectionName {
+            id: self.id,
+            name: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "断面名称変更"
+    }
+}
+
+/// 部材の断面割当変更。
+pub struct SetElementSection {
+    pub elem: ElemId,
+    pub section: Option<SectionId>,
+}
+
+impl EditCommand for SetElementSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.elem.index();
+        if idx >= model.elements.len() || model.elements[idx].id != self.elem {
+            return Box::new(Noop);
+        }
+        let old = model.elements[idx].section;
+        model.elements[idx].section = self.section;
+        Box::new(SetElementSection {
+            elem: self.elem,
+            section: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "部材断面割当変更"
+    }
+}
+
+/// 部材の材料割当変更。
+pub struct SetElementMaterial {
+    pub elem: ElemId,
+    pub material: Option<sc_core::ids::MaterialId>,
+}
+
+impl EditCommand for SetElementMaterial {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.elem.index();
+        if idx >= model.elements.len() || model.elements[idx].id != self.elem {
+            return Box::new(Noop);
+        }
+        let old = model.elements[idx].material;
+        model.elements[idx].material = self.material;
+        Box::new(SetElementMaterial {
+            elem: self.elem,
+            material: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "部材材料割当変更"
+    }
+}
+
+/// 荷重ケース名変更。
+pub struct SetLoadCaseName {
+    pub id: LoadCaseId,
+    pub name: String,
+}
+
+impl EditCommand for SetLoadCaseName {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.load_cases.len() || model.load_cases[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.load_cases[idx].name, self.name.clone());
+        Box::new(SetLoadCaseName {
+            id: self.id,
+            name: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "荷重ケース名変更"
+    }
+}
+
+/// 節点荷重値変更（6成分）。
+pub struct SetNodalLoad {
+    pub lc: LoadCaseId,
+    pub node: NodeId,
+    pub values: [f64; 6],
+}
+
+impl EditCommand for SetNodalLoad {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let lc_idx = self.lc.index();
+        if lc_idx >= model.load_cases.len() || model.load_cases[lc_idx].id != self.lc {
+            return Box::new(Noop);
+        }
+        let nodal = &mut model.load_cases[lc_idx].nodal;
+        if let Some(entry) = nodal.iter_mut().find(|n| n.node == self.node) {
+            let old = entry.values;
+            entry.values = self.values;
+            Box::new(SetNodalLoad {
+                lc: self.lc,
+                node: self.node,
+                values: old,
+            })
+        } else {
+            nodal.push(sc_core::model::NodalLoad {
+                node: self.node,
+                values: self.values,
+            });
+            Box::new(DeleteNodalLoad {
+                lc: self.lc,
+                node: self.node,
+            })
+        }
+    }
+
+    fn label(&self) -> &str {
+        "節点荷重変更"
+    }
+}
+
+/// 節点荷重削除。
+pub struct DeleteNodalLoad {
+    pub lc: LoadCaseId,
+    pub node: NodeId,
+}
+
+impl EditCommand for DeleteNodalLoad {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let lc_idx = self.lc.index();
+        if lc_idx >= model.load_cases.len() || model.load_cases[lc_idx].id != self.lc {
+            return Box::new(Noop);
+        }
+        let nodal = &mut model.load_cases[lc_idx].nodal;
+        if let Some(pos) = nodal.iter().position(|n| n.node == self.node) {
+            let removed = nodal.remove(pos);
+            Box::new(SetNodalLoad {
+                lc: self.lc,
+                node: removed.node,
+                values: removed.values,
+            })
+        } else {
+            Box::new(Noop)
+        }
+    }
+
+    fn label(&self) -> &str {
+        "節点荷重削除"
     }
 }
 
