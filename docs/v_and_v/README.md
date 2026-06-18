@@ -49,7 +49,7 @@
 | 4 | MITC4 シェル（膜） | sc-element | shell.rs | `test_patch_membrane_distorted`（歪みメッシュ・機械精度） | P1.5 | ✅ |
 | 5 | MITC4 シェル（曲げ） | sc-element | shell.rs | `test_patch_bending_distorted`（歪みメッシュ定曲率・機械精度） | P1.5 | ✅ |
 | 6 | MITC4 シェル（せん断/収束） | sc-solver | linear.rs | `test_ss_plate_convergence`, `test_clamped_plate_convergence`（板たわみ ±2% 収束＝ロッキングなし） | P1.5 | ✅ |
-| 7 | パネルゾーン弾性 | sc-element | panel.rs | `test_panel_zone_equilibrium_consistency` 他（自己整合のみ。資料数値例 851.135kN 照合は未実装） | P1 | 🔶 |
+| 7 | パネルゾーン弾性 | sc-element | panel.rs | `test_panel_zone_reference_case1`（pQc=851.135kN 等）, `test_panel_zone_reference_case2_t_joint`（ト型） | P1 | ✅ |
 | 8 | 線形静的解析 | sc-solver | linear.rs | `test_*`（座標変換回帰 `test_beam_to_global_transverse_uses_correct_inertia` 含む） | P2 | ✅ |
 | 9 | 固有値解析 | sc-solver | eigen.rs | `test_1dof_period` | P2 | ✅ |
 | 10 | Ai分布 | sc-load | ai.rs | `test_*` | P2 | ✅ |
