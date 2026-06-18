@@ -46,7 +46,8 @@ pub enum HysteresisRule {
 impl HysteresisRule {
     /// スケルトン包絡線上の (力 M/Q, 接線剛性 Kt) を返す。符号対称を仮定。
     /// 変形 theta は θ(M-θ) または δ(Q-δ)。単位は [rad] or [mm]、力は [N·mm] or [N]。
-    pub fn skeleton(&self, theta: f64) -> (f64, f64) {
+    /// `degrade_factor` は耐力低下係数（1.0=劣化なし。TakedaDegrading で <1.0）。
+    pub fn skeleton_with_degradation(&self, theta: f64, degrade_factor: f64) -> (f64, f64) {
         match *self {
             HysteresisRule::Takeda {
                 crack: (mc, tc),
@@ -59,7 +60,10 @@ impl HysteresisRule {
                 yield_point: (my, ty),
                 ultimate: (mu, tu),
                 ..
-            } => trilinear_symmetric(theta, tc, mc, ty, my, tu, mu),
+            } => {
+                let (m, k) = trilinear_symmetric(theta, tc, mc, ty, my, tu, mu);
+                (m * degrade_factor, k * degrade_factor)
+            }
             HysteresisRule::OriginOriented {
                 yield_point: (my, ty),
                 ultimate: (mu, tu),
@@ -68,7 +72,23 @@ impl HysteresisRule {
                 yield_point: (my, ty),
                 ultimate: (mu, tu),
                 ..
-            } => bilinear_symmetric(theta, ty, my, tu, mu),
+            } => {
+                let (m, k) = bilinear_symmetric(theta, ty, my, tu, mu);
+                (m * degrade_factor, k * degrade_factor)
+            }
+        }
+    }
+
+    /// スケルトン包絡線（劣化なし）。
+    pub fn skeleton(&self, theta: f64) -> (f64, f64) {
+        self.skeleton_with_degradation(theta, 1.0)
+    }
+
+    /// 劣化版の劣化率（TakedaDegrading のみ <1.0、それ以外は 1.0）。
+    pub fn degradation_rate(&self) -> f64 {
+        match *self {
+            HysteresisRule::TakedaDegrading { degradation, .. } => degradation,
+            _ => 1.0,
         }
     }
 
@@ -207,6 +227,17 @@ struct HystState {
     branch: Branch,
     /// 反転点
     reversal: (f64, f64),
+    /// ピーク到達回数（正側・負側）。TakedaDegrading の耐力劣化に使用。
+    peak_count_pos: u32,
+    peak_count_neg: u32,
+}
+
+impl HystState {
+    /// 現在の劣化係数。各側のピーク到達回数 n に対し degrade^n（指数的劣化）。
+    fn degrade_factor(&self, degradation_rate: f64) -> f64 {
+        let n = self.peak_count_pos.max(self.peak_count_neg);
+        degradation_rate.powi(n as i32)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -219,6 +250,15 @@ enum Branch {
     Reloading {
         origin: (f64, f64),
         target: (f64, f64),
+    },
+    /// 内側ループ（武田の規則）: ある反転点 P1 から反対側の目標点 P2 へ向かう途中で
+    /// 再反転した場合、新反転点 P3 から直前の反転点 P1 へ向かう直線を描く。
+    /// target は P1（直前の反転点）。次に P1 を超えるか P2 側に達したら分岐を切り替える。
+    InnerLoop {
+        origin: (f64, f64),
+        target: (f64, f64),
+        /// 外側の目標点（反対側ピーク）。内側ループ脱出後に再指向する先。
+        outer_target: (f64, f64),
     },
 }
 
@@ -242,20 +282,24 @@ impl HysteresisMaterial {
 
     /// 反対側の目標点（再載荷先）。経験が無ければ降伏点。
     fn opposite_target(&self, dir: f64) -> (f64, f64) {
+        self.opposite_target_degraded(dir, 1.0)
+    }
+
+    /// 反対側の目標点（劣化係数適用）。
+    fn opposite_target_degraded(&self, dir: f64, degrade: f64) -> (f64, f64) {
         let ty = self.rule.yield_deformation();
         let my = self.rule.yield_strength();
         if dir > 0.0 {
-            // 正側へ再載荷: 正側の最大経験（>0）があればそこ、無ければ降伏点
             if self.committed.max_pos.0.abs() > 1e-15 {
-                self.committed.max_pos
+                (self.committed.max_pos.0, self.committed.max_pos.1 * degrade)
             } else {
-                (ty, my)
+                (ty, my * degrade)
             }
         } else {
             if self.committed.max_neg.0.abs() > 1e-15 {
-                self.committed.max_neg
+                (self.committed.max_neg.0, self.committed.max_neg.1 * degrade)
             } else {
-                (-ty, -my)
+                (-ty, -my * degrade)
             }
         }
     }
@@ -298,6 +342,26 @@ impl HysteresisMaterial {
                     origin: (c.theta, c.m),
                     target,
                 };
+            } else if matches!(c.branch, Branch::Reloading { .. })
+                || matches!(c.branch, Branch::InnerLoop { .. })
+            {
+                // 再載荷/内側ループ中の反転 → 内側ループ（武田のポリゴン則）
+                // 直前の反転点（origin）を新たな target とし、今回の反転点から指向する。
+                let (prev_origin, prev_target, outer) = match c.branch {
+                    Branch::Reloading { origin, target } => (origin, target, target),
+                    Branch::InnerLoop {
+                        origin,
+                        outer_target,
+                        ..
+                    } => (origin, outer_target, outer_target),
+                    _ => ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0)),
+                };
+                let _ = prev_target;
+                s.branch = Branch::InnerLoop {
+                    origin: (c.theta, c.m),
+                    target: prev_origin,
+                    outer_target: outer,
+                };
             } else if yielded {
                 let ku = self.unloading_slope(c.theta, c.m);
                 s.branch = Branch::Unloading { ku };
@@ -317,12 +381,30 @@ impl HysteresisMaterial {
         s.kt = kt;
         s.branch = branch_out;
 
-        // スケルトン上で新記録時に最大経験を更新
+        // スケルトン上で新記録時に最大経験を更新。ピーク到達でカウント進行（劣化版用）。
+        // 降伏後（|θ| > θy）のピーク到達・再訪でカウントし、劣化を進める。
         if matches!(s.branch, Branch::Skeleton) {
-            if theta > c.max_pos.0 && theta > 0.0 {
+            let ty = self.rule.yield_deformation();
+            let beyond_yield_pos = theta > ty;
+            let beyond_yield_neg = theta < -ty;
+            if theta > c.max_pos.0 && beyond_yield_pos {
+                s.max_pos = (theta, m);
+                s.peak_count_pos = c.peak_count_pos + 1;
+            } else if beyond_yield_pos
+                && (theta - c.max_pos.0).abs() < ty * 1e-3
+                && c.max_pos.0 > ty
+            {
+                s.peak_count_pos = c.peak_count_pos + 1;
                 s.max_pos = (theta, m);
             }
-            if theta < c.max_neg.0 && theta < 0.0 {
+            if theta < c.max_neg.0 && beyond_yield_neg {
+                s.max_neg = (theta, m);
+                s.peak_count_neg = c.peak_count_neg + 1;
+            } else if beyond_yield_neg
+                && (theta - c.max_neg.0).abs() < ty * 1e-3
+                && c.max_neg.0 < -ty
+            {
+                s.peak_count_neg = c.peak_count_neg + 1;
                 s.max_neg = (theta, m);
             }
         }
@@ -357,9 +439,10 @@ impl HysteresisMaterial {
 
     /// 現在の branch 上で θ を評価。branch 遷移もここで処理。
     fn eval_on_branch(&self, theta: f64, s: &HystState) -> (f64, f64, Branch) {
+        let degrade = s.degrade_factor(self.rule.degradation_rate());
         match s.branch {
             Branch::Skeleton => {
-                let (m, k) = self.rule.skeleton(theta);
+                let (m, k) = self.rule.skeleton_with_degradation(theta, degrade);
                 (m, k, Branch::Skeleton)
             }
             Branch::Unloading { ku } => {
@@ -371,7 +454,7 @@ impl HysteresisMaterial {
                     // M=0 に達した点から反対側ピークへ再載荷
                     let theta_zero = tr - mr / ku;
                     let origin = (theta_zero, 0.0);
-                    let target = self.opposite_target(s.dir);
+                    let target = self.opposite_target_degraded(s.dir, degrade);
                     let (m2, k2) = reload_line(&self.rule, origin, target, theta);
                     (m2, k2, Branch::Reloading { origin, target })
                 } else {
@@ -385,11 +468,48 @@ impl HysteresisMaterial {
                     theta <= target.0
                 };
                 if reached {
-                    let (m, k) = self.rule.skeleton(theta);
+                    // スケルトン到達: ピークカウントを進める（劣化版用）
+                    let (m, k) = self.rule.skeleton_with_degradation(theta, degrade);
                     (m, k, Branch::Skeleton)
                 } else {
                     let (m, k) = reload_line(&self.rule, origin, target, theta);
                     (m, k, Branch::Reloading { origin, target })
+                }
+            }
+            Branch::InnerLoop {
+                origin,
+                target,
+                outer_target,
+            } => {
+                // target（直前の反転点）に達したら、そこから outer_target（反対側ピーク）
+                // へ向かう再載荷に切り替え（target は次の反転で更新される）。
+                let reached_target = if target.0 >= origin.0 {
+                    theta >= target.0
+                } else {
+                    theta <= target.0
+                };
+                if reached_target {
+                    // target 点から outer_target への再載荷
+                    let (m, k) = reload_line(&self.rule, target, outer_target, theta);
+                    (
+                        m,
+                        k,
+                        Branch::Reloading {
+                            origin: target,
+                            target: outer_target,
+                        },
+                    )
+                } else {
+                    let (m, k) = reload_line(&self.rule, origin, target, theta);
+                    (
+                        m,
+                        k,
+                        Branch::InnerLoop {
+                            origin,
+                            target,
+                            outer_target,
+                        },
+                    )
                 }
             }
         }
@@ -570,5 +690,58 @@ mod tests {
         mat.revert();
         let (m2, _) = mat.trial(0.005);
         assert!(m2.abs() < m1.abs());
+    }
+
+    #[test]
+    fn test_takeda_inner_loop_polygon() {
+        // 外側ループ途中で反転 → 内側ループ → 再反転でポリゴン則。
+        let mut mat = HysteresisMaterial::new(takeda());
+        // +0.03（降伏後ピーク）→ 0.01（除荷途中・M=0 未満）→ -0.005（内側反転）
+        mat.trial(0.03);
+        mat.commit();
+        mat.trial(0.01);
+        mat.commit();
+        // 内側ループに入る反転
+        let (m_inner, _) = mat.trial(-0.005);
+        mat.commit();
+        // 再反転で target（直前の反転点 θ=0.01 側）へ向かう直線
+        let (m_back, _) = mat.trial(0.008);
+        // 内側ループの戻りは、ピーク直前の反転点付近の M に近い値を取る
+        assert!(
+            m_back > m_inner,
+            "inner loop should return toward previous reversal point: inner={}, back={}",
+            m_inner,
+            m_back
+        );
+    }
+
+    #[test]
+    fn test_takeda_degrading_peak_reduction() {
+        // TakedaDegrading: ピーク到達ごとに耐力が劣化する。
+        let rule = HysteresisRule::TakedaDegrading {
+            crack: (40.0, 0.002),
+            yield_point: (100.0, 0.01),
+            ultimate: (120.0, 0.05),
+            alpha: 0.4,
+            degradation: 0.9, // 1ピークごとに 10% 低下
+        };
+        let mut mat = HysteresisMaterial::new(rule);
+        // 1 サイクル目: +0.03 → -0.03（ピーク到達 2 回）
+        mat.trial(0.03);
+        mat.commit();
+        mat.trial(0.0);
+        mat.commit();
+        mat.trial(-0.03);
+        mat.commit();
+        // 2 サイクル目の正側ピーク再到達で耐力が低下しているか
+        mat.trial(0.0);
+        mat.commit();
+        let (m_peak2, _) = mat.trial(0.03);
+        // 初回ピークは 110（skeleton at 0.03）。劣化後は 110*0.9^n 系で低下。
+        assert!(
+            m_peak2 < 110.0,
+            "degrading model should reduce peak on 2nd cycle: m={}",
+            m_peak2
+        );
     }
 }

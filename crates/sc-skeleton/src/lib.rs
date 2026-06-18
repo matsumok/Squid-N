@@ -247,9 +247,16 @@ fn build_rc_fiber_section(
     (FiberSection { fibers }, mats, roles)
 }
 
-/// M–φ → M–θ 変換（柔性法＋塑性ヒンジ）。
-/// 弾性域: θ = κ·l/3（曲率分布を三角形と仮定。l=span·反曲点比）。
-/// 降伏後: θ = κy·l/3 + (κ - κy)·lp（lp=塑性ヒンジ長 ≈ 0.5·D）。
+/// M–φ → M–θ 変換（柔性法＋塑性ヒンジ＋せん断・抜出し・付着すべり）。
+/// 仕様書 §7 フロー4。各変形成分を加算して部材端 M–θ スケルトンを完成させる。
+///
+/// - 曲げ: θ_f = κ·l/3（弾性、曲率分布を三角形と仮定）。降伏後は θ_f = κy·l/3 + (κ-κy)·lp。
+/// - せん断: θ_s = M / (K_s · l_eff)。K_s = G·A_w（有効せん断断面積）。l_eff = l（反曲点距離）。
+///   M-φ 積分で得た M を用いて Q = M/l から γ、θ_s = γ·l を算出する簡易形。
+/// - 鉄筋抜出し: θ_p = σ_s · d_b / (E_s · ξ)。ξ=定着区の平均結合応力係数（代表 8〜10）。
+///   σ_s は鉄筋応力（κ に対応）。降伏時 σ_s=fy → θ_p,y = fy·d_b/(E·ξ)。
+/// - 付着すべり: 降伏後のすべしは塑性ヒンジの回転に含める（簡易: θ_p を降伏後一定とする）。
+#[allow(clippy::too_many_arguments)]
 fn mphi_to_mtheta(
     ky: f64,
     m: f64,
@@ -257,22 +264,97 @@ fn mphi_to_mtheta(
     span: f64,
     inflection_ratio: f64,
     plastic_hinge_length: f64,
+    shear_add: ShearContribution,
+    pullout_add: PulloutContribution,
 ) -> (f64, f64) {
     if ky.abs() < 1e-15 {
         return (0.0, 0.0);
     }
     let l = span * inflection_ratio;
-    let theta_elastic = ky * l / 3.0;
-    let theta = if let Some(ky_y) = ky_yield {
+    // 曲げ変形
+    let theta_f = if let Some(ky_y) = ky_yield {
         if ky > ky_y {
-            theta_elastic + (ky - ky_y) * plastic_hinge_length
+            ky_y * l / 3.0 + (ky - ky_y) * plastic_hinge_length
         } else {
-            theta_elastic
+            ky * l / 3.0
         }
     } else {
-        theta_elastic
+        ky * l / 3.0
     };
-    (theta, m)
+    // せん断変形（M から Q=M/l、γ=Q/K_s、θ_s=γ·l）
+    let theta_s = shear_add.rotation(m, l);
+    // 鉄筋抜出し（κ に対応する鉄筋応力から）
+    let theta_p = pullout_add.rotation(ky, ky_yield);
+    (theta_f + theta_s + theta_p, m)
+}
+
+/// せん断変形の寄与（M-θ への加算分）。
+#[derive(Clone, Copy, Debug)]
+pub struct ShearContribution {
+    /// 等価せん断剛性 K_s = G·A_w [N]。0 なら寄与なし。
+    pub k_s: f64,
+}
+
+impl ShearContribution {
+    pub fn none() -> Self {
+        Self { k_s: 0.0 }
+    }
+    /// RC 矩形断面の等価せん断剛性 G·A_w。A_w = 5/6·b·D（ティモシェンコせん断補正）。
+    pub fn rc_rect(width: f64, depth: f64, concrete: &Concrete) -> Self {
+        let g = concrete.e0_shear() / (2.0 * (1.0 + 0.2));
+        let a_w = 5.0 / 6.0 * width * depth;
+        Self { k_s: g * a_w }
+    }
+    fn rotation(&self, m: f64, l: f64) -> f64 {
+        if self.k_s.abs() < 1e-12 || l.abs() < 1e-12 {
+            return 0.0;
+        }
+        // Q = M / l（片持ち/逆対称の近似）, γ = Q / K_s, θ_s = γ·l = M/K_s
+        m / self.k_s
+    }
+}
+
+/// 鉄筋抜出しの寄与（M-θ への加算分）。
+#[derive(Clone, Copy, Debug)]
+pub struct PulloutContribution {
+    /// 鉄筋径 d_b [mm]
+    pub bar_diameter: f64,
+    /// 鉄筋ヤング率 E_s [N/mm²]
+    pub e_s: f64,
+    /// 降伏強度 f_y [N/mm²]
+    pub fy: f64,
+    /// 定着区の平均結合応力係数 ξ（代表 8〜10。外部設定）
+    pub bond_coeff: f64,
+}
+
+impl PulloutContribution {
+    pub fn none() -> Self {
+        Self {
+            bar_diameter: 0.0,
+            e_s: 0.0,
+            fy: 1.0,
+            bond_coeff: 1.0,
+        }
+    }
+    /// κ と降伏曲率 κy から鉄筋応力 σ_s を推定し、θ_p = σ_s·d_b/(E·ξ) を返す。
+    /// 弾性域: σ_s ∝ κ/κy · fy。降伏後: σ_s = fy（一定）。
+    fn rotation(&self, ky: f64, ky_yield: Option<f64>) -> f64 {
+        if self.bar_diameter < 1e-12 || self.e_s < 1e-12 || self.bond_coeff < 1e-12 {
+            return 0.0;
+        }
+        let sigma_s = match ky_yield {
+            Some(ky_y) if ky_y.abs() > 1e-15 => {
+                let ratio = (ky / ky_y).abs().min(1.0);
+                if ky.abs() > ky_y.abs() {
+                    self.fy
+                } else {
+                    ratio * self.fy
+                }
+            }
+            _ => self.fy * 0.5,
+        };
+        sigma_s * self.bar_diameter / (self.e_s * self.bond_coeff)
+    }
 }
 
 /// RC 部材スケルトンを構築する（仕様書 §7）。
@@ -280,7 +362,7 @@ fn mphi_to_mtheta(
 /// 1. コンクリート格子＋主筋点ファイバのファイバ断面を構築。
 /// 2. 軸力 n_axial を保ちながら M–φ を数値積分。ひび割れ・鉄筋降伏・コンクリート圧壊を
 ///    ひずみイベントで検出しトリリニア折点とする（規準式準拠のイベント駆動）。
-/// 3. 反曲点比・塑性ヒンジ長で M–φ → M–θ へ変換。
+/// 3. 反曲点比・塑性ヒンジ長で M–φ → M–θ へ変換。せん断変形・鉄筋抜出しを加算（§7 フロー4）。
 ///
 /// 単位: 断面寸法・位置 [mm], 面積 [mm²], 軸力 [N], モーメント [N·mm], スパン [mm]。
 pub fn build_rc_member_skeleton(
@@ -289,6 +371,8 @@ pub fn build_rc_member_skeleton(
     concrete: &Concrete,
     steel: &Bilinear,
     opts: &SkeletonOptions,
+    shear: &ShearContribution,
+    pullout: &PulloutContribution,
 ) -> MemberSkeleton {
     let span = opts.span;
     let inflection_ratio = opts.inflection_ratio;
@@ -353,6 +437,8 @@ pub fn build_rc_member_skeleton(
         span,
         inflection_ratio,
         plastic_hinge_length,
+        *shear,
+        *pullout,
     );
     let (theta_y, _) = mphi_to_mtheta(
         ky_yield,
@@ -361,6 +447,8 @@ pub fn build_rc_member_skeleton(
         span,
         inflection_ratio,
         plastic_hinge_length,
+        *shear,
+        *pullout,
     );
     let (theta_u, _) = mphi_to_mtheta(
         ky_ultimate,
@@ -369,6 +457,8 @@ pub fn build_rc_member_skeleton(
         span,
         inflection_ratio,
         plastic_hinge_length,
+        *shear,
+        *pullout,
     );
 
     let m_c = m_c.abs();
@@ -466,6 +556,8 @@ pub fn build_member_skeleton(
                 member.span,
                 member.inflection_ratio,
                 plastic_hinge_length,
+                ShearContribution::none(),
+                PulloutContribution::none(),
             )
         })
         .collect();
@@ -536,6 +628,7 @@ fn extract_trilinear_generic(mphi: &[(f64, f64)]) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
     use sc_core::ids::SectionId;
     use sc_material::Bilinear;
     use sc_section::fiber::rect_fiber_section;
@@ -631,7 +724,15 @@ mod tests {
             n_axial: 0.0,
             alpha: 0.4,
         };
-        let skeleton = build_rc_member_skeleton(&sec, &rebar, &concrete, &steel, &opts);
+        let skeleton = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
 
         // 降伏点のモーメント（points[2]）が手計算と概ね一致（離散化・j近似で 15% 以内）
         let my_fiber = skeleton.points.get(2).map(|p| p.1).unwrap_or(0.0);
@@ -665,7 +766,15 @@ mod tests {
             n_axial: 0.0,
             alpha: 0.4,
         };
-        let skeleton = build_rc_member_skeleton(&sec, &rebar, &concrete, &steel, &opts);
+        let skeleton = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
 
         // 4 点（原点+3折点）で昇順
         assert_eq!(skeleton.points.len(), 4);
@@ -698,8 +807,24 @@ mod tests {
             n_axial: -500_000.0, // 圧縮軸力
             ..opts0
         };
-        let sk_n0 = build_rc_member_skeleton(&sec, &rebar, &concrete, &steel, &opts0);
-        let sk_n1 = build_rc_member_skeleton(&sec, &rebar, &concrete, &steel, &opts1);
+        let sk_n0 = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts0,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
+        let sk_n1 = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts1,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
         // 軸力により降伏モーメントが変化する
         let my_n0 = sk_n0.points[2].1;
         let my_n1 = sk_n1.points[2].1;
@@ -708,6 +833,213 @@ mod tests {
             "axial force should change My: N0={}, N1={}",
             my_n0,
             my_n1
+        );
+    }
+
+    #[test]
+    fn test_rc_skeleton_shear_contribution_increases_rotation() {
+        // せん断変形を加えると降伏回転角 θy が増加する（M は同一）。
+        let sec = make_section(300.0, 500.0);
+        let rebar = Reinforcement {
+            main_bars: vec![
+                (0.0, 190.0, 283.5),
+                (-90.0, 190.0, 283.5),
+                (90.0, 190.0, 283.5),
+            ],
+            hoop_pitch: 100.0,
+            hoop_area: 0.0,
+        };
+        let concrete = Concrete::new(30.0, 2.0);
+        let steel = Bilinear::new(200000.0, 345.0, 0.01);
+        let opts = SkeletonOptions {
+            span: 4000.0,
+            inflection_ratio: 0.5,
+            n_axial: 0.0,
+            alpha: 0.4,
+        };
+        let sk_no_shear = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
+        let sk_with_shear = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::rc_rect(300.0, 500.0, &concrete),
+            &PulloutContribution::none(),
+        );
+        let theta_y_no = sk_no_shear.points[2].0;
+        let theta_y_with = sk_with_shear.points[2].0;
+        assert!(
+            theta_y_with > theta_y_no,
+            "shear contribution must increase θy: no={}, with={}",
+            theta_y_no,
+            theta_y_with
+        );
+        // M は同一（せん断は変形のみ加算）
+        let my_no = sk_no_shear.points[2].1;
+        let my_with = sk_with_shear.points[2].1;
+        assert_relative_eq!(my_no, my_with, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_rc_skeleton_pullout_contribution_increases_rotation() {
+        // 鉄筋抜出しを加えると降伏回転角 θy が増加する。
+        let sec = make_section(300.0, 500.0);
+        let rebar = Reinforcement {
+            main_bars: vec![
+                (0.0, 190.0, 283.5),
+                (-90.0, 190.0, 283.5),
+                (90.0, 190.0, 283.5),
+            ],
+            hoop_pitch: 100.0,
+            hoop_area: 0.0,
+        };
+        let concrete = Concrete::new(30.0, 2.0);
+        let steel = Bilinear::new(200000.0, 345.0, 0.01);
+        let opts = SkeletonOptions {
+            span: 4000.0,
+            inflection_ratio: 0.5,
+            n_axial: 0.0,
+            alpha: 0.4,
+        };
+        let pullout = PulloutContribution {
+            bar_diameter: 19.0,
+            e_s: 200000.0,
+            fy: 345.0,
+            bond_coeff: 9.0,
+        };
+        let sk_no = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
+        let sk_with = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &pullout,
+        );
+        assert!(
+            sk_with.points[2].0 > sk_no.points[2].0,
+            "pullout must increase θy: no={}, with={}",
+            sk_no.points[2].0,
+            sk_with.points[2].0
+        );
+    }
+
+    #[test]
+    fn test_rc_skeleton_ultimate_matches_handcalc() {
+        // 終局モーメント Mu が規準式 Mu ≈ a_t·σy·j（引張鉄筋降伏型、係数 0.9 系）と照合。
+        // 降伏型破壊（a_t が少なめ）の RC 梁で Mu は My の 1.0〜1.2 倍程度。
+        // 規準式: Mu = 0.9·a_t·σy·j （AIJ『非線形解析指針』等の簡易式）
+        let b = 300.0;
+        let d_total = 500.0;
+        let cover = 50.0;
+        let bar_dia: f64 = 19.0;
+        let n_bars = 4;
+        let as_bar: f64 = std::f64::consts::PI * (bar_dia / 2.0).powi(2);
+        let at = n_bars as f64 * as_bar;
+        let d = d_total - cover - bar_dia / 2.0;
+        let j = 7.0 * d / 8.0;
+        let fy = 345.0;
+        let mu_handcalc = 0.9 * at * fy * j; // [N·mm]
+
+        let sec = make_section(b, d_total);
+        let z_tension = d - d_total / 2.0;
+        let rebar = Reinforcement {
+            main_bars: (0..n_bars)
+                .map(|i| {
+                    let y = (i as f64 - (n_bars as f64 - 1.0) / 2.0) * (b - 2.0 * cover)
+                        / (n_bars as f64 - 1.0).max(1.0);
+                    (y, z_tension, as_bar)
+                })
+                .collect(),
+            hoop_pitch: 100.0,
+            hoop_area: 0.0,
+        };
+        let concrete = Concrete::new(30.0, 2.0);
+        let steel = Bilinear::new(200000.0, fy, 0.01);
+        let opts = SkeletonOptions {
+            span: 4000.0,
+            inflection_ratio: 0.5,
+            n_axial: 0.0,
+            alpha: 0.4,
+        };
+        let skeleton = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
+
+        let mu_fiber = skeleton.points.get(3).map(|p| p.1).unwrap_or(0.0);
+        let ratio = mu_fiber / mu_handcalc;
+        // 0.9·a_t·σy·j は近似式。ファイバ積分は圧縮側コンクリートも寄与するため
+        // Mu は My の 1.0〜1.3 倍程度。規準式との一致は 30% 以内を許容。
+        assert!(
+            ratio > 0.7 && ratio < 1.3,
+            "Mu fiber ({:.3} N·mm) vs handcalc 0.9·at·σy·j ({:.3}): ratio={:.3}",
+            mu_fiber,
+            mu_handcalc,
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_rc_skeleton_mu_greater_than_my() {
+        // 降伏型 RC では Mu >= My（降伏後もわずかに耐力上昇）。
+        let sec = make_section(300.0, 500.0);
+        let rebar = Reinforcement {
+            main_bars: vec![
+                (0.0, 190.0, 283.5),
+                (-90.0, 190.0, 283.5),
+                (90.0, 190.0, 283.5),
+            ],
+            hoop_pitch: 100.0,
+            hoop_area: 0.0,
+        };
+        let concrete = Concrete::new(30.0, 2.0);
+        let steel = Bilinear::new(200000.0, 345.0, 0.01);
+        let opts = SkeletonOptions {
+            span: 4000.0,
+            inflection_ratio: 0.5,
+            n_axial: 0.0,
+            alpha: 0.4,
+        };
+        let skeleton = build_rc_member_skeleton(
+            &sec,
+            &rebar,
+            &concrete,
+            &steel,
+            &opts,
+            &ShearContribution::none(),
+            &PulloutContribution::none(),
+        );
+        let my = skeleton.points[2].1;
+        let mu = skeleton.points[3].1;
+        assert!(
+            mu >= my - 1e-6,
+            "Mu ({}) must be >= My ({}) for yield-type RC",
+            mu,
+            my
         );
     }
 }

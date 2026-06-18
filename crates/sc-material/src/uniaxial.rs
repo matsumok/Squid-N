@@ -336,8 +336,13 @@ impl Concrete {
     }
 
     /// 初期接線剛性 E0 = 2·fc/|ec0|（放物線の ε=0 での接線）。
-    fn e0(&self) -> f64 {
+    pub fn e0(&self) -> f64 {
         2.0 * self.fc / self.ec0.abs()
+    }
+
+    /// せん断弾性率 G0 = E0/(2(1+ν))。ν=0.2（コンクリート代表値）。
+    pub fn e0_shear(&self) -> f64 {
+        self.e0() / (2.0 * (1.0 + 0.2))
     }
 
     /// 圧縮包絡線（strain ≤ 0）。
