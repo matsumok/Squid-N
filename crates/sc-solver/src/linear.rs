@@ -758,4 +758,178 @@ mod tests {
             res.disp[2][2]
         );
     }
+
+    /// 単純支持正方形板（等分布荷重）の N×N メッシュモデルを作る。
+    /// 周辺=単純支持（Uz=0, 縁回転自由）。面内は全節点で固定（平板曲げ＝面内変位0）。
+    fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: bool) -> Model {
+        let h = a / n as f64;
+        let nn = n + 1;
+        let idx = |ix: usize, iy: usize| (iy * nn + ix) as u32;
+        let mut nodes = Vec::new();
+        for iy in 0..nn {
+            for ix in 0..nn {
+                let on_boundary = ix == 0 || ix == n || iy == 0 || iy == n;
+                // 常に Ux,Uy,Rz を固定（面内＋ドリリング）。周辺は Uz も固定。
+                let mut mask = 0b100011u8; // bits 0(Ux),1(Uy),5(Rz)
+                if on_boundary {
+                    mask |= 1 << 2; // Uz
+                    if clamped {
+                        mask |= 1 << 3; // Rx
+                        mask |= 1 << 4; // Ry
+                    }
+                }
+                nodes.push(Node {
+                    id: NodeId(idx(ix, iy)),
+                    coord: [ix as f64 * h, iy as f64 * h, 0.0],
+                    restraint: Dof6Mask(mask),
+                    mass: None,
+                    story: None,
+                });
+            }
+        }
+        let mut elements = Vec::new();
+        let mut eid = 0u32;
+        for iy in 0..n {
+            for ix in 0..n {
+                elements.push(ElementData {
+                    id: ElemId(eid),
+                    kind: ElementKind::Shell,
+                    nodes: smallvec::smallvec![
+                        NodeId(idx(ix, iy)),
+                        NodeId(idx(ix + 1, iy)),
+                        NodeId(idx(ix + 1, iy + 1)),
+                        NodeId(idx(ix, iy + 1)),
+                    ],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                });
+                eid += 1;
+            }
+        }
+        // 等分布荷重 q を負担面積で節点 Fz へ（周辺節点の荷重は支点が負担）。
+        let mut nodal = Vec::new();
+        for iy in 0..nn {
+            for ix in 0..nn {
+                let wx = if ix == 0 || ix == n { 0.5 } else { 1.0 };
+                let wy = if iy == 0 || iy == n { 0.5 } else { 1.0 };
+                let fz = q * (wx * h) * (wy * h);
+                nodal.push(NodalLoad {
+                    node: NodeId(idx(ix, iy)),
+                    values: [0.0, 0.0, fz, 0.0, 0.0, 0.0],
+                });
+            }
+        }
+        Model {
+            nodes,
+            elements,
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "plate".into(),
+                area: 0.0,
+                iy: 0.0,
+                iz: 0.0,
+                j: 0.0,
+                depth: 0.0,
+                width: 0.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: Some(t),
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "m".into(),
+                young: e,
+                poisson: nu,
+                density: 0.0,
+                shear: None,
+            }],
+            load_cases: vec![LoadCase {
+                id: LoadCaseId(1),
+                name: "q".into(),
+                nodal,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 単純支持正方形板の中央たわみが参照解（α·q·a⁴/D, α=0.00406）へ
+    /// 細分化収束する（仕様 §9.3）。粗→密で誤差が単調減少し、16×16 で ±2%。
+    #[test]
+    fn test_ss_plate_convergence() {
+        let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
+        let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
+        let ref_w = 0.00406 * q * a.powi(4) / d; // ≈ 2.217 mm
+
+        let center_w = |n: usize| -> f64 {
+            let model = make_ss_plate(n, a, t, e, nu, q, false);
+            let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+            let nn = n + 1;
+            let c = (n / 2) * nn + (n / 2);
+            res.disp[c][2].abs()
+        };
+
+        let w4 = center_w(4);
+        let w8 = center_w(8);
+        let w16 = center_w(16);
+        let e4 = (w4 - ref_w).abs();
+        let e8 = (w8 - ref_w).abs();
+        let e16 = (w16 - ref_w).abs();
+
+        // 細分化で誤差が単調減少して参照解へ近づく
+        assert!(
+            e8 < e4 && e16 < e8,
+            "誤差が単調減少しない: e4={e4} e8={e8} e16={e16} (w4={w4} w8={w8} w16={w16} ref={ref_w})"
+        );
+        // 16×16 で参照解の ±2% 以内
+        assert!(
+            e16 / ref_w < 0.02,
+            "16x16 誤差 {:.2}% > 2% (w16={} ref={})",
+            e16 / ref_w * 100.0,
+            w16,
+            ref_w
+        );
+    }
+
+    /// クランプ（四辺固定）正方形板の中央たわみ（α=0.00126, 参照解≈0.688mm）の収束。
+    #[test]
+    fn test_clamped_plate_convergence() {
+        let (a, t, e, nu, q) = (1000.0_f64, 10.0_f64, 200000.0_f64, 0.3_f64, 0.01_f64);
+        let d = e * t.powi(3) / (12.0 * (1.0 - nu * nu));
+        let ref_w = 0.00126 * q * a.powi(4) / d; // ≈ 0.688 mm
+
+        let center_w = |n: usize| -> f64 {
+            let model = make_ss_plate(n, a, t, e, nu, q, true);
+            let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+            let nn = n + 1;
+            let c = (n / 2) * nn + (n / 2);
+            res.disp[c][2].abs()
+        };
+
+        let w4 = center_w(4);
+        let w8 = center_w(8);
+        let w16 = center_w(16);
+        let e4 = (w4 - ref_w).abs();
+        let e8 = (w8 - ref_w).abs();
+        let e16 = (w16 - ref_w).abs();
+
+        assert!(
+            e8 < e4 && e16 < e8,
+            "誤差が単調減少しない: e4={e4} e8={e8} e16={e16} (w4={w4} w8={w8} w16={w16} ref={ref_w})"
+        );
+        // 16×16 で参照解の ±2% 以内（仕様 §9.3）。
+        assert!(
+            e16 / ref_w < 0.02,
+            "16x16 誤差 {:.2}% > 2% (w16={} ref={})",
+            e16 / ref_w * 100.0,
+            w16,
+            ref_w
+        );
+    }
 }
