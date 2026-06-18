@@ -55,7 +55,7 @@
 | 10 | Ai分布 | sc-load | ai.rs | `test_*` | P2 | ✅ |
 | 11 | 床荷重分割 | sc-load | floor.rs | `test_*` | P2 | ✅ |
 | 12 | 荷重組合せ | sc-load | combo.rs | `test_combinations` | P2 | ✅ |
-| 13 | 許容応力度設計 | sc-design-jp | allowable_stress.rs | `test_*` | P7 | ✅ |
+| 13 | 許容応力度設計 | sc-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
 | 14 | 保有耐力 | sc-design-jp | holding_capacity.rs | `test_*` | P7 | ✅ |
 | 15 | プッシュオーバー | sc-solver | pushover.rs | — | P5 | 🔶 |
 | 16 | 壁（TVLEM） | sc-element | — | — | P5.5 | ❌ |

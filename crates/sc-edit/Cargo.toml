@@ -7,3 +7,4 @@ edition = "2021"
 sc-core = { path = "../sc-core" }
 serde = { workspace = true }
 schemars = { workspace = true }
+smallvec = { workspace = true }

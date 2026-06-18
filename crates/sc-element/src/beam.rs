@@ -120,6 +120,7 @@ fn get_material(model: &Model, mid: Option<sc_core::ids::MaterialId>) -> Materia
         poisson: 0.0,
         density: 0.0,
         shear: None,
+        fc: None,
     })
 }
 
@@ -914,6 +915,7 @@ mod tests {
             poisson: 0.3,
             density: 0.0,
             shear: None,
+            fc: None,
         };
 
         let model = Model {

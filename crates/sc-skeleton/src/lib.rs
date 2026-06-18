@@ -254,6 +254,7 @@ mod tests {
             poisson: 0.3,
             density: 7.85e-9,
             shear: None,
+            fc: None,
         };
         let fibers = rect_fiber_section(100.0, 200.0, 10, 20, 0);
         let reinforcement = Reinforcement {
