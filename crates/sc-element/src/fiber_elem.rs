@@ -20,16 +20,20 @@ impl GaussPoint {
         xi: f64,
         weight: f64,
         section: FiberSection,
-        mats: Vec<Box<dyn UniaxialMaterial>>,
+        mut mats: Vec<Box<dyn UniaxialMaterial>>,
     ) -> Self {
         let n = section.fibers.len();
+        // 接線キャッシュを各ファイバの初期弾性接線で初期化する。
+        // 未初期化（0）のままだと、最初の update_state より前に tangent_stiffness を
+        // 呼ぶ経路（pushover の初回 assemble_k）で剛性が 0 になり特異化する。
+        let trial_et: Vec<f64> = mats.iter_mut().map(|m| m.trial(0.0).1).collect();
         GaussPoint {
             xi,
             weight,
             section,
             mats,
             trial_stress: vec![0.0; n],
-            trial_et: vec![0.0; n],
+            trial_et,
         }
     }
 }

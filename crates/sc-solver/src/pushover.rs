@@ -597,3 +597,143 @@ fn get_roof_dof(model: &Model, dofmap: &DofMap, dir: SeismicDir) -> Option<usize
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constraint::Reducer;
+    use sc_core::dof::{Dof6Mask, DofMap};
+    use sc_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
+    use sc_core::model::{
+        DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+        Node, Section, Story,
+    };
+
+    /// 1層・鉛直ファイバ柱の片持ちプッシュオーバー（P5 §10 相当の最小統合テスト）。
+    /// 配線済み非線形要素（FiberBeam）＋座標変換＋NR 反復＋降伏追跡が
+    /// エンドツーエンドで動作することを検証する。
+    fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
+        Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    // FiberBeam はねじり剛性を持たないため、Z 軸柱の頂部ねじり DOF(rz=bit5)
+                    // のみ拘束して特異性を除く。曲げ回転 rx,ry と並進は自由。
+                    restraint: Dof6Mask(0b100000),
+                    mass: None,
+                    story: Some(StoryId(0)),
+                },
+            ],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+            }],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "col".to_string(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j: 1.0e6,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "steel".to_string(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: Some(0.0),
+                fc: None,
+                fy: Some(fy),
+            }],
+            stories: vec![Story {
+                id: StoryId(0),
+                name: "1F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                diaphragms: vec![DiaphragmDef {
+                    master: NodeId(1),
+                    slaves: vec![],
+                    rigid: true,
+                }],
+                seismic_weight: Some(seismic_weight),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_pushover_single_column_forms_hinge() {
+        // 降伏応力を低め、地震重量を降伏荷重をやや超える程度に設定し、
+        // 柱脚に曲げヒンジが形成されることを確認する。
+        let mut model = single_column_model(235.0, 80_000.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            20,    // max_steps
+            0.0,   // max_disp（変位制御に移行しない＝荷重制御のみ）
+            false, // use_kg
+            false, // use_arc_length
+            0.0,
+        )
+        .expect("pushover should run end-to-end");
+
+        // パイプライン全体が収束ステップを生成していること。
+        assert!(
+            !result.capacity_curve.is_empty(),
+            "capacity curve should have at least one converged step"
+        );
+        // 荷重−変位曲線の頂部変位は単調に正（水平押し）であること。
+        let last = result.capacity_curve.last().unwrap();
+        assert!(
+            last.roof_disp > 0.0,
+            "roof displacement should be positive: {}",
+            last.roof_disp
+        );
+        // 降伏応力を与えた鋼材ファイバ柱で、柱脚に曲げヒンジが追跡されること
+        //（座標変換＋ファイバ降伏＋降伏追跡のエンドツーエンド検証）。
+        assert!(
+            !result.hinges.is_empty(),
+            "at least one hinge should form in the column under lateral push"
+        );
+    }
+
+    #[test]
+    fn test_pushover_requires_seismic_weight() {
+        // 地震重量未定義ではエラーを返す（入力検証）。
+        let mut model = single_column_model(235.0, 0.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        let result = pushover_analysis(
+            &mut model, &dofmap, &reducer, SeismicDir::X, 10, 0.0, false, false, 0.0,
+        );
+        assert!(result.is_err(), "should error when no seismic weight defined");
+    }
+}
