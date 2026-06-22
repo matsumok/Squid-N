@@ -42,7 +42,10 @@ pub fn sparse_to_triplets(mat: &SparseColMat<usize, f64>) -> Vec<Triplet> {
 
 /// 複数の CSC 行列を係数付きで加算し、新しい CSC を返す。
 /// `mats: &[(coef, &SparseColMat)]` の各要素を coef 倍して足す。
-pub fn weighted_sum_csc(n: usize, mats: &[(f64, &SparseColMat<usize, f64>)]) -> SparseColMat<usize, f64> {
+pub fn weighted_sum_csc(
+    n: usize,
+    mats: &[(f64, &SparseColMat<usize, f64>)],
+) -> SparseColMat<usize, f64> {
     let mut triplets = Vec::new();
     for (coef, mat) in mats {
         for t in sparse_to_triplets(mat) {
@@ -54,6 +57,26 @@ pub fn weighted_sum_csc(n: usize, mats: &[(f64, &SparseColMat<usize, f64>)]) -> 
         }
     }
     assemble_csc(n, triplets)
+}
+
+/// 疎行列とベクトルの積 y = A·x を計算する（CSC 形式）。
+pub fn sparse_matvec(mat: &SparseColMat<usize, f64>, x: &[f64]) -> Vec<f64> {
+    let n = mat.nrows();
+    let mut y = vec![0.0; n];
+    let (sym, vals) = mat.parts();
+    let ncols = sym.ncols();
+    for j in 0..ncols {
+        let range = sym.col_range(j);
+        let rows = sym.row_idx_of_col_raw(j);
+        let xj = x[j];
+        if xj == 0.0 {
+            continue;
+        }
+        for (k, &row) in rows.iter().enumerate() {
+            y[row] += vals[range.start + k] * xj;
+        }
+    }
+    y
 }
 
 #[cfg(test)]
@@ -142,11 +165,31 @@ mod tests {
     fn test_sparse_to_triplets_roundtrip() {
         let n = 3;
         let triplets = vec![
-            Triplet { row: 0, col: 0, val: 1.0 },
-            Triplet { row: 1, col: 0, val: 2.0 },
-            Triplet { row: 1, col: 1, val: 3.0 },
-            Triplet { row: 2, col: 2, val: 4.0 },
-            Triplet { row: 0, col: 2, val: 5.0 },
+            Triplet {
+                row: 0,
+                col: 0,
+                val: 1.0,
+            },
+            Triplet {
+                row: 1,
+                col: 0,
+                val: 2.0,
+            },
+            Triplet {
+                row: 1,
+                col: 1,
+                val: 3.0,
+            },
+            Triplet {
+                row: 2,
+                col: 2,
+                val: 4.0,
+            },
+            Triplet {
+                row: 0,
+                col: 2,
+                val: 5.0,
+            },
         ];
         let mat = assemble_csc(n, triplets);
         let recovered = sparse_to_triplets(&mat);
@@ -166,17 +209,41 @@ mod tests {
         let m = assemble_csc(
             n,
             vec![
-                Triplet { row: 0, col: 0, val: 1.0 },
-                Triplet { row: 1, col: 1, val: 1.0 },
+                Triplet {
+                    row: 0,
+                    col: 0,
+                    val: 1.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 1,
+                    val: 1.0,
+                },
             ],
         );
         let k = assemble_csc(
             n,
             vec![
-                Triplet { row: 0, col: 0, val: 100.0 },
-                Triplet { row: 1, col: 0, val: -50.0 },
-                Triplet { row: 0, col: 1, val: -50.0 },
-                Triplet { row: 1, col: 1, val: 100.0 },
+                Triplet {
+                    row: 0,
+                    col: 0,
+                    val: 100.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 0,
+                    val: -50.0,
+                },
+                Triplet {
+                    row: 0,
+                    col: 1,
+                    val: -50.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 1,
+                    val: 100.0,
+                },
             ],
         );
         let c = weighted_sum_csc(n, &[(2.0, &m), (0.05, &k)]);
