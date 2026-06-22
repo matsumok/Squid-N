@@ -197,14 +197,27 @@ impl<'m> Analysis<'m> {
     }
 
     /// 時刻歴応答解析（Newmark-β / HHT-α、減衰込み）。
+    /// 線形専用ラッパ。非線形時刻歴は `timehistory::linear_time_history_analysis`
+    /// と同じパターンのフリー関数で実装予定（§4、現在は線形のみ）。
     pub fn time_history(
-        &mut self,
+        &self,
         wave: &GroundMotion,
         newmark: NewmarkCfg,
         damping: Damping,
     ) -> Result<ResponseResult, sc_math::solver::SolveError> {
-        let _ = (wave, newmark, damping);
-        todo!("Analysis::time_history")
+        let n_indep = self.n_indep;
+        let init = vec![0.0; n_indep];
+        crate::timehistory::linear_time_history_analysis(
+            self.model,
+            &self.dofmap,
+            &self.reducer,
+            wave,
+            &newmark,
+            &damping,
+            &init,
+            &init,
+            false,
+        )
     }
 
     /// Run seismic static analysis: approx or semi-precise Ai distribution.

@@ -58,7 +58,7 @@ pub struct PushoverStep {
     pub story_drifts: Vec<f64>,
 }
 
-fn assemble_k(
+pub(crate) fn assemble_k(
     model: &Model,
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
@@ -96,7 +96,7 @@ fn assemble_k(
     assemble_csc(dofmap.n_active(), triplets)
 }
 
-fn compute_f_int(
+pub(crate) fn compute_f_int(
     model: &Model,
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
