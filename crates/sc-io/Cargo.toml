@@ -13,9 +13,10 @@ bincode    = { workspace = true }
 thiserror  = { workspace = true }
 arrow      = { workspace = true }
 parquet    = { workspace = true }
+quick-xml  = { workspace = true }
+smallvec   = { workspace = true }
 sc-core    = { path = "../sc-core" }
 sc-element = { path = "../sc-element" }
 
 [dev-dependencies]
 sc-element = { path = "../sc-element" }
-smallvec   = { workspace = true }
