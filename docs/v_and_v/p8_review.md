@@ -59,19 +59,23 @@ ST-Bridge は国内一貫プログラム/BIM 連携の要だが**完全未実装
 
 ---
 
-## 5. 是正方針（本ブランチ／後続）
+## 5. 本ブランチ（feat/p8-verification）での是正
 
-本ブランチ（feat/p8-verification）では **検証（監査）と低コストな正直化・rot 防止**を行う:
+1. 本レポート作成、V&V README に P8（#23/#24/#25）を正直に記載。
+2. 動く中核ロジック `query_model`（node/member/section + フィルタ）を feature 非依存関数として
+   **実装・テスト**（MCP ツール `model_query` も呼ぶよう更新）。`JobRegistry` のライフサイクルテスト追加。
+3. **ST-Bridge 2.0 subset の意味的往復を実装**（オーナー判断で優先）。`export_stbridge`/`import_stbridge`
+   が節点・層・材料・断面・部材（柱/大梁）・節点荷重を往復。export 冪等・再import安定・取込モデルの
+   `validate()` をテスト（DoD §8.3 を subset 範囲で達成）。
+   - 対応: 上記スコープ。**非対応**: 結果・拘束・質量・床/ブレース・剛域。断面は形鋼ライブラリ参照でなく
+     物性直持ち（StbSecRaw）の subset。他社ソフトとの完全相互運用は将来。
 
-1. 本レポート作成、V&V README に P8 を正直に記載。
-2. 実際に動く中核ロジック（query/result）を **feature 非依存関数に切り出して実装・テスト**し、
-   `JobRegistry`・`analyze` にテストを付けて腐敗を防ぐ。
-3. ST-Bridge の現状（未実装でエラーを返す）を doc/テストで明示。
+## 6. なお残る大物（オーナーのコスト判断・後続）
 
-**大物（コスト大・別途判断）:**
-- `--features mcp` のコンパイル復旧（rmcp 1.7 API 追従＋`ResultStore`/`EditCommand` の `Send` 化）。
-- MCP ツールの実装（model.edit 単一ライタ・result.get・design.check・report.export）。
-- 非同期ジョブの実行・進捗通知（tokio タスク＋notification）。
-- ST-Bridge 2.0 XML の意味的往復（公式スキーマに沿うマッピング）。
+- **`--features mcp` のコンパイル復旧**（rmcp 1.7 API 追従＋`ResultStore`/`EditCommand` の `Send` 化）。
+- **MCP ツールの本実装**（model.edit 単一ライタ・result.get・design.check・report.export）。
+- **非同期ジョブの実行・進捗通知**（tokio タスク＋notification）。
+- ST-Bridge の **形鋼ライブラリ参照（実スキーマ完全準拠）** と床/ブレース等への対応拡大。
 
-これらは規模が大きいため、着手可否・範囲をオーナー判断で決める（コスト管理）。
+> 現状: ST-Bridge は subset で意味的往復 🔶。MCP はコンパイル不能のまま（DoD §8.1〜§8.2 未達 ❌）。
+> P8 全体としては「ST-Bridge subset 達成・MCP 未達」。

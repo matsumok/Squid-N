@@ -66,7 +66,7 @@
 | 21 | ファイバ断面（M–φ 積分） | sc-section | fiber.rs | `test_section_*` | P4 | ✅ |
 | 22 | スケルトン自動算定（M–φ→M–θ） | sc-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
 | 23 | MCP サーバ（rmcp） | sc-mcp | lib.rs | — | P8 | ❌ |
-| 24 | ST-Bridge 入出力 | sc-io | stbridge.rs | — | P8 | ❌ |
+| 24 | ST-Bridge 入出力 | sc-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
 | 25 | 編集トランザクション（EditCommand/Undo） | sc-edit | lib.rs | `test_*` | P3/P8 | ✅ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
@@ -80,7 +80,9 @@
 > P8（操作・連携）の監査結果は `docs/v_and_v/p8_review.md` を参照。
 > #23: MCP は「実装」コミット済みだが `--features mcp` で **13 エラーでコンパイル不能**（rmcp 1.7 API
 > rot＋`ResultStore`/`EditCommand` が Send でない）。ツールも `model_query` が常に空を返す等スタブ。❌。
-> #24: ST-Bridge は import/export とも "not yet implemented" を返すのみ。❌。
+> #24: ST-Bridge は当初 import/export とも未実装だったが、P8 検証で **2.0 subset の意味的往復を実装**
+> （節点・層・材料・断面・部材・節点荷重。export 冪等・再import安定をテスト）。断面は形鋼ライブラリ
+> 参照でなく物性直持ち（StbSecRaw）の subset のため 🔶。完全な他社相互運用は将来。
 > #25: `sc-edit` の EditCommand/UndoStack は P3 で実装済み・健全（MCP からの利用は未配線）。
 > P4（材料・断面）の監査結果は `docs/v_and_v/p4_review.md` を参照。
 > #19: 包絡線（軟化・接線符号・連続性）・ひび割れ判定・MP 反転検知/ξ 更新を修正し、単軸履歴則 insta スナップショット追加で ✅。
