@@ -4,6 +4,8 @@ pub mod allowable_stress;
 #[cfg(feature = "p12")]
 pub mod capacity_spectrum;
 #[cfg(feature = "p7")]
+pub mod eccentricity;
+#[cfg(feature = "p7")]
 pub mod holding_capacity;
 
 pub use allowable_stress::*;
