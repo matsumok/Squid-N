@@ -598,7 +598,12 @@ mod tests {
         let restraint_fixed = Dof6Mask::FIXED;
         let restraint_free = Dof6Mask::FREE;
         let mass_val: Option<[f64; 6]> = Some([1.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
-        let xy = [[0.0_f64, 0.0], [6000.0, 0.0], [0.0, 6000.0], [6000.0, 6000.0]];
+        let xy = [
+            [0.0_f64, 0.0],
+            [6000.0, 0.0],
+            [0.0, 6000.0],
+            [6000.0, 6000.0],
+        ];
         let mut nodes: Vec<Node> = Vec::new();
         for (i, &[x, y]) in xy.iter().enumerate() {
             nodes.push(Node {
@@ -714,16 +719,8 @@ mod tests {
     fn test_story_eccentricity_symmetric_zero() {
         let (model, s0) = build_symmetric_frame(None);
         let ecc = story_eccentricity(&model, s0);
-        assert!(
-            ecc.re_x.abs() < 1e-6,
-            "re_x={} (should be ~0)",
-            ecc.re_x
-        );
-        assert!(
-            ecc.re_y.abs() < 1e-6,
-            "re_y={} (should be ~0)",
-            ecc.re_y
-        );
+        assert!(ecc.re_x.abs() < 1e-6, "re_x={} (should be ~0)", ecc.re_x);
+        assert!(ecc.re_y.abs() < 1e-6, "re_y={} (should be ~0)", ecc.re_y);
         // 剛心確認
         let sc = story_centers(&model, s0);
         assert!(
@@ -747,11 +744,7 @@ mod tests {
         let (model, s0) = build_symmetric_frame(Some(3.0e6));
         let sc = story_centers(&model, s0);
         let xs = sc.center_of_rigidity[0];
-        assert!(
-            (xs - 4500.0).abs() < 1.0,
-            "Xs={} (expected ≈4500)",
-            xs
-        );
+        assert!((xs - 4500.0).abs() < 1.0, "Xs={} (expected ≈4500)", xs);
         let ecc = story_eccentricity(&model, s0);
         // 重心 x = 3000（等質量 4 点の中央）→ ex = |3000 - 4500| = 1500
         assert!(

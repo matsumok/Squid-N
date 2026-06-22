@@ -150,6 +150,11 @@ mod tests {
         assert!(r.pi.iter().all(|&p| p > 0.0), "pi={:?}", r.pi);
         // ΣPi = Q0（基部せん断）。
         let sum_pi: f64 = r.pi.iter().sum();
-        assert!((sum_pi - r.qi[0]).abs() < 1e-9, "ΣPi={} Q0={}", sum_pi, r.qi[0]);
+        assert!(
+            (sum_pi - r.qi[0]).abs() < 1e-9,
+            "ΣPi={} Q0={}",
+            sum_pi,
+            r.qi[0]
+        );
     }
 }

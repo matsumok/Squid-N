@@ -44,11 +44,7 @@ pub fn check_panel_shear(
     let fs_base = allowable_panel_shear(f, term);
     let fs = fs_base * factor;
 
-    let ratio = if fs > 0.0 {
-        panel.tau.abs() / fs
-    } else {
-        0.0
-    };
+    let ratio = if fs > 0.0 { panel.tau.abs() / fs } else { 0.0 };
     let ok = ratio <= 1.0;
 
     let term_label = match term {
