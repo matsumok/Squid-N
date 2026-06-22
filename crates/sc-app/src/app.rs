@@ -126,6 +126,9 @@ pub struct App {
     /// 時刻歴グラフの表示項目選択
     #[cfg(feature = "gui")]
     pub time_history_source: crate::time_history_view::TimeHistorySource,
+    /// 断面作成UI のドラフト（UI-3）
+    #[cfg(feature = "gui")]
+    pub section_draft: crate::section_editor::SectionEditorDraft,
 }
 
 impl Default for App {
@@ -158,6 +161,8 @@ impl Default for App {
             time_history_data: crate::time_history_view::dummy_time_history(),
             #[cfg(feature = "gui")]
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
+            #[cfg(feature = "gui")]
+            section_draft: crate::section_editor::SectionEditorDraft::default(),
         }
     }
 }
@@ -585,7 +590,11 @@ impl App {
         match self.model_tab {
             ModelTab::Nodes => crate::tables::nodes::nodes_table(ui, self),
             ModelTab::Members => crate::tables::members::members_table(ui, self),
-            ModelTab::Sections => crate::tables::sections::sections_table(ui, self),
+            ModelTab::Sections => {
+                crate::tables::sections::sections_table(ui, self);
+                ui.add_space(8.0);
+                crate::section_editor::section_editor_panel(ui, self);
+            }
             ModelTab::Materials => materials_panel(ui, self),
         }
     }
@@ -668,6 +677,9 @@ impl App {
     /// 右ペイン：選択要素のインスペクタ。
     /// 3D/ナビゲータ/テーブルの選択（現時点では focus_*）を表示。断面編集は UI-4 で拡充。
     fn inspector_panel(&mut self, ui: &mut egui::Ui) {
+        // 遅延アクション（借用チェーン回避：UI 内で self.model を immutable borrow 中に
+        // mut borrow できないため、複製ボタンクリックは一旦 here に保存）
+        let mut duplicate_member = None;
         ui.group(|ui| {
             ui.strong("インスペクタ");
             ui.separator();
@@ -701,6 +713,12 @@ impl App {
                                 egui::Color32::from_rgb(70, 110, 200),
                                 format!("この断面を使う {} 部材に影響", n_used),
                             );
+                            // UI-4: 複製ボタン（UI設計 §3）。同断面を新規IDで複製し、
+                            // 当該部材のみ新断面に割当。
+                            if ui.button("📋 複製してこの部材だけ別断面に").clicked()
+                            {
+                                duplicate_member = Some(elem_id);
+                            }
                         }
                     } else {
                         ui.label("断面: 未割当");
@@ -778,6 +796,15 @@ impl App {
                 }
             }
         });
+
+        // 遅延実行: 複製ボタンが押されていたら EditCommand を叩く
+        if let Some(member) = duplicate_member {
+            self.undo.run(
+                &mut self.model,
+                Box::new(sc_edit::DuplicateSectionForMember { member }),
+            );
+            self.staleness.mark_edited();
+        }
     }
 
     /// 下部ステータスバー。

@@ -18,6 +18,7 @@ sc-element = { path = "../sc-element" }
 sc-solver = { path = "../sc-solver" }
 sc-design-jp = { path = "../sc-design-jp" }
 sc-edit = { path = "../sc-edit" }
+sc-section = { path = "../sc-section" }
 sc-load = { path = "../sc-load" }
 egui = { workspace = true, optional = true }
 eframe = { workspace = true, optional = true }

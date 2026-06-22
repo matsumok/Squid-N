@@ -407,6 +407,176 @@ impl EditCommand for DeleteNodalLoad {
     }
 }
 
+/// 断面形状を新規追加（UI-3 の新規断面作成）。
+pub struct AddSectionShape {
+    pub shape: sc_section::shape::SectionShape,
+    pub new_id: SectionId,
+    pub name: String,
+}
+
+impl EditCommand for AddSectionShape {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let sec = self.shape.to_section(self.new_id, self.name.clone());
+        model.sections.push(sec);
+        Box::new(DeleteSection { id: self.new_id })
+    }
+
+    fn label(&self) -> &str {
+        "断面形状追加"
+    }
+}
+
+/// 断面形状変更。逆操作は RestoreSection。
+pub struct EditSectionShape {
+    pub section: SectionId,
+    pub new_shape: sc_section::shape::SectionShape,
+}
+
+impl EditCommand for EditSectionShape {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.section.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.section {
+            return Box::new(Noop);
+        }
+        let old = model.sections[idx].clone();
+        let new_sec = self.new_shape.to_section(self.section, old.name.clone());
+        model.sections[idx] = new_sec;
+        Box::new(RestoreSection { old })
+    }
+
+    fn label(&self) -> &str {
+        "断面形状変更"
+    }
+}
+
+/// 断面データを指定した Section で復元する（EditSectionShape の逆操作）。
+pub struct RestoreSection {
+    pub old: sc_core::model::Section,
+}
+
+impl EditCommand for RestoreSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.old.id.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.old.id {
+            return Box::new(Noop);
+        }
+        let replaced = std::mem::replace(&mut model.sections[idx], self.old.clone());
+        Box::new(RestoreSection { old: replaced })
+    }
+
+    fn label(&self) -> &str {
+        "断面復元"
+    }
+}
+
+/// 部材が参照する断面を複製し、部材に新断面を割り当てる。
+pub struct DuplicateSectionForMember {
+    pub member: ElemId,
+}
+
+impl EditCommand for DuplicateSectionForMember {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let elem_idx = self.member.index();
+        if elem_idx >= model.elements.len() || model.elements[elem_idx].id != self.member {
+            return Box::new(Noop);
+        }
+        let sid = match model.elements[elem_idx].section {
+            Some(s) => s,
+            None => return Box::new(Noop),
+        };
+        let sec_idx = sid.index();
+        if sec_idx >= model.sections.len() || model.sections[sec_idx].id != sid {
+            return Box::new(Noop);
+        }
+        let orig = &model.sections[sec_idx];
+        let new_id = SectionId(model.sections.len() as u32);
+        let mut new_sec = orig.clone();
+        new_sec.id = new_id;
+        new_sec.name = format!("{}(複製)", orig.name);
+        model.sections.push(new_sec);
+        model.elements[elem_idx].section = Some(new_id);
+        Box::new(RestoreElementSectionAndDeleteSection {
+            elem: self.member,
+            old_section: Some(sid),
+            new_section: new_id,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "部材断面複製"
+    }
+}
+
+/// DuplicateSectionForMember の逆操作。
+pub struct RestoreElementSectionAndDeleteSection {
+    pub elem: ElemId,
+    pub old_section: Option<SectionId>,
+    pub new_section: SectionId,
+}
+
+impl EditCommand for RestoreElementSectionAndDeleteSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let elem_idx = self.elem.index();
+        if elem_idx >= model.elements.len() || model.elements[elem_idx].id != self.elem {
+            return Box::new(Noop);
+        }
+        let new_idx = self.new_section.index();
+        if new_idx >= model.sections.len() || model.sections[new_idx].id != self.new_section {
+            return Box::new(Noop);
+        }
+        model.elements[elem_idx].section = self.old_section;
+        model.sections.remove(new_idx);
+        Box::new(DuplicateSectionForMember { member: self.elem })
+    }
+
+    fn label(&self) -> &str {
+        "部材断面複製解除"
+    }
+}
+
+/// 断面削除。逆操作は AddSection。
+pub struct DeleteSection {
+    pub id: SectionId,
+}
+
+impl EditCommand for DeleteSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let removed = model.sections.remove(idx);
+        Box::new(AddSection {
+            old: removed,
+            index: idx,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "断面削除"
+    }
+}
+
+/// 断面追加（DeleteSection の逆操作）。
+pub struct AddSection {
+    pub old: sc_core::model::Section,
+    pub index: usize,
+}
+
+impl EditCommand for AddSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if self.index > model.sections.len() {
+            return Box::new(Noop);
+        }
+        model.sections.insert(self.index, self.old.clone());
+        Box::new(DeleteSection { id: self.old.id })
+    }
+
+    fn label(&self) -> &str {
+        "断面追加"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +654,207 @@ mod tests {
         assert_eq!(model.elements.len(), 0);
         stack.redo(&mut model);
         assert_eq!(model.elements.len(), 1);
+    }
+
+    #[test]
+    fn test_add_section_shape_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        let shape = sc_section::shape::SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let cmd = AddSectionShape {
+            shape,
+            new_id: SectionId(0),
+            name: "H-300x300x10x15".into(),
+        };
+        stack.run(&mut model, Box::new(cmd));
+        assert_eq!(model.sections.len(), 1);
+        assert_eq!(model.sections[0].id, SectionId(0));
+
+        stack.undo(&mut model);
+        assert_eq!(model.sections.len(), 0);
+
+        stack.redo(&mut model);
+        assert_eq!(model.sections.len(), 1);
+        assert_eq!(model.sections[0].id, SectionId(0));
+    }
+
+    #[test]
+    fn test_edit_section_shape_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        let shape1 = sc_section::shape::SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let sec = shape1.to_section(SectionId(0), "H-300".into());
+        let area_h = sec.area;
+        model.sections.push(sec);
+
+        let shape2 = sc_section::shape::SectionShape::SteelBox {
+            height: 200.0,
+            width: 200.0,
+            thick: 12.0,
+        };
+        let cmd = EditSectionShape {
+            section: SectionId(0),
+            new_shape: shape2,
+        };
+        stack.run(&mut model, Box::new(cmd));
+        assert!((model.sections[0].area - 9024.0).abs() < 1.0);
+
+        stack.undo(&mut model);
+        assert!((model.sections[0].area - area_h).abs() < 1.0);
+
+        stack.redo(&mut model);
+        assert!((model.sections[0].area - 9024.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_duplicate_section_for_member_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        let shape = sc_section::shape::SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let sec = shape.to_section(SectionId(0), "H-300".into());
+        model.sections.push(sec);
+
+        model.nodes.push(Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(1),
+            coord: [1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.elements.push(ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        });
+
+        let cmd = DuplicateSectionForMember { member: ElemId(0) };
+        stack.run(&mut model, Box::new(cmd));
+        assert_eq!(model.sections.len(), 2);
+        assert_eq!(model.elements[0].section, Some(SectionId(1)));
+
+        stack.undo(&mut model);
+        assert_eq!(model.sections.len(), 1);
+        assert_eq!(model.elements[0].section, Some(SectionId(0)));
+
+        stack.redo(&mut model);
+        assert_eq!(model.sections.len(), 2);
+        assert_eq!(model.elements[0].section, Some(SectionId(1)));
+    }
+
+    #[test]
+    fn test_edit_section_shape_invalid_id_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        let shape = sc_section::shape::SectionShape::SteelBox {
+            height: 200.0,
+            width: 200.0,
+            thick: 12.0,
+        };
+        let cmd = EditSectionShape {
+            section: SectionId(99),
+            new_shape: shape,
+        };
+        stack.run(&mut model, Box::new(cmd));
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
+        assert!(model.sections.is_empty());
+    }
+
+    #[test]
+    fn test_delete_add_section_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        let shape = sc_section::shape::SectionShape::SteelH {
+            height: 300.0,
+            width: 300.0,
+            web_thick: 10.0,
+            flange_thick: 15.0,
+        };
+        let sec = shape.to_section(SectionId(0), "H-300".into());
+        model.sections.push(sec);
+
+        let cmd = DeleteSection { id: SectionId(0) };
+        stack.run(&mut model, Box::new(cmd));
+        assert_eq!(model.sections.len(), 0);
+
+        stack.undo(&mut model);
+        assert_eq!(model.sections.len(), 1);
+        assert_eq!(model.sections[0].id, SectionId(0));
+
+        stack.redo(&mut model);
+        assert_eq!(model.sections.len(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_section_no_section_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        model.nodes.push(Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(1),
+            coord: [1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.elements.push(ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(0), NodeId(1)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        });
+
+        let cmd = DuplicateSectionForMember { member: ElemId(0) };
+        stack.run(&mut model, Box::new(cmd));
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
     }
 }

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 sc-core = { path = "../sc-core" }
+sc-section = { path = "../sc-section" }
 serde = { workspace = true }
 schemars = { workspace = true }
 smallvec = { workspace = true }

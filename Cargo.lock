@@ -4838,6 +4838,7 @@ dependencies = [
  "sc-edit",
  "sc-element",
  "sc-load",
+ "sc-section",
  "sc-solver",
  "smallvec",
 ]
@@ -4869,6 +4870,7 @@ name = "sc-edit"
 version = "0.0.1"
 dependencies = [
  "sc-core",
+ "sc-section",
  "schemars 0.8.22",
  "serde",
  "smallvec",
