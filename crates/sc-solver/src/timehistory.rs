@@ -932,6 +932,124 @@ mod tests {
         );
     }
 
+    /// §8.1 DoD #2: 2DOFせん断モデルの1次モード純励振がモード重ね合わせと一致。
+    /// 1次モード形 [1, φ] で初期化した自由振動は、1次モードのみ励起されるため
+    /// 全時刻で u2/u1 = φ（モード形状比）が維持される。
+    /// これにより直接積分とモード重ね合わせが定量的に一致することを検証。
+    #[test]
+    fn test_2dof_mode_superposition_consistency() {
+        let k = 1000.0_f64;
+        let m = 1.0_f64;
+        let young = k * 1000.0;
+        let node = |id: u32, x: f64, restraint: Dof6Mask, mass: Option<[f64; 6]>| Node {
+            id: NodeId(id),
+            coord: [x, 0.0, 0.0],
+            restraint,
+            mass,
+            story: None,
+        };
+        let beam = |id: u32, a: u32, b: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        };
+        let model = Model {
+            nodes: vec![
+                node(0, 0.0, Dof6Mask::FIXED, None),
+                node(1, 1000.0, FREE_UX, Some([m, 0.0, 0.0, 0.0, 0.0, 0.0])),
+                node(2, 2000.0, FREE_UX, Some([m, 0.0, 0.0, 0.0, 0.0, 0.0])),
+            ],
+            elements: vec![beam(1, 0, 1), beam(2, 1, 2)],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "spring".into(),
+                area: 1.0,
+                iy: 1.0,
+                iz: 1.0,
+                j: 1.0,
+                depth: 1.0,
+                width: 1.0,
+                as_y: 1e12,
+                as_z: 1e12,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "mat".into(),
+                young,
+                poisson: 0.0,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: None,
+            }],
+            ..Default::default()
+        };
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        // 1次モード: λ1 = (k/m)(3-√5)/2, φ2/φ1 = k/(k-λ1) ≈ 1.618
+        let lam1 = (k / m) * (3.0 - 5.0_f64.sqrt()) / 2.0;
+        let omega1 = lam1.sqrt();
+        let phi_ratio = k / (k - lam1);
+
+        // 1次モードの剛性比例減衰
+        let damping = Damping::StiffnessProportional {
+            h: 0.02,
+            omega: omega1,
+            basis: StiffnessKind::Initial,
+        };
+
+        let dt = 0.0002;
+        let n_steps = 500; // 0.1s
+        let wave = zero_wave(dt, n_steps);
+        let newmark = NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt,
+        };
+
+        let (result, final_state) = linear_time_history_with_state(
+            &model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[1.0, phi_ratio],
+            &[0.0, 0.0],
+            false,
+        )
+        .expect("mode superposition test");
+
+        // ピーク比がモード形状比に一致（モード重ね合わせの一致性）
+        let peak_ratio = result.peak_disp[2][0] / result.peak_disp[1][0];
+        assert!(
+            (peak_ratio - phi_ratio).abs() / phi_ratio < 0.01,
+            "peak ratio {} should match 1st mode shape ratio {} within 1%",
+            peak_ratio,
+            phi_ratio
+        );
+
+        // 最終状態でもモード形状比が維持されている（1次モードのみ励起）
+        let final_ratio = final_state.disp_red[1].abs() / final_state.disp_red[0].abs();
+        assert!(
+            (final_ratio - phi_ratio).abs() / phi_ratio < 0.02,
+            "final disp ratio {} should match mode shape ratio {} within 2%",
+            final_ratio,
+            phi_ratio
+        );
+    }
+
     /// §2 DoD: 平均加速度法が無条件安定（大 Δt で発散しない）。
     #[test]
     fn test_average_accel_unconditional_stability() {
