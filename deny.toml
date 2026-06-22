@@ -20,6 +20,10 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
+    "BSL-1.0",        # clipboard-win, error-code（Boost License）
+    "MPL-2.0",        # option-ext（Mozilla Public License）
+    "OFL-1.1",        # epaint_default_fonts（SIL Open Font License）
+    "Ubuntu-font-1.0", # epaint_default_fonts（Ubuntu Font License）
 ]
 confidence-threshold = 0.8
 
