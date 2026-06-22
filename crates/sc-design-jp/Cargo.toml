@@ -2,6 +2,7 @@
 name = "sc-design-jp"
 version = "0.0.1"
 edition = "2021"
+license = "MIT"
 
 [features]
 # P7（二次設計）は完成済みフェーズで重い依存も無いため default に含める。
