@@ -8,11 +8,15 @@
 use crate::assemble::{assemble_global_k, assemble_global_m};
 use crate::constraint::Reducer;
 use crate::damping::Damping;
+use crate::pushover::{assemble_k, compute_f_int};
+use crate::transaction::{StateSnapshot, StatefulModel};
 use sc_core::dof::{DofMap, DOF_PER_NODE};
 use sc_core::model::Model;
-use sc_element::behavior::MassOption;
+use sc_element::behavior::{Ctx, LocalVec, MassOption};
+use sc_element::factory::build_nonlinear_behavior;
 use sc_math::solver::{make_solver, SolveError, SolverBackend};
-use sc_math::sparse::sparse_matvec;
+use sc_math::sparse::{sparse_matvec, weighted_sum_csc};
+use smallvec::SmallVec;
 
 /// Newmark-β 法のパラメータ（§2）。
 pub struct NewmarkCfg {
@@ -803,6 +807,312 @@ fn node_disp_x(u_free: &[f64], dofmap: &DofMap, node_id: sc_core::ids::NodeId) -
     } else {
         0.0
     }
+}
+
+/// 非線形時刻歴応答解析（Newmark-β + Newton反復 + commit/rollback）。
+///
+/// 各時刻ステップで Newton 反復により内力（非線形復元力）と慣性力・減衰力・
+/// 地震外力の動的釣合いを満たす解を求める。収束時は要素状態を commit、
+/// 不収束時は Step 開始時の状態へ rollback する。
+#[allow(clippy::too_many_arguments)]
+pub fn nonlinear_time_history_analysis(
+    model: &mut Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    wave: &GroundMotion,
+    newmark: &NewmarkCfg,
+    damping: &Damping,
+    initial_disp: &[f64],
+    initial_vel: &[f64],
+    use_kg: bool,
+    max_iter: usize,
+    tol: f64,
+) -> Result<ResponseResult, SolveError> {
+    faer::set_global_parallelism(faer::Par::Seq);
+
+    let dt = if newmark.dt > 0.0 {
+        newmark.dt
+    } else {
+        wave.dt
+    };
+    if dt <= 0.0 {
+        return Err(SolveError::Backend(
+            "time history: dt must be positive".into(),
+        ));
+    }
+
+    let n_indep = reducer.n_indep;
+    if n_indep == 0 {
+        return Ok(ResponseResult {
+            time: vec![],
+            peak_disp: vec![[0.0; 6]; model.nodes.len()],
+            story_drift_angle: vec![0.0; model.stories.len()],
+            cumulative_ductility: vec![0.0; model.elements.len()],
+        });
+    }
+
+    let mut behaviors = build_behaviors(model);
+
+    // 行列組立（縮約空間）
+    let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
+    let k_free = assemble_global_k(model, dofmap);
+    let _ = use_kg;
+    let m_red = reducer.reduce_k(&m_free);
+    let k_red = reducer.reduce_k(&k_free);
+    let c_red = damping.assemble_c(&m_red, &k_red);
+
+    // 影響ベクトルと M·r
+    let n_free = dofmap.n_active();
+    let mut r_x_free = vec![0.0; n_free];
+    let mut r_y_free = vec![0.0; n_free];
+    for ni in 0..model.nodes.len() {
+        let g_ux = ni * DOF_PER_NODE + 0;
+        let g_uy = ni * DOF_PER_NODE + 1;
+        if let Some(a) = dofmap.active(g_ux) {
+            r_x_free[a as usize] = 1.0;
+        }
+        if let Some(a) = dofmap.active(g_uy) {
+            r_y_free[a as usize] = 1.0;
+        }
+    }
+    let m_r_x = sparse_matvec(&m_free, &r_x_free);
+    let m_r_y = sparse_matvec(&m_free, &r_y_free);
+
+    // Newmark-β 係数
+    let beta = newmark.beta;
+    let gamma = newmark.gamma;
+    let c1 = 1.0 / (beta * dt * dt);
+    let c2 = gamma / (beta * dt);
+    let c3 = 1.0 / (beta * dt);
+    let c4 = 1.0 / (2.0 * beta) - 1.0;
+    let c5 = gamma / beta - 1.0;
+    let c6 = dt * (gamma / (2.0 * beta) - 1.0);
+
+    // 初期条件
+    let mut u = vec![0.0; n_indep];
+    let mut v = vec![0.0; n_indep];
+    let n_init_d = n_indep.min(initial_disp.len());
+    u[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
+    let n_init_v = n_indep.min(initial_vel.len());
+    v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
+
+    // 初期変位を要素状態に反映
+    {
+        let u_free_init = reducer.expand_u(&u);
+        let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
+        for (_elem, b) in model.elements.iter().zip(behaviors.iter_mut()) {
+            let gdofs = b.global_dofs(dofmap);
+            let mut du_elem = LocalVec {
+                data: SmallVec::from_elem(0.0, 12),
+            };
+            for (i, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < u_free_init.len() {
+                    du_elem.data[i] = u_free_init[g];
+                }
+            }
+            let dummy_ctx = Ctx {
+                model: unsafe { &*model_ptr },
+            };
+            b.update_state(&du_elem, false, &dummy_ctx);
+        }
+        for b in behaviors.iter_mut() {
+            b.commit_state();
+        }
+    }
+
+    // 初期加速度: M·a_0 = -C·v_0 - f_int(u_0) - p_red(0)
+    let xg0_x = wave.accel_x.first().copied().unwrap_or(0.0);
+    let xg0_y = wave
+        .accel_y
+        .as_ref()
+        .and_then(|a| a.first())
+        .copied()
+        .unwrap_or(0.0);
+    let p_free_0: Vec<f64> = m_r_x
+        .iter()
+        .zip(m_r_y.iter())
+        .map(|(mx, my)| -(mx * xg0_x + my * xg0_y))
+        .collect();
+    let p_red_0 = reducer.reduce_f(&p_free_0);
+
+    let f_int0_free = compute_f_int(model, dofmap, &behaviors);
+    let f_int0_red = reducer.reduce_f(&f_int0_free);
+    let cv0 = sparse_matvec(&c_red, &v);
+    let mut rhs_a0 = vec![0.0; n_indep];
+    for i in 0..n_indep {
+        rhs_a0[i] = -cv0[i] - f_int0_red[i] - p_red_0[i];
+    }
+    let mut mass_solver = make_solver(SolverBackend::DirectSparseCholesky);
+    mass_solver.factorize(&m_red)?;
+    let mut a = mass_solver.solve(&rhs_a0)?;
+
+    // --- 時刻歴ループ ---
+    let n_steps = wave.accel_x.len();
+    let mut peak_disp_free = vec![0.0f64; n_free];
+    {
+        let u_free_init = reducer.expand_u(&u);
+        for i in 0..n_free {
+            peak_disp_free[i] = peak_disp_free[i].max(u_free_init[i].abs());
+        }
+    }
+    let mut story_drift_angle = vec![0.0f64; model.stories.len()];
+    {
+        let u_free_init = reducer.expand_u(&u);
+        update_story_drift(model, dofmap, &u_free_init, &mut story_drift_angle);
+    }
+    let mut time = Vec::with_capacity(n_steps + 1);
+    time.push(0.0);
+
+    for n in 0..n_steps {
+        let t_next = (n + 1) as f64 * dt;
+
+        // スナップショット
+        let snap = StateSnapshot::capture(&behaviors);
+
+        // 地震荷重
+        let xg_x = wave.accel_x[n];
+        let xg_y = wave
+            .accel_y
+            .as_ref()
+            .map(|a| a.get(n).copied().unwrap_or(0.0))
+            .unwrap_or(0.0);
+        let p_free: Vec<f64> = m_r_x
+            .iter()
+            .zip(m_r_y.iter())
+            .map(|(mx, my)| -(mx * xg_x + my * xg_y))
+            .collect();
+        let p_red = reducer.reduce_f(&p_free);
+
+        // 予測子: Δu = 0 での a, v
+        let mut a_trial = vec![0.0; n_indep];
+        let mut v_trial = vec![0.0; n_indep];
+        for i in 0..n_indep {
+            a_trial[i] = -c3 * v[i] - c4 * a[i];
+            v_trial[i] = -c5 * v[i] - c6 * a[i];
+        }
+
+        let mut du_total = vec![0.0; n_indep];
+        let mut converged = false;
+
+        let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
+
+        for _iter in 0..max_iter {
+            // 接線剛性
+            let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
+            let k_t_red = reducer.reduce_k(&k_t_free);
+
+            // 有効剛性
+            let k_eff = weighted_sum_csc(n_indep, &[(1.0, &k_t_red), (c2, &c_red), (c1, &m_red)]);
+
+            let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
+            solver
+                .factorize(&k_eff)
+                .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
+
+            // 内力
+            let f_int_free = compute_f_int(model, dofmap, &behaviors);
+            let f_int_red = reducer.reduce_f(&f_int_free);
+
+            // C·v と M·a（縮約空間）
+            let c_v_red = sparse_matvec(&c_red, &v_trial);
+            let m_a_red = sparse_matvec(&m_red, &a_trial);
+
+            // 残差
+            let mut r_red = vec![0.0; n_indep];
+            for i in 0..n_indep {
+                r_red[i] = p_red[i] - f_int_red[i] - c_v_red[i] - m_a_red[i];
+            }
+
+            // 収束判定
+            let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let p_norm: f64 = p_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if r_norm < tol * p_norm.max(1.0) {
+                converged = true;
+                break;
+            }
+
+            // δu を解く
+            let du_red = solver.solve(&r_red)?;
+            let du_free = reducer.expand_u(&du_red);
+
+            // a, v を更新
+            for i in 0..n_indep {
+                a_trial[i] += c1 * du_red[i];
+                v_trial[i] += c2 * du_red[i];
+                du_total[i] += du_red[i];
+            }
+
+            // 要素状態を trial 更新
+            for (_elem, b) in model.elements.iter().zip(behaviors.iter_mut()) {
+                let gdofs = b.global_dofs(dofmap);
+                let mut du_elem = LocalVec {
+                    data: SmallVec::from_elem(0.0, 12),
+                };
+                for (i, &g) in gdofs.iter().enumerate() {
+                    if g != usize::MAX && g < du_free.len() {
+                        du_elem.data[i] = du_free[g];
+                    }
+                }
+                let dummy_ctx = Ctx {
+                    model: unsafe { &*model_ptr },
+                };
+                b.update_state(&du_elem, false, &dummy_ctx);
+            }
+        }
+
+        if converged {
+            for i in 0..n_indep {
+                u[i] += du_total[i];
+            }
+            v.copy_from_slice(&v_trial);
+            a.copy_from_slice(&a_trial);
+
+            for b in behaviors.iter_mut() {
+                b.commit_state();
+            }
+
+            time.push(t_next);
+
+            let u_free = reducer.expand_u(&u);
+            for i in 0..n_free {
+                peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
+            }
+            update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+        } else {
+            // 不収束: rollback
+            model.restore(&snap, &mut behaviors);
+            return Err(SolveError::Backend(format!(
+                "nonlinear time history: step {} did not converge",
+                n
+            )));
+        }
+    }
+
+    let mut peak_disp = vec![[0.0f64; 6]; model.nodes.len()];
+    for ni in 0..model.nodes.len() {
+        for d in 0..DOF_PER_NODE {
+            let g = ni * DOF_PER_NODE + d;
+            if let Some(a) = dofmap.active(g) {
+                peak_disp[ni][d] = peak_disp_free[a as usize];
+            }
+        }
+    }
+
+    Ok(ResponseResult {
+        time,
+        peak_disp,
+        story_drift_angle,
+        cumulative_ductility: vec![0.0; model.elements.len()],
+    })
+}
+
+fn build_behaviors(model: &Model) -> Vec<Box<dyn sc_element::behavior::ElementBehavior>> {
+    let mut behaviors = Vec::new();
+    for elem in &model.elements {
+        let (b, _) = build_nonlinear_behavior(elem, model);
+        behaviors.push(b);
+    }
+    behaviors
 }
 
 /// Rayleigh 減衰の係数 (α_m, β_k) を、2つの振動数と目標減衰比から計算する。
@@ -1703,5 +2013,292 @@ mod tests {
         // 両者とも正常に振動していることを確認（数値的に破綻していない）。
         assert_eq!(result_nm.time.len(), n_steps + 1);
         assert_eq!(result_hht.time.len(), n_steps + 1);
+    }
+
+    // ===== 非線形時刻歴応答解析テスト =====
+
+    use sc_core::ids::StoryId;
+    use sc_core::model::{DiaphragmDef, Story};
+
+    fn fiber_column_model(fy: f64) -> Model {
+        Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Dof6Mask(0b111110),
+                    mass: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                    story: Some(StoryId(0)),
+                },
+            ],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            }],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "col".to_string(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j: 1.0e6,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "steel".to_string(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: Some(fy),
+            }],
+            stories: vec![Story {
+                id: StoryId(0),
+                name: "1F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                diaphragms: vec![DiaphragmDef {
+                    master: NodeId(1),
+                    slaves: vec![],
+                    rigid: true,
+                }],
+                seismic_weight: Some(10000.0),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 弾性 SDOF（降伏しないファイバ柱）の非線形時刻歴が線形解と一致。
+    #[test]
+    fn test_nonlinear_time_history_sdof_elastic() {
+        // fy を非常に高く設定し、塑性化しないようにする
+        let mut model = fiber_column_model(1e10);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        // 線形解との比較用: SDOF 線形剛性を計算
+        let m_free = assemble_global_m(&model, &dofmap, MassOption::Consistent);
+        let k_free = assemble_global_k(&model, &dofmap);
+        let m_red_lin = reducer.reduce_k(&m_free);
+        let k_red_lin = reducer.reduce_k(&k_free);
+
+        // 初期剛性から SDOF 固有円振動数を推定
+        let k_val = *k_red_lin.get(0, 0).unwrap_or(&0.0);
+        let m_val = *m_red_lin.get(0, 0).unwrap_or(&0.0);
+        let omega = (k_val / m_val).sqrt();
+
+        let damping = Damping::StiffnessProportional {
+            h: 0.02,
+            omega,
+            basis: StiffnessKind::Initial,
+        };
+
+        let dt = 0.001;
+        let n_steps = 100; // 0.1s
+        let wave = zero_wave(dt, n_steps);
+        let newmark = NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt,
+        };
+
+        // 非線形解析
+        let result_nl = nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[1.0],
+            &[0.0],
+            false,
+            20,
+            1e-6,
+        )
+        .expect("nonlinear elastic should converge");
+
+        // 線形解析
+        // 線形用の新しいモデルが必要（nonlinear が model を borrow しているため）。
+        // 線形を実行するには別の model を作る必要があるが、
+        // 同じ拘束条件（rz 固定）なのでピーク変位が一致するはず。
+        let model_lin = fiber_column_model(1e10);
+        let result_lin = linear_time_history_analysis(
+            &model_lin,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[1.0],
+            &[0.0],
+            false,
+        )
+        .expect("linear should run");
+
+        // ピーク変位が近い値を取ることを確認
+        let peak_nl = result_nl.peak_disp[1][0];
+        let peak_lin = result_lin.peak_disp[1][0];
+        assert!(
+            (peak_nl - peak_lin).abs() / peak_lin.max(1e-6) < 0.05,
+            "nonlinear peak={} linear peak={} differ too much",
+            peak_nl,
+            peak_lin
+        );
+    }
+
+    /// 塑性化する SDOF の非線形時刻歴が正常に実行される。
+    #[test]
+    fn test_nonlinear_time_history_sdof_plastic() {
+        // fy を低く設定して塑性化させる
+        let mut model = fiber_column_model(100.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let m_free = assemble_global_m(&model, &dofmap, MassOption::Consistent);
+        let k_free = assemble_global_k(&model, &dofmap);
+        let m_red_lin = reducer.reduce_k(&m_free);
+        let k_red_lin = reducer.reduce_k(&k_free);
+
+        let k_val = *k_red_lin.get(0, 0).unwrap_or(&0.0);
+        let m_val = *m_red_lin.get(0, 0).unwrap_or(&0.0);
+        let omega = (k_val / m_val).sqrt();
+
+        let damping = Damping::StiffnessProportional {
+            h: 0.05,
+            omega,
+            basis: StiffnessKind::Initial,
+        };
+
+        let dt = 0.001;
+        let n_steps = 200; // 0.2s
+        let wave = zero_wave(dt, n_steps);
+        let newmark = NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt,
+        };
+
+        // 大きな初期変位（塑性化させる）
+        let result = nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[50.0],
+            &[0.0],
+            false,
+            20,
+            1e-6,
+        )
+        .expect("nonlinear plastic should converge");
+
+        // ピーク変位が有限値
+        assert!(result.peak_disp[1][0].is_finite());
+        // ピーク変位が初期変位を大きく下回らない（塑性化しても変位は急減しないはず）
+        // ただし減衰によりピーク値はほぼ初期値（再び初期値を超えることはない）
+        assert!(
+            result.peak_disp[1][0] >= 1.0,
+            "peak should be reasonable, got {}",
+            result.peak_disp[1][0]
+        );
+    }
+
+    /// 不収束時の restore が動作すること（収束失敗時にステップ開始状態に戻る）。
+    #[test]
+    fn test_nonlinear_time_history_convergence() {
+        let mut model = fiber_column_model(100.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let m_free = assemble_global_m(&model, &dofmap, MassOption::Consistent);
+        let k_free = assemble_global_k(&model, &dofmap);
+        let m_red_lin = reducer.reduce_k(&m_free);
+        let k_red_lin = reducer.reduce_k(&k_free);
+
+        let k_val = *k_red_lin.get(0, 0).unwrap_or(&0.0);
+        let m_val = *m_red_lin.get(0, 0).unwrap_or(&0.0);
+        let omega = (k_val / m_val).sqrt();
+
+        let damping = Damping::StiffnessProportional {
+            h: 0.05,
+            omega,
+            basis: StiffnessKind::Initial,
+        };
+
+        let dt = 0.001;
+        let n_steps = 200;
+        let wave = zero_wave(dt, n_steps);
+        let newmark = NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt,
+        };
+
+        // 十分な反復回数で正常収束
+        let result = nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[50.0],
+            &[0.0],
+            false,
+            20,
+            1e-6,
+        )
+        .expect("should converge with enough iterations");
+
+        assert!(!result.time.is_empty());
+        assert!(result.peak_disp[1][0] > 0.0);
+
+        // 反復回数 1 で同じ問題を解く（収束しないはず → rollback される）
+        let mut model2 = fiber_column_model(100.0);
+        let result2 = nonlinear_time_history_analysis(
+            &mut model2,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[50.0],
+            &[0.0],
+            false,
+            1,
+            1e-6,
+        );
+
+        // 収束せずエラーになること（restore が動作していることの間接的証拠）
+        assert!(
+            result2.is_err(),
+            "should fail to converge with only 1 iteration"
+        );
     }
 }
