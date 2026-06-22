@@ -1,6 +1,7 @@
 pub mod allowable_stress;
 
-#[cfg(feature = "p7")]
+// 容量スペクトル法（限界耐力計算）は P12 のスコープ。P7 とは別フェーズなので p12 で分離。
+#[cfg(feature = "p12")]
 pub mod capacity_spectrum;
 #[cfg(feature = "p7")]
 pub mod holding_capacity;

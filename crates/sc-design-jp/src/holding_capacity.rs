@@ -297,9 +297,20 @@ mod tests {
     }
 
     // ---- T6 ----
+    fn empty_pushover() -> PushoverResult {
+        use sc_solver::pushover::MechanismType;
+        PushoverResult {
+            steps: vec![],
+            capacity_curve: vec![],
+            hinges: vec![],
+            mechanism: MechanismType::Overall,
+            qu: 0.0,
+        }
+    }
+
     #[test]
     fn test_check_holding_capacity_basic() {
-        let pushover = PushoverResult { steps: vec![] };
+        let pushover = empty_pushover();
         let qu = vec![100.0, 200.0];
         let qud = vec![80.0, 180.0];
         let ds = vec![0.30, 0.35];
@@ -315,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_check_holding_capacity_ng() {
-        let pushover = PushoverResult { steps: vec![] };
+        let pushover = empty_pushover();
         let qu = vec![20.0, 50.0];
         let qud = vec![80.0, 180.0];
         let ds = vec![0.30, 0.35];
