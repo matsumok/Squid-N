@@ -32,9 +32,9 @@ impl Default for RankCriteria {
             rc_ratio_fa: 1.3, // 要・原典照合
             rc_ratio_fb: 1.1, // 要・原典照合
             rc_ratio_fc: 1.0, // 要・原典照合
-            s_wt_fa: 9.0,    // 要・原典照合
-            s_wt_fb: 11.0,   // 要・原典照合
-            s_wt_fc: 13.0,   // 要・原典照合
+            s_wt_fa: 9.0,     // 要・原典照合
+            s_wt_fb: 11.0,    // 要・原典照合
+            s_wt_fc: 13.0,    // 要・原典照合
         }
     }
 }
@@ -107,17 +107,11 @@ pub fn s_member_rank(max_width_thickness: f64, c: &RankCriteria) -> MemberRank {
 /// 3. 補正後のランクと `frame` を [`ds_value`] に渡して返す。
 pub fn story_ds(ranks: &[MemberRank], frame: FrameType, mechanism: &MechanismType) -> f64 {
     // 代表ランク: ranks が空なら FA とみなす
-    let worst_index = ranks
-        .iter()
-        .map(|r| rank_index(*r))
-        .max()
-        .unwrap_or(0);
+    let worst_index = ranks.iter().map(|r| rank_index(*r)).max().unwrap_or(0);
 
     // 崩壊機構補正: StoryCollapse または Partial → 1段階不利
     let corrected_index = match mechanism {
-        MechanismType::StoryCollapse { .. } | MechanismType::Partial => {
-            (worst_index + 1).min(3)
-        }
+        MechanismType::StoryCollapse { .. } | MechanismType::Partial => (worst_index + 1).min(3),
         MechanismType::Overall => worst_index,
     };
 
@@ -210,11 +204,7 @@ mod tests {
     fn test_story_ds_rc_frame_overall() {
         let ranks = vec![MemberRank::FA, MemberRank::FC, MemberRank::FB];
         let ds = story_ds(&ranks, FrameType::RcFrame, &MechanismType::Overall);
-        assert!(
-            (ds - 0.40).abs() < 1e-9,
-            "expected 0.40, got {}",
-            ds
-        );
+        assert!((ds - 0.40).abs() < 1e-9, "expected 0.40, got {}", ds);
     }
 
     /// 同上で StoryCollapse → 代表 FC → FD → ds_value(RcFrame,FD) = 0.45
@@ -224,15 +214,9 @@ mod tests {
         let ds = story_ds(
             &ranks,
             FrameType::RcFrame,
-            &MechanismType::StoryCollapse {
-                story: StoryId(0),
-            },
+            &MechanismType::StoryCollapse { story: StoryId(0) },
         );
-        assert!(
-            (ds - 0.45).abs() < 1e-9,
-            "expected 0.45, got {}",
-            ds
-        );
+        assert!((ds - 0.45).abs() < 1e-9, "expected 0.45, got {}", ds);
     }
 
     /// ranks=[FA], SteelFrame, Overall → 代表 FA → ds_value(SteelFrame,FA) = 0.25
@@ -240,11 +224,7 @@ mod tests {
     fn test_story_ds_steel_frame_fa_overall() {
         let ranks = vec![MemberRank::FA];
         let ds = story_ds(&ranks, FrameType::SteelFrame, &MechanismType::Overall);
-        assert!(
-            (ds - 0.25).abs() < 1e-9,
-            "expected 0.25, got {}",
-            ds
-        );
+        assert!((ds - 0.25).abs() < 1e-9, "expected 0.25, got {}", ds);
     }
 
     /// 空 ranks → FA 扱い → ds_value(RcFrame, FA) = 0.30
@@ -263,11 +243,7 @@ mod tests {
     fn test_story_ds_partial_downgrades_one_step() {
         let ranks = vec![MemberRank::FA, MemberRank::FC, MemberRank::FB];
         let ds = story_ds(&ranks, FrameType::RcFrame, &MechanismType::Partial);
-        assert!(
-            (ds - 0.45).abs() < 1e-9,
-            "expected 0.45, got {}",
-            ds
-        );
+        assert!((ds - 0.45).abs() < 1e-9, "expected 0.45, got {}", ds);
     }
 
     /// FD は据え置き（StoryCollapse でも FD → FD）
@@ -278,9 +254,7 @@ mod tests {
         let ds_collapse = story_ds(
             &ranks,
             FrameType::RcFrame,
-            &MechanismType::StoryCollapse {
-                story: StoryId(0),
-            },
+            &MechanismType::StoryCollapse { story: StoryId(0) },
         );
         // FD は最悪なので補正後も FD のまま
         assert!(

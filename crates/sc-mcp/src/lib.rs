@@ -188,11 +188,7 @@ pub fn get_model_json(state: &ServerState) -> String {
 /// `kind` で `node`/`member`(=element)/`section` を選び、各要素を JSON 化して返す。
 /// `filter` が与えられたときは、各 JSON を文字列化した中に部分一致するものだけを残す
 /// （簡易フィルタ。名前・ID 等での絞り込み用）。MCP ツール `model_query` はこれを呼ぶ。
-pub fn query_model(
-    model: &Model,
-    kind: &str,
-    filter: Option<&str>,
-) -> Vec<serde_json::Value> {
+pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde_json::Value> {
     use serde_json::json;
     let items: Vec<serde_json::Value> = match kind {
         "node" | "nodes" => model
@@ -243,6 +239,19 @@ pub fn query_model(
     }
 }
 
+pub fn analyze(state: &mut ServerState) -> Result<String, String> {
+    let analysis = sc_solver::analysis::Analysis::prepare(&state.model)
+        .map_err(|e| format!("prepare failed: {e}"))?;
+    if let Some(lc) = state.model.load_cases.first() {
+        let result = analysis
+            .linear_static(lc.id)
+            .map_err(|e| format!("solve failed: {e}"))?;
+        Ok(serde_json::to_string(&result.disp).unwrap_or_default())
+    } else {
+        Err("no load cases".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,54 +259,55 @@ mod tests {
     use sc_core::model::{ElementData, ElementKind, LocalAxis, Node, Section};
 
     fn sample_model() -> Model {
-        let mut m = Model::default();
-        m.nodes = vec![
-            Node {
-                id: NodeId(0),
-                coord: [0.0, 0.0, 0.0],
-                restraint: sc_core::dof::Dof6Mask::FIXED,
-                mass: None,
-                story: None,
-            },
-            Node {
-                id: NodeId(1),
-                coord: [0.0, 0.0, 3000.0],
-                restraint: sc_core::dof::Dof6Mask::FREE,
-                mass: None,
-                story: Some(sc_core::ids::StoryId(0)),
-            },
-        ];
-        m.sections = vec![Section {
-            id: SectionId(0),
-            name: "H-400".to_string(),
-            area: 100.0,
-            iy: 1000.0,
-            iz: 2000.0,
-            j: 50.0,
-            depth: 400.0,
-            width: 200.0,
-            as_y: 0.0,
-            as_z: 0.0,
-            panel_thickness: None,
-            thickness: None,
-        }];
-        m.elements = vec![ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Beam,
-            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
-            section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
-            },
-            end_cond: [
-                sc_core::model::EndCondition::Fixed,
-                sc_core::model::EndCondition::Fixed,
+        Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: sc_core::dof::Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: sc_core::dof::Dof6Mask::FREE,
+                    mass: None,
+                    story: Some(sc_core::ids::StoryId(0)),
+                },
             ],
-            force_regime: sc_core::model::ForceRegime::Auto,
-            rigid_zone: Default::default(),
-        }];
-        m
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "H-400".to_string(),
+                area: 100.0,
+                iy: 1000.0,
+                iz: 2000.0,
+                j: 50.0,
+                depth: 400.0,
+                width: 200.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 1.0, 0.0],
+                },
+                end_cond: [
+                    sc_core::model::EndCondition::Fixed,
+                    sc_core::model::EndCondition::Fixed,
+                ],
+                force_regime: sc_core::model::ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            }],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -356,18 +366,5 @@ mod tests {
         let id2 = reg.register(JobKind::Eigen);
         assert_ne!(id, id2);
         assert!(reg.get("nonexistent").is_none());
-    }
-}
-
-pub fn analyze(state: &mut ServerState) -> Result<String, String> {
-    let analysis = sc_solver::analysis::Analysis::prepare(&state.model)
-        .map_err(|e| format!("prepare failed: {e}"))?;
-    if let Some(lc) = state.model.load_cases.first() {
-        let result = analysis
-            .linear_static(lc.id)
-            .map_err(|e| format!("solve failed: {e}"))?;
-        Ok(serde_json::to_string(&result.disp).unwrap_or_default())
-    } else {
-        Err("no load cases".into())
     }
 }

@@ -50,7 +50,11 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
         let story = n.story.map(|s| s.0 as i64).unwrap_or(-1);
         s.push_str(&format!(
             "      <StbNode id=\"{}\" x=\"{}\" y=\"{}\" z=\"{}\" story=\"{}\"/>\n",
-            n.id.0, fmt(n.coord[0]), fmt(n.coord[1]), fmt(n.coord[2]), story
+            n.id.0,
+            fmt(n.coord[0]),
+            fmt(n.coord[1]),
+            fmt(n.coord[2]),
+            story
         ));
     }
     s.push_str("    </StbNodes>\n");
@@ -219,11 +223,7 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         };
                         model.nodes.push(Node {
                             id: NodeId(get_u32(&a, "id")?),
-                            coord: [
-                                get_f64(&a, "x")?,
-                                get_f64(&a, "y")?,
-                                get_f64(&a, "z")?,
-                            ],
+                            coord: [get_f64(&a, "x")?, get_f64(&a, "y")?, get_f64(&a, "z")?],
                             restraint: sc_core::dof::Dof6Mask::FREE,
                             mass: None,
                             story,
@@ -270,9 +270,7 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                     "StbColumn" => {
                         let bot = NodeId(get_u32(&a, "id_node_bottom")?);
                         let top = NodeId(get_u32(&a, "id_node_top")?);
-                        model
-                            .elements
-                            .push(make_member(&a, bot, top)?);
+                        model.elements.push(make_member(&a, bot, top)?);
                     }
                     "StbGirder" | "StbBeam" => {
                         let st = NodeId(get_u32(&a, "id_node_start")?);
@@ -301,9 +299,7 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         if let Some(lc) = load_cases.last_mut() {
                             lc.nodal.push(nl);
                         } else {
-                            return Err(StbError::Parse(
-                                "StbNodalLoad outside StbLoadCase".into(),
-                            ));
+                            return Err(StbError::Parse("StbNodalLoad outside StbLoadCase".into()));
                         }
                     }
                     _ => {}
@@ -542,7 +538,10 @@ mod tests {
             assert_eq!(x.nodes.as_slice(), y.nodes.as_slice(), "connectivity");
             assert_eq!(x.section, y.section);
             assert_eq!(x.material, y.material);
-            assert_eq!(x.local_axis.ref_vector, y.local_axis.ref_vector, "ref_vector");
+            assert_eq!(
+                x.local_axis.ref_vector, y.local_axis.ref_vector,
+                "ref_vector"
+            );
         }
         assert_eq!(a.load_cases.len(), b.load_cases.len());
         for (x, y) in a.load_cases.iter().zip(&b.load_cases) {

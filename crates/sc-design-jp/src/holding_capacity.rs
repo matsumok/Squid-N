@@ -359,8 +359,7 @@ mod tests {
         let rs = vec![1.0, 0.75];
         let re = vec![0.05, 0.10];
         let heights = vec![3000.0, 3000.0];
-        let result =
-            check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
+        let result = check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
         assert_eq!(result.stories.len(), 2);
         assert!(result.stories[0].ok); // Qu=100 ≥ Qun=24
         assert!(result.stories[1].ok); // Qu=200 ≥ Qun=63
@@ -383,8 +382,7 @@ mod tests {
         let rs = vec![1.0, 1.0];
         let re = vec![0.0, 0.0];
         let heights = vec![3000.0, 3000.0];
-        let result =
-            check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
+        let result = check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
         assert!(!result.stories[0].ok); // Qu=20 < Qun=24
         assert!(!result.stories[1].ok); // Qu=50 < Qun=63
     }
@@ -400,8 +398,7 @@ mod tests {
         let rs = vec![1.0];
         let re = vec![0.0];
         let heights = vec![3000.0];
-        let result =
-            check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
+        let result = check_holding_capacity(&pushover, &qud, &ds, &fes, &rs, &re, &heights, vec![]);
         assert!((result.stories[0].qun - 50.0).abs() < 1e-9);
         assert!(result.stories[0].ok, "Qu=Qun は ok（≥）であるべき");
     }

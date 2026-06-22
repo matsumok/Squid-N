@@ -1,0 +1,57 @@
+[
+  {
+    "label": "アプリ実行",
+    "command": "cargo",
+    "args": ["run", "-p", "sc-app", "--bin", "structcalc", "--features", "gui"],
+    "save": "all",
+    "use_new_terminal": true
+  },
+  {
+    "label": "ビルド",
+    "command": "cargo",
+    "args": ["build", "--workspace"],
+    "save": "all"
+  },
+  {
+    "label": "リリースビルド",
+    "command": "cargo",
+    "args": ["build", "--workspace", "--release"],
+    "save": "all"
+  },
+  {
+    "label": "テスト実行 (全ワークスペース)",
+    "command": "cargo",
+    "args": ["test", "--workspace"],
+    "save": "all"
+  },
+  {
+    "label": "テスト実行 (単一クレート)",
+    "command": "cargo",
+    "args": ["test"],
+    "save": "current"
+  },
+  {
+    "label": "テスト実行 (カーソル位置)",
+    "command": "cargo",
+    "args": ["test", "$ZED_SYMBOL"],
+    "save": "current",
+    "use_new_terminal": false
+  },
+  {
+    "label": "Clippy",
+    "command": "cargo",
+    "args": ["clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"],
+    "save": "all"
+  },
+  {
+    "label": "フォーマット",
+    "command": "cargo",
+    "args": ["fmt", "--all"],
+    "save": "none"
+  },
+  {
+    "label": "依存性チェック (xtask)",
+    "command": "cargo",
+    "args": ["run", "-p", "xtask", "--", "check-deps"]
+  }
+]

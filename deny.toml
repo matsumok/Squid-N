@@ -1,0 +1,38 @@
+[advisories]
+# RustSec advisory DB に対する脆弱性チェック（脆弱性は常に deny）。
+yanked = "warn"
+# 以下は推移的依存の「メンテ終了(unmaintained)」勧告で、脆弱性ではない。
+# 直接の対処手段が無く、上流の更新待ちのため除外する。
+ignore = [
+    "RUSTSEC-2025-0141", # bincode: unmaintained
+    "RUSTSEC-2024-0436", # paste: unmaintained
+]
+
+[licenses]
+# allow に列挙したライセンス以外は拒否される。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",        # clipboard-win, error-code（Boost License）
+    "MPL-2.0",        # option-ext（Mozilla Public License）
+    "OFL-1.1",        # epaint_default_fonts（SIL Open Font License）
+    "Ubuntu-font-1.0", # epaint_default_fonts（Ubuntu Font License）
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
