@@ -1,5 +1,11 @@
 # P3 レビュー報告（仕様 vs 実装の乖離・資料上の報告の正確性・仕様自体の妥当性）
 
+> **【2026-06 訂正】** 本報告の第1次監査時点（旧版）の主張は、許容応力度実装に関して
+> **虚偽**であったことが判明した。詳細は末尾「訂正追記」を参照。旧版の本文は正確性の記録として残置
+> するが、許容応力度周りの指摘（§1.1〜§1.6, §3.1）はいずれも現状コードと一致しない。
+> 旧版で主張した「V&V 索引 #13 の ✅ は虚偽」という判断自体が誤りであり、#13 ✅ は妥当である。
+> 本来の問題は UI 横断タスク（UI-1/2/3/4/6 等）の未達であり、2026-06 の改修で対応済み。
+
 本報告は `specs/P3_最小UIと設計.md` と現状実装（主に `sc-app`・`sc-design-jp`・`sc-edit`・関連 `sc-core/sc-section/sc-solver/sc-element/sc-load`）を照合し、
 「仕様通りか」「実装が間違っていないか」「資料上の報告が間違っていないか」「仕様自体がこのライブラリの目的（日本の建築構造計算一貫プログラム）に適するか」を審査した結果である。
 
@@ -210,3 +216,58 @@ let rebar_grade = "SD345";   // 材料名を見ずに固定
 ## 6. 結論
 
 P3 は「スケルトンはあるが、一次設計の数値が正しく出ない」状態である。とくに許容応力度は仕様 §6 が「厳密・自動テストで確定できる」と明記する部分であり、ここが 1000 倍のズレを抱えたまま `cargo test` が緑で V&V 索引も ✅ になっていることは、本ライブラリが「構造技術者が信頼して使える一貫プログラム」を目指す上で**最も警戒すべき品質リスク**である。実装・テスト・資料報告の三層で整合を取り直す必要がある。
+
+---
+
+## 7. 2026-06 訂正追記
+
+### 7.1 許容応力度実装に関する指摘は誤り（旧版の虚偽報告を取り消す）
+
+旧版（本レポート第1次監査）で挙げた §1.1〜§1.6, §3.1 の6件は、
+いずれも監査当時のコードではなく**古い版を参照した虚偽**であった。現コード（`crates/sc-design-jp/src/allowable_stress.rs` 517行）
+での実況は次のとおり。
+
+| 旧版の主張 | 実況 |
+|---|---|
+| §1.1: `sigma_b = M.abs() * 1000.0 / z_eff`（1000倍ズレ） | `allowable_stress.rs:58` `let sigma_b = forces.m.abs() / z_eff;`（`*1000` は存在しない） |
+| §1.2: テスト期待値 `1.28e-4`（§6.4 の `0.1197` と3桁乖離） | `allowable_stress.rs:339` `let expected_ratio = 18.75 / (235.0 / 1.5);` = 0.1197 の厳密一致（1e-9） |
+| §1.3: `let fc = mat.young;`（Fc をヤング率から取得） | `allowable_stress.rs:156` `let fc = mat.fc.unwrap_or(0.0);`（`Material.fc: Option<f64>` を正参照） |
+| §1.4: `let rebar_grade = "SD345";` ハードコード | `allowable_stress.rs:194` `let rebar_grade = &mat.name;` |
+| §1.5: `(base * 1.5).min(295.0)` (SD345 でも 295 上限) | `allowable_stress.rs:144` `(long * 1.5).min(f)` で `f=rebar_f_value(grade)=345.0`（SD345 は 322.5） |
+| §1.6: `SS490 => 235.0`、`SM490` 未収載 | `allowable_stress.rs:11-12` `SS490 => 285.0`, `SN490/SM490 => 325.0` |
+
+したがって**§3.1「V&V 索引 #13 は虚偽」という判断自体が誤り**であり、V&V 索引 #13 の ✅ は妥当。
+また `pending_items.md:118-120` の「許容応力度の数値（鋼梁曲げ §6.4）✅」
+「RC 許容応力度（Fc 参照・鉄筋グレード・短期上限）✅」も現状で正しい。
+
+### 7.2 真の未達点：UI 横断タスク（UI設計.md §9.2 UI-1〜UI-7）
+
+旧版が「T1〜T7 の大部分」とした判断も古い基準。UI設計.md §9.5 で P3 仕様書へ追加指示された
+UI-x タスクは旧 P3 の T0〜T7 と異なる掘り方であり、この観点では未達項目があった:
+
+| UI-ID | 要件 | 旧実装 | 2026-06 改修後 |
+|---|---|---|---|
+| **UI-1** | 工程タブ Model/Loads/Analysis/Results/Design/Report + 4ペイン | `Tab{Nodes,Members,...}` 旧設計のまま | ✅ 工程タブ化＋4ペイン枠 |
+| **UI-2** | Navigator（階/部材群/ケース）＋3D/表 双方向連動 | Navigator 構造体なし | ✅ `Navigator` 新設、テーブル/ナビのクリックで focus_* 同期 |
+| **UI-3** | 断面作成UI（全8タイプ＋配筋プレビュー） | 未実装 | ✅ `section_editor.rs` 新設、8タイプのドラフト→to_section→追加 |
+| **UI-4** | 3D選択→断面編集・波及・影響数・複製 | 未実装 | ✅ インスペクタに影響数表示＋複製ボタン。`sc-edit` に `AddSectionShape`/`EditSectionShape`/`DuplicateSectionForMember` 新設 |
+| **UI-5** | 即時バリデーション・コピペ・一括生成 | パース赤背景のみ | 🔶 パース検証のみ継続（通り芯/コピペは後続） |
+| **UI-6** | stale 表示＋手動再計算トリガ | なし | ✅ `Staleness` 新設、編集で mark_edited、解析で mark_fresh、ツールバー/ステータスバーに ⚠/✓/▷ 表示 |
+| **UI-7** | 結果可視化（検定比色分け含む） | N/Q/M/CMQ 図は egui Painter で動作・検定比表動作 | 🔶（変化なし）3D 上の検定比色分けなし・wgpu 未統合 |
+| **UI-D1** | `SectionShape`/`RcRebar`/`BarSet`/`ShearBar`＋`to_section` | `SectionShape` は完備（8バリアント算定式埋込）、`RcRebar` 系は未定義 | ✅ `RcRebar`/`BarSet`/`ShearBar` 新設、`RcRect`/`RcCircle` に統合 |
+
+### 7.3 コミット情報
+
+本訂正内容はブランチ `feature/ui-redesign-tab-pane-staleness` で次の3段階に分けて実装した。
+
+1. `UI-1/2/6: 工程タブ・4ペイン枠・Staleness・Navigator を新設`
+2. `UI-2/6 強化: テーブル編集 → stale 連動、テーブル/ナビゲータ双方向選択同期、UI-D1 完備`
+3. `UI-3/4: 断面作成UI・複製ボタン・EditSectionShape/DuplicateSectionForMember 完備`
+
+### 7.4 残る未達点（後続フェーズ）
+
+- **UI-5 の通り芯グリッド・Excel 往復コピペ・1万部材快適**: P3/P8 で対応。
+- **UI-7 の 3D 検定比色分け・wgpu 本格統合**: 現 `viewer/mod.rs` は egui Painter の等角投影のみ。P1.5/P7 連携で後続。
+- **RC 曲げ・せん断の本格検定式（`Section.a_t` 待ち）**: P4 で SectionShape 経路を整えてから。
+- **Report タブの中身**: P9 仕上げフェーズ。現状は `report_tab_panel` にプレースホルダーのみ。
+- **MCP からの EditSectionShape 利用**: `sc-mcp` は `cargo --features mcp` で壊れている（V&V #23 既知）。別途対応。

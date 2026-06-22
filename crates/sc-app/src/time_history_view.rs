@@ -8,17 +8,12 @@ pub struct TimeHistoryData {
     pub story_drift_angle: Vec<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum TimeHistorySource {
+    #[default]
     NodeDisp,
     StoryShear,
     StoryDriftAngle,
-}
-
-impl Default for TimeHistorySource {
-    fn default() -> Self {
-        Self::NodeDisp
-    }
 }
 
 pub fn dummy_time_history() -> TimeHistoryData {
@@ -103,7 +98,7 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
         .y_axis_label(ylabel)
         .show(ui, |plot_ui| {
             plot_ui.line(
-                egui_plot::Line::new(egui_plot::PlotPoints::new(values))
+                egui_plot::Line::new("series", egui_plot::PlotPoints::from(values))
                     .color(line_color)
                     .width(1.5),
             );
@@ -111,28 +106,26 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // カーソル位置の値を表示
     if let Some(pointer) = plot.response.hover_pos() {
-        if let Some(screen_pos) = plot.transform.position_from_point_x(pointer.x) {
-            let idx = screen_pos
-                .x
-                .clamp(0.0, data.time.last().copied().unwrap_or(1.0));
-            let idx_floor = idx as usize;
-            if idx_floor < data.time.len() {
-                let t = data.time[idx_floor];
-                let val = match source {
-                    TimeHistorySource::NodeDisp => data.node_disp[idx_floor],
-                    TimeHistorySource::StoryShear => data.story_shear[idx_floor],
-                    TimeHistorySource::StoryDriftAngle => data.story_drift_angle[idx_floor],
-                };
-                ui.horizontal(|ui| {
-                    ui.label(format!("t = {:.3} s", t));
-                    ui.separator();
-                    ui.label(match source {
-                        TimeHistorySource::NodeDisp => format!("変位 = {:.3} mm", val),
-                        TimeHistorySource::StoryShear => format!("せん断 = {:.3} N", val),
-                        TimeHistorySource::StoryDriftAngle => format!("変形角 = {:.6} rad", val),
-                    });
+        let max_t = data.time.last().copied().unwrap_or(1.0);
+        let pointer_value = plot.transform.value_from_position(pointer);
+        let idx_time = pointer_value.x.max(0.0).min(max_t);
+        let idx_floor = idx_time as usize;
+        if idx_floor < data.time.len() {
+            let t = data.time[idx_floor];
+            let val = match source {
+                TimeHistorySource::NodeDisp => data.node_disp[idx_floor],
+                TimeHistorySource::StoryShear => data.story_shear[idx_floor],
+                TimeHistorySource::StoryDriftAngle => data.story_drift_angle[idx_floor],
+            };
+            ui.horizontal(|ui| {
+                ui.label(format!("t = {:.3} s", t));
+                ui.separator();
+                ui.label(match source {
+                    TimeHistorySource::NodeDisp => format!("変位 = {:.3} mm", val),
+                    TimeHistorySource::StoryShear => format!("せん断 = {:.3} N", val),
+                    TimeHistorySource::StoryDriftAngle => format!("変形角 = {:.6} rad", val),
                 });
-            }
+            });
         }
     }
 }
