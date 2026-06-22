@@ -616,17 +616,46 @@ fn hinge_story(model: &Model, h: &HingeEvent) -> Option<StoryId> {
         .or_else(|| model.nodes.get(far.index()).and_then(|n| n.story))
 }
 
-/// 崩壊機構の判定（P5 §7.4）。
+/// 平面骨組の静的不静定次数 r = 3m − 3n + r_support を算出する（P5 §11.5）。
 ///
-/// 旧実装は「同一 step に 3 個以上ヒンジ → Overall」というトポロジ非依存の
-/// ヒューリスティックで、ひび割れレベルも数えていた。本実装は降伏以上
-/// （Yield/Ultimate）の塑性ヒンジのみを対象とし、その階分布から機構種別を分類する:
-/// - 終局ヒンジが無くかつ降伏端が 2 未満 → まだ機構未成立（Partial）
+/// - m: 部材数（`model.elements.len()`）
+/// - n: 節点数（`model.nodes.len()`）
+/// - r_support: 各節点で拘束された平面 DoF (ux, uz, ry) の総数
+///
+/// 3D 6DOF モデルを pushover 方向の平面骨組と見なして次数を計算する。
+/// 機構成立条件は `形成降伏ヒンジ数 >= r + 1`（運動学的判定）。
+fn compute_static_indeterminacy(model: &Model) -> usize {
+    let m = model.elements.len();
+    let n = model.nodes.len();
+    // 平面 DoF は ux(0), uz(2), ry(4)。各節点の Dof6Mask で拘束判定。
+    let r_support: usize = model
+        .nodes
+        .iter()
+        .map(|node| {
+            let bits = node.restraint.0;
+            let mut count = 0;
+            if bits & (1u8 << 0) != 0 {
+                count += 1;
+            }
+            if bits & (1u8 << 2) != 0 {
+                count += 1;
+            }
+            if bits & (1u8 << 4) != 0 {
+                count += 1;
+            }
+            count
+        })
+        .sum();
+    (3 * m + r_support).saturating_sub(3 * n)
+}
+
+/// 崩壊機構の判定（P5 §7.4 / §11.5）。
+///
+/// 降伏以上（Yield/Ultimate）の塑性ヒンジのみを対象とし、運動学的機構成立判定
+/// `形成降伏ヒンジ数 >= 静的不静定次数 + 1` でゲートした上で、階分布から機構種別を分類:
+/// - 形成降伏ヒンジ数 < r + 1 → まだ機構未成立（Partial）
 /// - 複数階モデルで降伏ヒンジが単一階に集中 → 層崩壊（StoryCollapse）
 /// - それ以外（複数階に分布／単一階構造）→ 全体崩壊（Overall）
-///
-/// 注: 静的不静定次数+1 の厳密な運動学的機構判定ではなく、塑性化分布に基づく
-/// 実務的分類である（将来の精緻化余地あり）。
 fn determine_mechanism(hinges: &[HingeEvent], model: &Model) -> MechanismType {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -635,15 +664,13 @@ fn determine_mechanism(hinges: &[HingeEvent], model: &Model) -> MechanismType {
         .filter(|h| matches!(h.level, HingeLevel::Yield | HingeLevel::Ultimate))
         .collect();
 
-    // メカニズム成立ゲート: 終局ヒンジが 1 つ以上、または降伏した部材端が 2 以上。
-    let has_ultimate = yielded
-        .iter()
-        .any(|h| matches!(h.level, HingeLevel::Ultimate));
+    // 運動学的機構成立ゲート: 形成降伏ヒンジ数 >= r+1
     let distinct_ends: BTreeSet<(u32, u8)> = yielded
         .iter()
         .map(|h| (h.elem.index() as u32, if h.pos < 0.5 { 0u8 } else { 1u8 }))
         .collect();
-    if yielded.is_empty() || (!has_ultimate && distinct_ends.len() < 2) {
+    let r = compute_static_indeterminacy(model);
+    if yielded.is_empty() || distinct_ends.len() < r + 1 {
         return MechanismType::Partial;
     }
 
@@ -696,8 +723,8 @@ mod tests {
     use sc_core::dof::{Dof6Mask, DofMap};
     use sc_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
     use sc_core::model::{
-        DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-        Node, Section, Story,
+        Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
+        Material, Node, Section, Story,
     };
 
     /// 1層・鉛直ファイバ柱の片持ちプッシュオーバー（P5 §10 相当の最小統合テスト）。
@@ -824,9 +851,20 @@ mod tests {
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = pushover_analysis(
-            &mut model, &dofmap, &reducer, SeismicDir::X, 10, 0.0, false, false, 0.0,
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            10,
+            0.0,
+            false,
+            false,
+            0.0,
         );
-        assert!(result.is_err(), "should error when no seismic weight defined");
+        assert!(
+            result.is_err(),
+            "should error when no seismic weight defined"
+        );
     }
 
     #[test]
@@ -881,41 +919,238 @@ mod tests {
         };
         Model {
             nodes: vec![
-                Node { id: NodeId(0), coord: [0.0, 0.0, 0.0], restraint: Dof6Mask::FIXED, mass: None, story: None },
-                Node { id: NodeId(1), coord: [0.0, 0.0, 3000.0], restraint: Dof6Mask::FREE, mass: None, story: Some(StoryId(0)) },
-                Node { id: NodeId(2), coord: [0.0, 0.0, 6000.0], restraint: Dof6Mask::FREE, mass: None, story: Some(StoryId(1)) },
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: Some(StoryId(0)),
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [0.0, 0.0, 6000.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: Some(StoryId(1)),
+                },
             ],
             elements: vec![
-                ElementData { id: ElemId(0), kind: ElementKind::Fiber, nodes: smallvec::smallvec![NodeId(0), NodeId(1)], section: Some(SectionId(0)), material: Some(MaterialId(0)), local_axis: LocalAxis { ref_vector: [1.0, 0.0, 0.0] }, end_cond: [EndCondition::Fixed, EndCondition::Fixed], force_regime: ForceRegime::Auto, rigid_zone: Default::default() },
-                ElementData { id: ElemId(1), kind: ElementKind::Fiber, nodes: smallvec::smallvec![NodeId(1), NodeId(2)], section: Some(SectionId(0)), material: Some(MaterialId(0)), local_axis: LocalAxis { ref_vector: [1.0, 0.0, 0.0] }, end_cond: [EndCondition::Fixed, EndCondition::Fixed], force_regime: ForceRegime::Auto, rigid_zone: Default::default() },
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Fiber,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Fiber,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                },
             ],
             sections: vec![sec],
             materials: vec![mat],
             stories: vec![
-                Story { id: StoryId(0), name: "1F".to_string(), elevation: 3000.0, node_ids: vec![NodeId(1)], diaphragms: vec![], seismic_weight: None },
-                Story { id: StoryId(1), name: "2F".to_string(), elevation: 6000.0, node_ids: vec![NodeId(2)], diaphragms: vec![], seismic_weight: None },
+                Story {
+                    id: StoryId(0),
+                    name: "1F".to_string(),
+                    elevation: 3000.0,
+                    node_ids: vec![NodeId(1)],
+                    diaphragms: vec![],
+                    seismic_weight: None,
+                },
+                Story {
+                    id: StoryId(1),
+                    name: "2F".to_string(),
+                    elevation: 6000.0,
+                    node_ids: vec![NodeId(2)],
+                    diaphragms: vec![],
+                    seismic_weight: None,
+                },
             ],
             ..Default::default()
         }
     }
 
     fn hinge(elem: u32, pos: f64, level: HingeLevel) -> HingeEvent {
-        HingeEvent { step: 0, elem: ElemId(elem), pos, level, ductility: 1.0 }
+        HingeEvent {
+            step: 0,
+            elem: ElemId(elem),
+            pos,
+            level,
+            ductility: 1.0,
+        }
     }
 
     #[test]
     fn test_determine_mechanism_partial_when_insufficient() {
         let model = two_story_model();
-        // ひび割れのみ → Partial
+        // ひび割れのみ → 降伏ヒンジ0個 < r+1 → Partial
         assert!(matches!(
             determine_mechanism(&[hinge(0, 0.0, HingeLevel::Crack)], &model),
             MechanismType::Partial
         ));
-        // 降伏が1端のみ・終局なし → Partial（機構未成立）
-        assert!(matches!(
-            determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model),
-            MechanismType::Partial
-        ));
+    }
+
+    /// two_story_model は部材2・節点3・基礎FIXED(平面3DOF) → r=0（静定）。
+    /// したがって降伏ヒンジ1個で運動学的機構成立（r+1=1）。単一階集中→層崩壊。
+    #[test]
+    fn test_determine_mechanism_single_yield_establishes_mechanism() {
+        let model = two_story_model();
+        // elem0 端 j (pos=1.0) → node1 = 1F 単独階 → 層崩壊
+        match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model) {
+            MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
+            other => panic!(
+                "expected StoryCollapse{{0}}, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// 静的不静定次数の計算検証（平面骨組: r = 3m − 3n + r_support）。
+    #[test]
+    fn test_compute_static_indeterminacy_two_story() {
+        // 2層2柱: 部材2・節点3・基礎節点(node0)が平面3DOF拘束 → r = 6 - 9 + 3 = 0（静定）
+        let model = two_story_model();
+        assert_eq!(compute_static_indeterminacy(&model), 0);
+    }
+
+    #[test]
+    fn test_compute_static_indeterminacy_indeterminate_portal() {
+        // 1層1スパン両端固定ラーメン: 柱2+梁1=部材3、節点4（基礎2点FIXED+上部2点FREE）
+        // r = 3*3 - 3*4 + (3+3) = 9 - 12 + 6 = 3（3次不静定）
+        let model = two_story_model(); // 共用せず簡易生成
+        let _ = model; // unused warning 回避
+        let nodes = vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: Some(StoryId(0)),
+            },
+            Node {
+                id: NodeId(2),
+                coord: [5000.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: Some(StoryId(0)),
+            },
+            Node {
+                id: NodeId(3),
+                coord: [5000.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+        ];
+        let elems = vec![
+            ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            },
+            ElementData {
+                id: ElemId(1),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            },
+            ElementData {
+                id: ElemId(2),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(3), NodeId(2)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            },
+        ];
+        let portal = Model {
+            nodes,
+            elements: elems,
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "c".to_string(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j: 1.0e6,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "s".to_string(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: Some(0.0),
+                fc: None,
+                fy: Some(235.0),
+            }],
+            stories: vec![Story {
+                id: StoryId(0),
+                name: "1F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1), NodeId(2)],
+                diaphragms: vec![],
+                seismic_weight: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(compute_static_indeterminacy(&portal), 3);
     }
 
     #[test]
@@ -929,7 +1164,10 @@ mod tests {
         ];
         match determine_mechanism(&hinges, &model) {
             MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
-            other => panic!("expected StoryCollapse{{0}}, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected StoryCollapse{{0}}, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -955,7 +1193,15 @@ mod tests {
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = pushover_analysis(
-            &mut model, &dofmap, &reducer, SeismicDir::X, 20, 0.0, false, false, 0.0,
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            20,
+            0.0,
+            false,
+            false,
+            0.0,
         )
         .unwrap();
         let first = result.capacity_curve.first().unwrap();
@@ -967,8 +1213,242 @@ mod tests {
         );
         // Qu はピークベースシア（全点以上）であること。
         for c in &result.capacity_curve {
-            assert!(result.qu >= c.base_shear - 1e-6, "qu {} must be >= {}", result.qu, c.base_shear);
+            assert!(
+                result.qu >= c.base_shear - 1e-6,
+                "qu {} must be >= {}",
+                result.qu,
+                c.base_shear
+            );
         }
         assert!(result.qu > 0.0);
+    }
+
+    fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
+        Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    // FiberBeam はねじり剛性を持たないため Rz を拘束
+                    restraint: Dof6Mask(0b100000),
+                    mass: None,
+                    story: Some(StoryId(0)),
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [5000.0, 0.0, 3000.0],
+                    restraint: Dof6Mask(0b100000),
+                    mass: None,
+                    story: Some(StoryId(0)),
+                },
+                Node {
+                    id: NodeId(3),
+                    coord: [5000.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Fiber,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Fiber,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                },
+                ElementData {
+                    id: ElemId(2),
+                    kind: ElementKind::Fiber,
+                    nodes: smallvec::smallvec![NodeId(3), NodeId(2)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                },
+            ],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "col".to_string(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j: 1.0e6,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "steel".to_string(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: Some(0.0),
+                fc: None,
+                fy: Some(fy),
+            }],
+            stories: vec![Story {
+                id: StoryId(0),
+                name: "1F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1), NodeId(2)],
+                diaphragms: vec![DiaphragmDef {
+                    master: NodeId(1),
+                    slaves: vec![NodeId(2)],
+                    rigid: true,
+                }],
+                seismic_weight: Some(seismic_weight),
+            }],
+            constraints: vec![Constraint::RigidDiaphragm {
+                story: StoryId(0),
+                master: NodeId(1),
+                slaves: vec![NodeId(2)],
+            }],
+            ..Default::default()
+        }
+    }
+
+    // 1層1スパン剛床ラーメン（門形フレーム）で崩壊荷重が手計算値（4・My/H_col）
+    // に一致し、柱両端に4つの塑性ヒンジが形成され全体機構となることを検証する（P5 §10.1）。
+    //
+    // 手計算: Z=I/(depth/2)=166,660, My=σ_y·Z, Qu=4My/H=52,220 N（柱両端降伏・2柱）。
+    // seismic_weight は崩壊荷重を上回る値に設定し、真に降伏到達させる。
+    #[test]
+    fn test_portal_frame_collapse_load() {
+        let qu_theory: f64 = 52_220.0;
+        let mut model = portal_frame_model(235.0, 600_000.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            80,
+            0.0,
+            false,
+            false,
+            0.0,
+        )
+        .expect("pushover should run end-to-end");
+
+        // 柱両端の降伏ヒンジが実際に形成されていること（運動学的機構: r+1=4）。
+        let yielded_hinges = result
+            .hinges
+            .iter()
+            .filter(|h| !matches!(h.level, HingeLevel::Crack))
+            .count();
+        assert!(
+            yielded_hinges >= 4,
+            "at least 4 yielded hinges expected for Overall mechanism, got {} (total hinges={})",
+            yielded_hinges,
+            result.hinges.len()
+        );
+
+        // 崩壊機構が成立していること（Partial でない）。
+        assert!(
+            !matches!(result.mechanism, MechanismType::Partial),
+            "mechanism should not be Partial for a collapsed portal frame"
+        );
+
+        assert!(result.qu > 0.0, "qu should be positive, got {}", result.qu);
+
+        // 4番目の降伏ヒンジ（柱両端×2本＝4個で運動学的機構成立）発生ステップの
+        // ベースシアを「観測崩壊荷重」とする（qu=max(base_shear) はまだ弾性最大反力で
+        // plateau を正確に捉えられないため、降伏到達点で照合する）。
+        let mut yield_steps: Vec<u32> = result
+            .hinges
+            .iter()
+            .filter(|h| !matches!(h.level, HingeLevel::Crack))
+            .map(|h| h.step)
+            .collect();
+        yield_steps.sort_unstable();
+        yield_steps.dedup();
+        assert!(
+            yield_steps.len() >= 4,
+            "need >=4 distinct yield steps for Overall mechanism, got {}: {:?}",
+            yield_steps.len(),
+            yield_steps
+        );
+        let mech_step = yield_steps[3];
+        let qu_observed = result
+            .capacity_curve
+            .iter()
+            .find(|c| c.step == mech_step)
+            .map(|c| c.base_shear)
+            .unwrap_or(0.0);
+        let rel_err = (qu_observed - qu_theory).abs() / qu_theory;
+        // pushover は段階改良途上のため、比較的広めの許容差（30%）を設ける。
+        assert!(
+            rel_err < 0.30,
+            "observed_qu={} at step {} deviates from Qu_theory={} by {:.1}% (>30%)",
+            qu_observed,
+            mech_step,
+            qu_theory,
+            rel_err * 100.0
+        );
+    }
+
+    #[test]
+    fn test_portal_frame_mechanism_classified() {
+        let mut model = portal_frame_model(235.0, 600_000.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            80,
+            0.0,
+            false,
+            false,
+            0.0,
+        )
+        .expect("pushover should run end-to-end");
+
+        match &result.mechanism {
+            MechanismType::Overall | MechanismType::StoryCollapse { .. } => {}
+            other => panic!(
+                "expected Overall or StoryCollapse, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
     }
 }

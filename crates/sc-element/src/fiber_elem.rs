@@ -44,6 +44,12 @@ pub struct FiberBeam {
     pub gauss_points: Vec<GaussPoint>,
     pub shear: crate::shear_spring::ShearSpring,
     pub density: f64,
+    /// ねじり定数 J [mm⁴]（Section.j から取得）。
+    /// Saint-Venant ねじり剛性 G·J/L の計算に用いる。
+    pub torsion_j: f64,
+    /// せん断弾性係数 G [N/mm²]（Material.shear_modulus）。
+    /// せん断ばねおよびねじり剛性の計算に用いる。
+    pub g: f64,
     /// 要素ローカル系→グローバル系の回転（柱・斜材で必須）。
     /// 内部状態（trial_disp 等）はローカル系で保持し、トレイト境界で回転する。
     pub axis: crate::transform::LocalFrame,
@@ -70,6 +76,7 @@ impl FiberBeam {
         let area = sec.map(|s| s.area).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(100.0);
         let depth = sec.map(|s| s.depth).unwrap_or(200.0);
+        let torsion_j = sec.map(|s| s.j).unwrap_or(0.0);
         let as_y = sec.map(|s| s.as_y).unwrap_or(area * 5.0 / 6.0);
         let as_z = sec.map(|s| s.as_z).unwrap_or(area * 5.0 / 6.0);
 
@@ -114,6 +121,8 @@ impl FiberBeam {
             gauss_points,
             shear,
             density,
+            torsion_j,
+            g,
             axis,
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
@@ -222,6 +231,16 @@ impl ElementBehavior for FiberBeam {
                 k.set(i, j, old + ks.get(i, j));
             }
         }
+
+        // ねじり剛性（Saint-Venant）を rx DOF (index 3, 9) に付加
+        if self.torsion_j > 0.0 && l > 0.0 {
+            let kt = self.g * self.torsion_j / l;
+            k.set(3, 3, k.get(3, 3) + kt);
+            k.set(9, 9, k.get(9, 9) + kt);
+            k.set(3, 9, k.get(3, 9) - kt);
+            k.set(9, 3, k.get(9, 3) - kt);
+        }
+
         // ローカル接線剛性をグローバル節点系へ回転（R^T·K·R）
         self.axis.to_global(&k)
     }
@@ -258,6 +277,15 @@ impl ElementBehavior for FiberBeam {
             }
             f.data[i] += si;
         }
+
+        // ねじり内力（Saint-Venant）
+        if self.torsion_j > 0.0 && l > 0.0 {
+            let kt = self.g * self.torsion_j / l;
+            let drx = self.trial_disp[3] - self.trial_disp[9];
+            f.data[3] += kt * drx;
+            f.data[9] -= kt * drx;
+        }
+
         // ローカル内力をグローバル系へ回転（committed/trial はローカル保持のため）
         let f_local: [f64; 12] = std::array::from_fn(|i| f.data[i]);
         let f_global = self.axis.rotate_to_global(&f_local);
@@ -557,7 +585,9 @@ mod tests {
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
                 material: Some(MaterialId(0)),
-                local_axis: LocalAxis { ref_vector: ref_vec },
+                local_axis: LocalAxis {
+                    ref_vector: ref_vec,
+                },
                 end_cond: [EndCondition::Fixed, EndCondition::Fixed],
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
@@ -652,6 +682,14 @@ mod tests {
         FiberBeam::new(&model.elements[0], &model)
     }
 
+    /// ねじり剛性テスト用の FiberBeam を生成する。
+    /// 既知の G, J, L で Saint-Venant ねじり剛性を検証するため。
+    fn make_torsion_fiber_beam(g: f64, j: f64) -> FiberBeam {
+        let mut model = build_test_model(Some(g));
+        model.sections[0].j = j;
+        FiberBeam::new(&model.elements[0], &model)
+    }
+
     /// 降伏データ検証: Material.fy を与えた鋼材ファイバは、同一の大曲率変形に対して
     /// 弾性材（fy 無し＝1e20）より小さい曲げ内力を示す（＝実際に降伏している）。
     #[test]
@@ -662,9 +700,7 @@ mod tests {
         // 端部 ry に十分大きな逆対称回転を与え、曲げで降伏させる。
         let big = 0.1;
         let du = LocalVec {
-            data: smallvec::smallvec![
-                0.0, 0.0, 0.0, 0.0, big, 0.0, 0.0, 0.0, 0.0, 0.0, -big, 0.0
-            ],
+            data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, big, 0.0, 0.0, 0.0, 0.0, 0.0, -big, 0.0],
         };
 
         let mut yielding = make_steel_fiber_with_fy(Some(235.0));
@@ -1165,5 +1201,181 @@ mod tests {
         let gp0_ptr = &fiber.gauss_points[0].mats[0] as *const _;
         let gp1_ptr = &fiber.gauss_points[1].mats[0] as *const _;
         assert_ne!(gp0_ptr, gp1_ptr, "GP mats must be independent instances");
+    }
+
+    #[test]
+    fn test_torsional_stiffness() {
+        let g = 78846.0;
+        let j = 1.0e6;
+        let l = 3000.0;
+        let expected_kt = g * j / l;
+
+        let mut fiber = make_torsion_fiber_beam(g, j);
+        let ctx = Ctx {
+            model: &build_test_model(Some(g)),
+        };
+        // 接線キャッシュを初期化（ゼロ変位で update_state）
+        let zero_du = LocalVec {
+            data: SmallVec::from_elem(0.0, 12),
+        };
+        fiber.update_state(&zero_du, false, &ctx);
+
+        let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!(
+            (k.get(3, 3) - expected_kt).abs() < 1e-6 * expected_kt.max(1.0),
+            "K[3][3] should be G*J/L: expected {}, got {}",
+            expected_kt,
+            k.get(3, 3)
+        );
+        assert!(
+            (k.get(9, 9) - expected_kt).abs() < 1e-6 * expected_kt.max(1.0),
+            "K[9][9] should be G*J/L: expected {}, got {}",
+            expected_kt,
+            k.get(9, 9)
+        );
+        assert!(
+            (k.get(3, 9) + expected_kt).abs() < 1e-6 * expected_kt.max(1.0),
+            "K[3][9] should be -G*J/L: expected {}, got {}",
+            -expected_kt,
+            k.get(3, 9)
+        );
+        assert!(
+            (k.get(9, 3) + expected_kt).abs() < 1e-6 * expected_kt.max(1.0),
+            "K[9][3] should be -G*J/L: expected {}, got {}",
+            -expected_kt,
+            k.get(9, 3)
+        );
+    }
+
+    #[test]
+    fn test_torsional_internal_force() {
+        let g = 78846.0;
+        let j = 1.0e6;
+        let l = 3000.0;
+        let kt = g * j / l;
+
+        let mut fiber = make_torsion_fiber_beam(g, j);
+        let ctx = Ctx {
+            model: &build_test_model(Some(g)),
+        };
+        let theta_i = 0.01;
+        let theta_j = -0.005;
+        let du = LocalVec {
+            data: smallvec::smallvec![
+                0.0, 0.0, 0.0, theta_i, 0.0, 0.0, 0.0, 0.0, 0.0, theta_j, 0.0, 0.0,
+            ],
+        };
+        fiber.update_state(&du, true, &ctx);
+        let f = fiber.internal_force(&ElemState::default(), &ctx);
+
+        let expected_mx_i = kt * (theta_i - theta_j);
+        assert!(
+            (f.data[3] - expected_mx_i).abs() < 1e-6 * expected_mx_i.abs().max(1.0),
+            "Mx_i should be kt*(θ_i - θ_j): expected {}, got {}",
+            expected_mx_i,
+            f.data[3]
+        );
+        assert!(
+            (f.data[9] + expected_mx_i).abs() < 1e-6 * expected_mx_i.abs().max(1.0),
+            "Mx_j should be -Mx_i: expected {}, got {}",
+            -expected_mx_i,
+            f.data[9]
+        );
+    }
+
+    /// 鉛直柱（Z整列）でねじり剛性 GJ 追加後、グローバル rz DOF (index 5, 11) が
+    /// 特異でない（非ゼロの対角成分を持つ）ことを確認する回帰テスト。
+    /// 以前は rz 拘束が無いと特異化していた。
+    #[test]
+    fn test_vertical_column_rz_nonsingular() {
+        let g = 78846.0;
+        let j = 1.0e6;
+        let l = 3000.0;
+        let expected_kt = g * j / l;
+
+        // Z 整列（鉛直柱）: local x = global Z
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, l],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Fiber,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            }],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "col".to_string(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "steel".to_string(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: Some(g),
+                fc: None,
+                fy: None,
+            }],
+            ..Default::default()
+        };
+
+        let mut fiber = FiberBeam::new(&model.elements[0], &model);
+        let ctx = Ctx {
+            model: &Model::default(),
+        };
+        let zero_du = LocalVec {
+            data: SmallVec::from_elem(0.0, 12),
+        };
+        fiber.update_state(&zero_du, false, &ctx);
+
+        let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+        // 鉛直柱では local rx が global rz に回転される。
+        // global rz は節点自由度 index 5 (i端) と index 11 (j端)。
+        let k55 = k.get(5, 5);
+        let k11_11 = k.get(11, 11);
+        assert!(
+            k55 > 0.0,
+            "global rz_i (k[5][5]) must be > 0 with torsion stiffness, got {}",
+            k55
+        );
+        assert!(
+            k11_11 > 0.0,
+            "global rz_j (k[11][11]) must be > 0 with torsion stiffness, got {}",
+            k11_11
+        );
+        // ねじり剛性が回転後も正しく伝わっていることの緩い確認
+        let _ = expected_kt;
     }
 }

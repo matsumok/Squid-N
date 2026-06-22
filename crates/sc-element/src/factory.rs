@@ -1,5 +1,6 @@
 use crate::behavior::{ElemState, ElementBehavior};
 use sc_core::model::{ElementData, ElementKind, ForceRegime, Model};
+use sc_material::uniaxial::Bilinear;
 
 /// ForceRegime の自動選択結果（P5 §5）
 pub enum ResolvedRegime {
@@ -80,9 +81,16 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
             let regime = resolve_force_regime(data, model);
             match regime {
                 ResolvedRegime::ConcentratedSpring => {
-                    // T1: ConcentratedSpringBeam が実装されるまでの暫定 BeamElement
                     let elem = crate::beam::BeamElement::new(data, model);
-                    (Box::new(elem), ElemState::default())
+                    let (spring_i, spring_j) = build_rotational_springs(data, model);
+                    (
+                        Box::new(
+                            crate::concentrated::ConcentratedSpringBeam::new_one_component(
+                                elem, spring_i, spring_j,
+                            ),
+                        ),
+                        ElemState::default(),
+                    )
                 }
                 ResolvedRegime::Fiber => {
                     // T2: FiberBeam が実装されるまでの暫定 BeamElement
@@ -133,7 +141,19 @@ pub fn build_nonlinear_behavior(
 ) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
         ElementKind::Beam => match resolve_force_regime(data, model) {
-            ResolvedRegime::ConcentratedSpring | ResolvedRegime::Fiber => (
+            ResolvedRegime::ConcentratedSpring => {
+                let elem = crate::beam::BeamElement::new(data, model);
+                let (spring_i, spring_j) = build_rotational_springs(data, model);
+                (
+                    Box::new(
+                        crate::concentrated::ConcentratedSpringBeam::new_one_component(
+                            elem, spring_i, spring_j,
+                        ),
+                    ),
+                    ElemState::default(),
+                )
+            }
+            ResolvedRegime::Fiber => (
                 Box::new(crate::fiber_elem::FiberBeam::new(data, model)),
                 ElemState::default(),
             ),
@@ -145,6 +165,37 @@ pub fn build_nonlinear_behavior(
         // PanelZone / Shell / Ms / Wall は現状の挙動（弾性ベース）を踏襲。
         _ => build_behavior(data, model),
     }
+}
+
+fn build_rotational_springs(
+    data: &ElementData,
+    model: &Model,
+) -> (
+    Box<dyn sc_material::uniaxial::UniaxialMaterial>,
+    Box<dyn sc_material::uniaxial::UniaxialMaterial>,
+) {
+    let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
+    let mat = data
+        .material
+        .and_then(|mid| model.materials.get(mid.index()));
+    let e = mat.map(|m| m.young).unwrap_or(205000.0);
+    let fy_sigma = mat.and_then(|m| m.fy).unwrap_or(235.0);
+    let depth = sec.map(|s| s.depth.max(s.width)).unwrap_or(100.0);
+    let iz = sec.map(|s| s.iz.max(s.iy)).unwrap_or(1.0e6);
+    let z = if depth > 0.0 { iz / (depth / 2.0) } else { 0.0 };
+    let my = fy_sigma * z;
+
+    let n0 = &model.nodes[data.nodes[0].index()];
+    let n1 = &model.nodes[data.nodes[1].index()];
+    let l = ((n1.coord[0] - n0.coord[0]).powi(2)
+        + (n1.coord[1] - n0.coord[1]).powi(2)
+        + (n1.coord[2] - n0.coord[2]).powi(2))
+    .sqrt();
+    let k_rot = if l > 0.0 { 6.0 * e * iz / l } else { 1.0e12 };
+
+    let spring_i = Box::new(Bilinear::new(k_rot, my, 0.01));
+    let spring_j = Box::new(Bilinear::new(k_rot, my, 0.01));
+    (spring_i, spring_j)
 }
 
 #[cfg(test)]
@@ -274,5 +325,130 @@ mod tests {
             resolve_force_regime(&col, &model),
             ResolvedRegime::Fiber
         ));
+    }
+
+    #[test]
+    fn test_build_behavior_concentrated_spring_uses_spring_beam() {
+        let model = make_diaphragm_model();
+        let beam = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        };
+        let (behavior, _state) = build_behavior(&beam, &model);
+        // ConcentratedSpringBeam は recover_forces を override していないので None
+        assert!(
+            behavior.recover_forces(&[0.0; 12]).is_none(),
+            "ConcentratedSpringBeam should return None for recover_forces"
+        );
+        // snapshot_state で ConcentratedSpringBeam 固有型を確認
+        let snap = behavior.snapshot_state();
+        let is_spring = snap
+            .downcast_ref::<(
+                Vec<Box<dyn sc_material::uniaxial::UniaxialMaterial>>,
+                f64,
+                f64,
+                f64,
+                f64,
+            )>()
+            .is_some();
+        assert!(
+            is_spring,
+            "should be ConcentratedSpringBeam by snapshot type"
+        );
+    }
+
+    #[test]
+    fn test_build_behavior_fiber_still_fiber() {
+        let model = make_diaphragm_model();
+        let col = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        };
+        let (behavior, _state) = build_behavior(&col, &model);
+        // Fiber 分岐は暫定 BeamElement（線形解析）→ recover_forces は Some
+        assert!(
+            behavior.recover_forces(&[0.0; 12]).is_some(),
+            "Fiber regime should use BeamElement for linear analysis"
+        );
+        assert_eq!(behavior.n_dof(), 12);
+    }
+
+    #[test]
+    fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
+        let model = make_diaphragm_model();
+        let beam = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        };
+        let (behavior, _state) = build_nonlinear_behavior(&beam, &model);
+        let snap = behavior.snapshot_state();
+        let is_spring = snap
+            .downcast_ref::<(
+                Vec<Box<dyn sc_material::uniaxial::UniaxialMaterial>>,
+                f64,
+                f64,
+                f64,
+                f64,
+            )>()
+            .is_some();
+        assert!(
+            is_spring,
+            "nonlinear ConcentratedSpring should be ConcentratedSpringBeam"
+        );
+    }
+
+    #[test]
+    fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
+        let model = make_diaphragm_model();
+        let col = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        };
+        let (behavior, _state) = build_nonlinear_behavior(&col, &model);
+        let snap = behavior.snapshot_state();
+        let is_fiber = snap
+            .downcast_ref::<(
+                [f64; 12],
+                [f64; 12],
+                Vec<Vec<Box<dyn sc_material::uniaxial::UniaxialMaterial>>>,
+            )>()
+            .is_some();
+        assert!(is_fiber, "nonlinear Fiber should be FiberBeam");
     }
 }

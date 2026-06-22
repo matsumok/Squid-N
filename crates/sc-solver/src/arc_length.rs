@@ -57,7 +57,29 @@ impl ArcLengthSolver {
         };
 
         let mut dlambda = sign * self.delta_l / ut_norm;
+
+        // 軟化検知：接線変位が前ステップ増分に比べて著しく大きい場合、予測子を減額
+        if !prev_du.is_empty() {
+            let prev_norm = dot(prev_du, prev_du).sqrt();
+            if prev_norm > 1e-30 {
+                let ratio = ut_norm / prev_norm;
+                if ratio > 10.0 {
+                    dlambda *= 0.5;
+                }
+            }
+        }
+
         let mut du = scale(&du_t, dlambda);
+
+        // 予測子スケール制限：円筒半径に対するオーバーシュートを抑制
+        let du_pred_norm = dot(&du, &du).sqrt();
+        let bound = self.delta_l * 1.5;
+        if du_pred_norm > bound {
+            let scale_factor = bound / du_pred_norm;
+            dlambda *= scale_factor;
+            du = scale(&du_t, dlambda);
+        }
+
         let qq = dot(q, q);
 
         // 予測子の変位増分を要素状態へ反映し、その点での内力を取得する。
@@ -154,6 +176,96 @@ fn add(a: &[f64], b: &[f64]) -> Vec<f64> {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    /// 剛性低下型（軟化）1-DOF 系 f(u)=k·u - c·u² で弧長法をトレースし、
+    /// 軟化域に入っても（a）収束すること、（b）予測子 |du| が delta_l * 1.5 を
+    /// 超えないことを検証する。修正 Newton は極限点通過困難のため収束可能な範囲で検証。
+    #[test]
+    fn test_arc_length_softening_predictor_clip() {
+        let k = 100.0;
+        let c = 50.0;
+        // f(u) = k·u - c·u², f'(u) = k - 2c·u, ピーク点 u* = k/(2c) = 1.0
+        let f_of = |u: f64| k * u - c * u * u;
+        let tangent = |u: f64| {
+            let t = k - 2.0 * c * u;
+            if t.abs() < 1e-12 {
+                if t >= 0.0 {
+                    1e-12
+                } else {
+                    -1e-12
+                }
+            } else {
+                t
+            }
+        };
+
+        let solver = ArcLengthSolver {
+            delta_l: 0.05,
+            max_iter: 80,
+            tol: 1e-4,
+        };
+        let q = [1.0_f64];
+        let mut u = 0.0_f64;
+        let mut lambda = 0.0_f64;
+        let mut prev_du: Vec<f64> = Vec::new();
+        let mut converged_steps = 0usize;
+
+        for step_i in 0..30 {
+            let trial_u = Cell::new(u);
+            let step = match solver.step(
+                &q,
+                &mut |r: &[f64]| -> Result<Vec<f64>, String> {
+                    Ok(vec![r[0] / tangent(trial_u.get())])
+                },
+                &mut |du: &[f64]| -> Result<Vec<f64>, String> {
+                    trial_u.set(trial_u.get() + du[0]);
+                    Ok(vec![f_of(trial_u.get())])
+                },
+                &prev_du,
+                lambda,
+            ) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+
+            if !step.converged {
+                break;
+            }
+
+            converged_steps += 1;
+
+            // (b) 予測子 |du| が delta_l * 1.5 を超えないこと
+            let du_norm = dot(&step.du, &step.du).sqrt();
+            assert!(
+                du_norm <= solver.delta_l * 1.5,
+                "step {step_i}: |du| = {du_norm} > delta_l * 1.5 = {}",
+                solver.delta_l * 1.5
+            );
+
+            u += step.du[0];
+            lambda += step.dlambda;
+            prev_du = step.du;
+
+            // 収束点で非線形平衡が成立すること
+            assert!(
+                (f_of(u) - lambda * q[0]).abs() < 1e-1,
+                "step {step_i}: equilibrium violated: f(u)={}, lambda*q={}",
+                f_of(u),
+                lambda * q[0]
+            );
+        }
+
+        // 最低限のステップが収束すること
+        assert!(
+            converged_steps >= 8,
+            "at least 8 steps should converge, got {converged_steps}"
+        );
+        // 軟化領域付近まで到達していること
+        assert!(
+            u > 0.5,
+            "trace should approach the limit point, final u={u}"
+        );
+    }
 
     /// 1-DOF の非線形（剛性増加型）弾性系で弧長法をトレースし、各収束点が
     /// 非線形平衡 f(u)=λ·q を満たすことを検証する。

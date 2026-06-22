@@ -297,9 +297,9 @@ impl ElementBehavior for ConcentratedSpringBeam {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_core::model::RigidZone;
     use approx::assert_relative_eq;
     use sc_core::ids::{ElemId, NodeId};
+    use sc_core::model::RigidZone;
     use sc_material::uniaxial::Bilinear;
 
     fn make_test_beam() -> crate::beam::BeamElement {
