@@ -14,9 +14,13 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         let id_j = egui::Id::new("add_member_sel_j");
 
         // egui 一時メモリから選択済み節点IDを取得。未設定なら先頭/2番目の節点で初期化。
-        let mut sel_i: Option<NodeId> = ui.data(|d| d.get_temp::<Option<NodeId>>(id_i)).flatten()
+        let mut sel_i: Option<NodeId> = ui
+            .data(|d| d.get_temp::<Option<NodeId>>(id_i))
+            .flatten()
             .or_else(|| app.model.nodes.first().map(|n| n.id));
-        let mut sel_j: Option<NodeId> = ui.data(|d| d.get_temp::<Option<NodeId>>(id_j)).flatten()
+        let mut sel_j: Option<NodeId> = ui
+            .data(|d| d.get_temp::<Option<NodeId>>(id_j))
+            .flatten()
             .or_else(|| app.model.nodes.get(1).map(|n| n.id));
 
         let mut do_add = false;
@@ -33,7 +37,10 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 .show_ui(ui, |ui| {
                     for node in &app.model.nodes {
                         let label = format!("N{}", node.id.0);
-                        if ui.selectable_label(sel_i == Some(node.id), &label).clicked() {
+                        if ui
+                            .selectable_label(sel_i == Some(node.id), &label)
+                            .clicked()
+                        {
                             sel_i = Some(node.id);
                         }
                     }
@@ -48,7 +55,10 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 .show_ui(ui, |ui| {
                     for node in &app.model.nodes {
                         let label = format!("N{}", node.id.0);
-                        if ui.selectable_label(sel_j == Some(node.id), &label).clicked() {
+                        if ui
+                            .selectable_label(sel_j == Some(node.id), &label)
+                            .clicked()
+                        {
                             sel_j = Some(node.id);
                         }
                     }
@@ -56,7 +66,10 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 
             // i != j のときのみ追加ボタンを有効化
             let enabled = matches!((sel_i, sel_j), (Some(i), Some(j)) if i != j);
-            if ui.add_enabled(enabled, egui::Button::new("+ 部材追加")).clicked() {
+            if ui
+                .add_enabled(enabled, egui::Button::new("+ 部材追加"))
+                .clicked()
+            {
                 do_add = true;
             }
         });

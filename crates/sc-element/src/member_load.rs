@@ -255,18 +255,8 @@ pub fn fixed_internal_local(
     }
     // [0,x] の合力 / x まわりモーメント、[x,L] の合力 / x まわりモーメント
     let res_i = |comps: &[Comp]| comps.iter().map(|c| comp_resultant(c, 0.0, x)).sum::<f64>();
-    let mom_i = |comps: &[Comp]| {
-        comps
-            .iter()
-            .map(|c| comp_moment(c, 0.0, x, x))
-            .sum::<f64>()
-    };
-    let mom_jx = |comps: &[Comp]| {
-        comps
-            .iter()
-            .map(|c| comp_moment(c, x, l, x))
-            .sum::<f64>()
-    };
+    let mom_i = |comps: &[Comp]| comps.iter().map(|c| comp_moment(c, 0.0, x, x)).sum::<f64>();
+    let mom_jx = |comps: &[Comp]| comps.iter().map(|c| comp_moment(c, x, l, x)).sum::<f64>();
 
     let sy_i = res_i(&comps_y);
     let sz_i = res_i(&comps_z);
@@ -389,7 +379,12 @@ mod tests {
         let q = consistent_load_local(&loads, &frame, l);
         let fem_i = w * l * l / 30.0;
         let fem_j = w * l * l / 20.0;
-        assert!((q[5].abs() - fem_i).abs() < 1e-2, "q5={} fem_i={}", q[5], fem_i);
+        assert!(
+            (q[5].abs() - fem_i).abs() < 1e-2,
+            "q5={} fem_i={}",
+            q[5],
+            fem_i
+        );
         assert!(
             (q[11].abs() - fem_j).abs() < 1e-2,
             "q11={} fem_j={}",

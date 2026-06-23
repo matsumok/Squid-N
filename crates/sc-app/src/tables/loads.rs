@@ -208,10 +208,8 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                             format!("分布 [{:.0},{:.0}] w1={:.2} w2={:.2}", a, b, w1, w2)
                         }
                     };
-                    let dir_str = format!(
-                        "dir=({:.1},{:.1},{:.1})",
-                        ml.dir[0], ml.dir[1], ml.dir[2]
-                    );
+                    let dir_str =
+                        format!("dir=({:.1},{:.1},{:.1})", ml.dir[0], ml.dir[1], ml.dir[2]);
                     ui.label(format!("梁#{} / {} / {}", ml.elem.0, kind_str, dir_str));
                     if ui.button("削除").clicked() {
                         pending_delete = Some(i);
@@ -223,7 +221,10 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     if let Some(idx) = pending_delete {
         app.undo.run(
             &mut app.model,
-            Box::new(DeleteMemberLoad { lc: lc_id, index: idx }),
+            Box::new(DeleteMemberLoad {
+                lc: lc_id,
+                index: idx,
+            }),
         );
         app.staleness.mark_edited();
     }
@@ -245,8 +246,9 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let draft_id = egui::Id::new("member_load_draft");
-    let mut draft: MemberLoadDraft =
-        ui.data_mut(|d| d.get_temp::<MemberLoadDraft>(draft_id)).unwrap_or_default();
+    let mut draft: MemberLoadDraft = ui
+        .data_mut(|d| d.get_temp::<MemberLoadDraft>(draft_id))
+        .unwrap_or_default();
 
     // elem_idx が梁一覧の範囲外なら先頭梁に補正
     if !beam_indices.contains(&draft.elem_idx) {
@@ -354,10 +356,8 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                 if ni < app.model.nodes.len() && nj < app.model.nodes.len() {
                     let pi = app.model.nodes[ni].coord;
                     let pj = app.model.nodes[nj].coord;
-                    ((pj[0] - pi[0]).powi(2)
-                        + (pj[1] - pi[1]).powi(2)
-                        + (pj[2] - pi[2]).powi(2))
-                    .sqrt()
+                    ((pj[0] - pi[0]).powi(2) + (pj[1] - pi[1]).powi(2) + (pj[2] - pi[2]).powi(2))
+                        .sqrt()
                 } else {
                     0.0
                 }
@@ -409,10 +409,8 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
 
     // (C) 追加コマンド発行（クロージャ外、借用衝突なし）
     if let Some(load) = pending_add {
-        app.undo.run(
-            &mut app.model,
-            Box::new(AddMemberLoad { lc: lc_id, load }),
-        );
+        app.undo
+            .run(&mut app.model, Box::new(AddMemberLoad { lc: lc_id, load }));
         app.staleness.mark_edited();
     }
 }

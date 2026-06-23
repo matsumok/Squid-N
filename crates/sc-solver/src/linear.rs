@@ -352,7 +352,11 @@ mod tests {
             }],
         );
         let res = linear_static_once(&model, LoadCaseId(1)).expect("solve");
-        let (_, mf) = res.member_forces.iter().find(|(id, _)| *id == ElemId(0)).unwrap();
+        let (_, mf) = res
+            .member_forces
+            .iter()
+            .find(|(id, _)| *id == ElemId(0))
+            .unwrap();
         let expected = p * l / 4.0;
         let mid = mid_value(mf, 5).abs();
         assert!(
@@ -382,7 +386,11 @@ mod tests {
             }],
         );
         let res = linear_static_once(&model, LoadCaseId(1)).expect("solve");
-        let (_, mf) = res.member_forces.iter().find(|(id, _)| *id == ElemId(0)).unwrap();
+        let (_, mf) = res
+            .member_forces
+            .iter()
+            .find(|(id, _)| *id == ElemId(0))
+            .unwrap();
         let expected = w * l * l / 8.0;
         let mid = mid_value(mf, 4).abs(); // My
         assert!(
