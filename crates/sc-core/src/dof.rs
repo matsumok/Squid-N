@@ -25,6 +25,18 @@ impl Dof6Mask {
     pub fn set_fixed(&mut self, d: Dof) {
         self.0 |= 1 << d as u8;
     }
+    /// 指定自由度の拘束を解除（ビットを下ろす）。
+    pub fn set_free(&mut self, d: Dof) {
+        self.0 &= !(1 << d as u8);
+    }
+    /// 指定自由度の拘束を ON/OFF で設定する。
+    pub fn set(&mut self, d: Dof, fixed: bool) {
+        if fixed {
+            self.set_fixed(d);
+        } else {
+            self.set_free(d);
+        }
+    }
 }
 
 pub type GlobalDof = usize;
@@ -101,6 +113,25 @@ mod tests {
             nodes,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_set_free_and_set_toggle() {
+        let mut m = Dof6Mask::FIXED;
+        m.set_free(Dof::Ux);
+        assert!(!m.is_fixed(Dof::Ux));
+        assert!(m.is_fixed(Dof::Uy));
+        // set(false) は解除、set(true) は拘束
+        m.set(Dof::Uy, false);
+        assert!(!m.is_fixed(Dof::Uy));
+        m.set(Dof::Ux, true);
+        assert!(m.is_fixed(Dof::Ux));
+        // PINNED から Rz を拘束すると並進3 + Rz が拘束される
+        let mut p = Dof6Mask::PINNED;
+        p.set(Dof::Rz, true);
+        assert!(p.is_fixed(Dof::Ux) && p.is_fixed(Dof::Uy) && p.is_fixed(Dof::Uz));
+        assert!(p.is_fixed(Dof::Rz));
+        assert!(!p.is_fixed(Dof::Rx) && !p.is_fixed(Dof::Ry));
     }
 
     #[test]

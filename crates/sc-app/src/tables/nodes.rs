@@ -1,6 +1,6 @@
 use crate::app::App;
 use sc_core::ids::NodeId;
-use sc_edit::SetNodeCoord;
+use sc_edit::{AddNode, SetNodeCoord, SetNodeRestraint};
 
 pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     use egui_extras::{Column, TableBuilder};
@@ -8,11 +8,28 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     // バッファを model に同期（長さ合わせ + 未編集セルの更新）
     app.sync_node_edit();
 
+    // 節点追加ボタン（node_edit 取り出し前に処理することで借用衝突を回避）
+    ui.horizontal(|ui| {
+        if ui.button("+ 節点追加").clicked() {
+            app.undo.run(
+                &mut app.model,
+                Box::new(AddNode {
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: sc_core::dof::Dof6Mask::FREE,
+                }),
+            );
+            app.staleness.mark_edited();
+        }
+    });
+    ui.separator();
+
     let n = app.model.nodes.len();
     // node_edit を一時的に取り出し、クロージャ内で app.model/undo と共存させる
     let mut node_edit = std::mem::take(&mut app.node_edit);
     // 確定待ちの編集（行、列、パース結果）
     let mut pending: Vec<(usize, usize, f64)> = Vec::new();
+    // 確定待ちの拘束変更（行、新マスク）
+    let mut pending_restraint: Vec<(usize, sc_core::dof::Dof6Mask)> = Vec::new();
 
     TableBuilder::new(ui)
         .striped(true)
@@ -67,7 +84,37 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 }
                 row.col(|ui| {
-                    ui.label(format!("{:?}", node.restraint));
+                    let r = node.restraint;
+                    ui.horizontal(|ui| {
+                        // プリセットボタン（自由／ピン／固定）
+                        if ui.small_button("自由").clicked() {
+                            pending_restraint.push((i, sc_core::dof::Dof6Mask::FREE));
+                        }
+                        if ui.small_button("ピン").clicked() {
+                            pending_restraint.push((i, sc_core::dof::Dof6Mask::PINNED));
+                        }
+                        if ui.small_button("固定").clicked() {
+                            pending_restraint.push((i, sc_core::dof::Dof6Mask::FIXED));
+                        }
+                        ui.separator();
+                        // 各成分チェックボックス
+                        use sc_core::dof::Dof;
+                        for (d, lbl) in [
+                            (Dof::Ux, "X"),
+                            (Dof::Uy, "Y"),
+                            (Dof::Uz, "Z"),
+                            (Dof::Rx, "RX"),
+                            (Dof::Ry, "RY"),
+                            (Dof::Rz, "RZ"),
+                        ] {
+                            let mut on = r.is_fixed(d);
+                            if ui.checkbox(&mut on, lbl).changed() {
+                                let mut new_mask = r;
+                                new_mask.set(d, on);
+                                pending_restraint.push((i, new_mask));
+                            }
+                        }
+                    });
                 });
             });
         });
@@ -87,8 +134,20 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
+    let had_restraint = !pending_restraint.is_empty();
+    for (i, mask) in pending_restraint {
+        let node_id = app.model.nodes[i].id;
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetNodeRestraint {
+                node: node_id,
+                restraint: mask,
+            }),
+        );
+    }
+
     // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
-    if had_pending {
+    if had_pending || had_restraint {
         app.staleness.mark_edited();
     }
 

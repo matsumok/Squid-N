@@ -110,6 +110,83 @@ impl EditCommand for SetNodeCoord {
     }
 }
 
+/// 節点拘束（支点条件）変更。逆操作は変更前マスクへの復元。
+pub struct SetNodeRestraint {
+    pub node: NodeId,
+    pub restraint: sc_core::dof::Dof6Mask,
+}
+
+impl EditCommand for SetNodeRestraint {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.node.index();
+        if idx >= model.nodes.len() || model.nodes[idx].id != self.node {
+            return Box::new(Noop);
+        }
+        let old = model.nodes[idx].restraint;
+        model.nodes[idx].restraint = self.restraint;
+        Box::new(SetNodeRestraint {
+            node: self.node,
+            restraint: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "節点拘束変更"
+    }
+}
+
+/// 節点追加。末尾に `NodeId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
+/// 逆操作は節点削除。
+pub struct AddNode {
+    pub coord: [f64; 3],
+    pub restraint: sc_core::dof::Dof6Mask,
+}
+
+impl EditCommand for AddNode {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let new_id = NodeId(model.nodes.len() as u32);
+        model.nodes.push(sc_core::model::Node {
+            id: new_id,
+            coord: self.coord,
+            restraint: self.restraint,
+            mass: None,
+            story: None,
+        });
+        Box::new(DeleteNode { id: new_id })
+    }
+
+    fn label(&self) -> &str {
+        "節点追加"
+    }
+}
+
+/// 節点削除。逆操作は節点追加。
+///
+/// ID＝配列インデックスの不変条件を保つため、末尾の節点のみ削除可能とする
+/// （中間節点の削除は ID 再採番と部材参照の更新が必要なため未対応）。
+pub struct DeleteNode {
+    pub id: NodeId,
+}
+
+impl EditCommand for DeleteNode {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        // 末尾以外、または ID 不一致は不正参照として Noop
+        if idx + 1 != model.nodes.len() || model.nodes[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let removed = model.nodes.remove(idx);
+        Box::new(AddNode {
+            coord: removed.coord,
+            restraint: removed.restraint,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "節点削除"
+    }
+}
+
 /// 部材追加。逆操作は部材削除。
 pub struct AddMember {
     pub elem: sc_core::model::ElementData,
@@ -629,6 +706,115 @@ mod tests {
         assert!(stack.can_undo());
         stack.undo(&mut model);
         assert!(model.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_set_node_restraint_roundtrip() {
+        let mut model = empty_model();
+        model.nodes.push(Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(SetNodeRestraint {
+                node: NodeId(0),
+                restraint: Dof6Mask::PINNED,
+            }),
+        );
+        assert_eq!(model.nodes[0].restraint, Dof6Mask::PINNED);
+
+        stack.undo(&mut model);
+        assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
+
+        stack.redo(&mut model);
+        assert_eq!(model.nodes[0].restraint, Dof6Mask::PINNED);
+    }
+
+    #[test]
+    fn test_set_node_restraint_invalid_id_is_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        stack.run(
+            &mut model,
+            Box::new(SetNodeRestraint {
+                node: NodeId(99),
+                restraint: Dof6Mask::FIXED,
+            }),
+        );
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
+        assert!(model.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_add_node_roundtrip() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(AddNode {
+                coord: [1000.0, 2000.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+            }),
+        );
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(model.nodes[0].id, NodeId(0));
+        assert_eq!(model.nodes[0].coord, [1000.0, 2000.0, 3000.0]);
+
+        stack.undo(&mut model);
+        assert_eq!(model.nodes.len(), 0);
+
+        stack.redo(&mut model);
+        assert_eq!(model.nodes.len(), 1);
+        assert_eq!(model.nodes[0].id, NodeId(0));
+    }
+
+    #[test]
+    fn test_add_node_id_equals_index() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        for i in 0..3 {
+            stack.run(
+                &mut model,
+                Box::new(AddNode {
+                    coord: [i as f64, 0.0, 0.0],
+                    restraint: Dof6Mask::FREE,
+                }),
+            );
+        }
+        for (i, node) in model.nodes.iter().enumerate() {
+            assert_eq!(node.id, NodeId(i as u32));
+        }
+    }
+
+    #[test]
+    fn test_delete_node_non_tail_is_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        model.nodes.push(Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(1),
+            coord: [1.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        // 中間節点（末尾でない）の削除は Noop
+        stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
+        assert_eq!(model.nodes.len(), 2);
     }
 
     #[test]
