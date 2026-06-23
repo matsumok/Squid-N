@@ -129,6 +129,12 @@ pub struct App {
     /// 断面作成UI のドラフト（UI-3）
     #[cfg(feature = "gui")]
     pub section_draft: crate::section_editor::SectionEditorDraft,
+    /// ビューアの梁作成モード（ON 中はクリックで節点を選び 2 点で梁を作る）
+    #[cfg(feature = "gui")]
+    pub beam_draw_mode: bool,
+    /// 梁作成モードで選択済みの始点節点（2 点目で梁を生成しリセット）
+    #[cfg(feature = "gui")]
+    pub beam_draw_first: Option<sc_core::ids::NodeId>,
 }
 
 impl Default for App {
@@ -163,6 +169,10 @@ impl Default for App {
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
             #[cfg(feature = "gui")]
             section_draft: crate::section_editor::SectionEditorDraft::default(),
+            #[cfg(feature = "gui")]
+            beam_draw_mode: false,
+            #[cfg(feature = "gui")]
+            beam_draw_first: None,
         }
     }
 }

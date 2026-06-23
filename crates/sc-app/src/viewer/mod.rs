@@ -1,4 +1,5 @@
 use crate::app::App;
+use sc_core::ids::SectionId;
 
 /// ビューアの表示モード。
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -108,12 +109,93 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     app.deform_scale = deform_scale;
     app.view_mode_idx = mode_idx;
 
+    // --- 梁作成モード ---
+    // ON 中はクリックで節点を選び、2 点目で梁を生成する（OFF 中は部材クリック=断面割当）。
+    ui.horizontal(|ui| {
+        ui.toggle_value(&mut app.beam_draw_mode, "梁作成モード");
+        if app.beam_draw_mode {
+            match app.beam_draw_first {
+                None => {
+                    ui.label("始点の節点をクリック");
+                }
+                Some(nid) => {
+                    ui.label(format!("始点 N{} 選択中 → 終点の節点をクリック", nid.0));
+                    if ui.button("キャンセル").clicked() {
+                        app.beam_draw_first = None;
+                    }
+                }
+            }
+        }
+    });
+    // モード OFF 時は始点選択をクリア
+    if !app.beam_draw_mode {
+        app.beam_draw_first = None;
+    }
+
+    // --- 断面割当 UI ---
+    // focus_member を先にコピーして、後段の可変借用と競合しないようにする
+    let focus_id: Option<sc_core::ids::ElemId> = app.nav.focus_member;
+    // 存在確認もここで行い、ローカルに有効性と現在断面を取得
+    let elem_info: Option<(sc_core::ids::ElemId, Option<SectionId>)> = focus_id.and_then(|eid| {
+        app.model
+            .elements
+            .iter()
+            .find(|e| e.id == eid)
+            .map(|e| (e.id, e.section))
+    });
+
+    let mut pending_assign: Option<Option<SectionId>> = None;
+
+    if let Some((elem_id, current_section)) = elem_info {
+        ui.horizontal(|ui| {
+            ui.label(format!("選択中の梁 #{}", elem_id.0));
+            ui.label("断面:");
+            let selected_text = current_section
+                .map(|sid| format!("S{}", sid.0))
+                .unwrap_or_else(|| "―".to_string());
+            egui::ComboBox::from_id_salt("viewer_assign_section")
+                .selected_text(selected_text)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current_section.is_none(), "―")
+                        .clicked()
+                    {
+                        pending_assign = Some(None);
+                    }
+                    for sec in &app.model.sections {
+                        if ui
+                            .selectable_label(
+                                current_section == Some(sec.id),
+                                format!("S{}", sec.id.0),
+                            )
+                            .clicked()
+                        {
+                            pending_assign = Some(Some(sec.id));
+                        }
+                    }
+                });
+        });
+        // クロージャ外で発行（借用ルール）
+        if let Some(section) = pending_assign {
+            app.undo.run(
+                &mut app.model,
+                Box::new(sc_edit::SetElementSection {
+                    elem: elem_id,
+                    section,
+                }),
+            );
+            app.staleness.mark_edited();
+        }
+    } else {
+        ui.label("ビューアで梁をクリックすると選択できます");
+    }
+
     ui.separator();
 
     // --- 描画領域 ---
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ui.available_height()),
-        egui::Sense::drag(),
+        egui::Sense::click_and_drag(),
     );
 
     // カメラ操作（ドラッグ=パン/回転、ズーム）
@@ -217,13 +299,103 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         })
         .collect();
 
-    // 節点
-    for &p in &pts {
-        painter.circle_filled(
-            egui::pos2(p[0], p[1]),
-            3.0,
-            egui::Color32::from_rgb(100, 200, 255),
-        );
+    // --- クリック処理 ---
+    if response.clicked() {
+        if let Some(click_pos) = response.interact_pointer_pos() {
+            if app.beam_draw_mode {
+                // 梁作成モード：クリック位置に最も近い節点を選ぶ
+                let mut best: Option<(usize, f32)> = None;
+                for (i, &p) in pts.iter().enumerate() {
+                    let d = (click_pos - egui::pos2(p[0], p[1])).length();
+                    if best.map_or(true, |(_, bd)| d < bd) {
+                        best = Some((i, d));
+                    }
+                }
+                // 節点ピッキング許容距離（px）
+                const NODE_PICK_THRESHOLD: f32 = 10.0;
+                if let Some((i, d)) = best {
+                    if d <= NODE_PICK_THRESHOLD {
+                        let node_id = app.model.nodes[i].id;
+                        match app.beam_draw_first {
+                            None => {
+                                // 1 点目：始点として記憶
+                                app.beam_draw_first = Some(node_id);
+                            }
+                            Some(first) => {
+                                // 2 点目：始点と異なれば梁を生成。同一節点は無視。
+                                if first != node_id {
+                                    let new_id =
+                                        sc_core::ids::ElemId(app.model.elements.len() as u32);
+                                    let elem = sc_core::model::ElementData {
+                                        id: new_id,
+                                        kind: sc_core::model::ElementKind::Beam,
+                                        nodes: [first, node_id].into_iter().collect(),
+                                        section: None,
+                                        material: None,
+                                        local_axis: sc_core::model::LocalAxis {
+                                            ref_vector: [0.0, 0.0, 1.0],
+                                        },
+                                        end_cond: [
+                                            sc_core::model::EndCondition::Fixed,
+                                            sc_core::model::EndCondition::Fixed,
+                                        ],
+                                        force_regime: sc_core::model::ForceRegime::Auto,
+                                        rigid_zone: Default::default(),
+                                    };
+                                    app.undo
+                                        .run(&mut app.model, Box::new(sc_edit::AddMember { elem }));
+                                    app.staleness.mark_edited();
+                                    app.nav.focus_member = Some(new_id);
+                                }
+                                // 次の梁に備えて始点をリセット
+                                app.beam_draw_first = None;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 通常モード：クリック位置に最も近い部材線分を選び、閾値内なら選択。
+                let mut best: Option<(sc_core::ids::ElemId, f32)> = None;
+                for elem in &app.model.elements {
+                    if elem.nodes.len() < 2 {
+                        continue;
+                    }
+                    let n0 = elem.nodes[0].index();
+                    let n1 = elem.nodes[1].index();
+                    if n0 >= pts.len() || n1 >= pts.len() {
+                        continue;
+                    }
+                    let a = egui::pos2(pts[n0][0], pts[n0][1]);
+                    let b = egui::pos2(pts[n1][0], pts[n1][1]);
+                    let d = dist_point_to_segment(click_pos, a, b);
+                    if best.map_or(true, |(_, bd)| d < bd) {
+                        best = Some((elem.id, d));
+                    }
+                }
+                // ピッキング許容距離（px）
+                const PICK_THRESHOLD: f32 = 8.0;
+                match best {
+                    Some((id, d)) if d <= PICK_THRESHOLD => {
+                        app.selection.members = vec![id];
+                        app.nav.focus_member = Some(id);
+                    }
+                    _ => {
+                        app.selection.members.clear();
+                    }
+                }
+            }
+        }
+    }
+
+    // 節点（梁作成モードの始点は強調表示）
+    for (i, &p) in pts.iter().enumerate() {
+        let is_first = app.beam_draw_first == Some(app.model.nodes[i].id);
+        let (radius, color) = if is_first {
+            (5.0, egui::Color32::from_rgb(255, 120, 120))
+        } else {
+            (3.0, egui::Color32::from_rgb(100, 200, 255))
+        };
+        painter.circle_filled(egui::pos2(p[0], p[1]), radius, color);
     }
 
     // 部材（線）
@@ -476,6 +648,19 @@ fn draw_cmq_diagram(painter: &egui::Painter, app: &App, pts: &[[f32; 2]]) {
         egui::FontId::proportional(14.0),
         egui::Color32::from_gray(220),
     );
+}
+
+/// 点 p から線分 ab までの最短距離（スクリーン座標, px）。
+fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let len_sq = ab.x * ab.x + ab.y * ab.y;
+    if len_sq < 1e-6 {
+        return ap.length();
+    }
+    let t = ((ap.x * ab.x + ap.y * ab.y) / len_sq).clamp(0.0, 1.0);
+    let proj = egui::pos2(a.x + ab.x * t, a.y + ab.y * t);
+    (p - proj).length()
 }
 
 /// モデルのバウンディングボックス対角線長。
