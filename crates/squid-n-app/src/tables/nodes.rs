@@ -18,6 +18,9 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     restraint: squid_n_core::dof::Dof6Mask::FREE,
                 }),
             );
+            // model.nodes が +1 されたので node_edit の長さを再同期
+            // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
+            app.sync_node_edit();
             app.staleness.mark_edited();
         }
     });

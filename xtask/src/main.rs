@@ -17,11 +17,7 @@ fn main() -> anyhow::Result<()> {
             "squid-n-material",
             "squid-n-ml",
         ],
-        &[
-            "squid-n-section",
-            "squid-n-load",
-            "squid-n-gpu",
-        ],
+        &["squid-n-section", "squid-n-load", "squid-n-gpu"],
         &["squid-n-edit", "squid-n-skeleton"],
         &["squid-n-element"],
         &["squid-n-solver", "squid-n-io"],
