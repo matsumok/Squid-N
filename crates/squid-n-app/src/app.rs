@@ -398,6 +398,12 @@ fn is_steel(name: &str) -> bool {
 #[cfg(feature = "gui")]
 impl eframe::App for App {
     #![allow(deprecated)] // 4ペイン分割に allocate_ui_at_rect を使用（deprecation は cosmetic）
+
+    // eframe のデフォルトは (12,12,12) ≒ 黒なので、テーマに合わせた白灰色で上書きする
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        crate::theme::GRAY_100.to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // 上部ツールバー: 工程タブ（自由遷移）+ Undo/Redo
         ui.horizontal(|ui| {

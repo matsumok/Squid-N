@@ -91,6 +91,10 @@ pub fn status_color(ratio: f64) -> Color32 {
 /// TONMANUAL に沿ったテーマ（ライト基準・ブルークローム・角丸 4/6px・タイポスケール）を
 /// egui コンテキストへ適用する。アプリ起動時に一度だけ呼ぶ。
 pub fn apply_theme(ctx: &egui::Context) {
+    // eframe がダークテーマで起動する場合を防ぐため、
+    // visuals を先にライトテーマで上書きしてから詳細設定を重ねる
+    ctx.set_visuals(egui::Visuals::light());
+
     let mut style = (*ctx.global_style()).clone();
     let mut v = egui::Visuals::light();
 
