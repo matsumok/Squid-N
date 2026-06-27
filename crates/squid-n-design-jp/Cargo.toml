@@ -1,0 +1,24 @@
+[package]
+name = "squid-n-design-jp"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[features]
+# P7（二次設計）は完成済みフェーズで重い依存も無いため default に含める。
+# 非デフォルトのまま放置すると通常の cargo test/build で検証されず腐る（実際 P7 は
+# コンパイル不能のまま「✅」と誤報告されていた）。再発防止のため default 化する。
+default = ["p7"]
+p7 = []
+# P12 限界耐力計算（容量スペクトル法）。未実装・将来フェーズなので opt-in のまま。
+p12 = []
+
+[dependencies]
+squid-n-core = { path = "../squid-n-core" }
+squid-n-element = { path = "../squid-n-element" }
+squid-n-solver = { path = "../squid-n-solver" }
+squid-n-load = { path = "../squid-n-load" }
+
+[dev-dependencies]
+approx   = { workspace = true }
+smallvec = { workspace = true }

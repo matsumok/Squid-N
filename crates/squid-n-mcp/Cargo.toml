@@ -1,0 +1,23 @@
+[package]
+name = "squid-n-mcp"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[features]
+default = []
+mcp = ["dep:rmcp", "dep:tokio"]
+
+[dependencies]
+squid-n-core = { path = "../squid-n-core" }
+squid-n-solver = { path = "../squid-n-solver" }
+squid-n-io = { path = "../squid-n-io" }
+squid-n-edit = { path = "../squid-n-edit" }
+rmcp = { workspace = true, optional = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true, optional = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+smallvec = { workspace = true }

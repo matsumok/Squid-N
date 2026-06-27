@@ -83,7 +83,7 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 - 章選択・図表
 
 **現状: ❌ 未実装**
-- sc-app は pub fn placeholder() {} のみ
+- squid-n-app は pub fn placeholder() {} のみ
 - GUI フレームワークの選定・実装は未着手
 
 **対応方針:** GUI アプリは P3 で土台実装後、P9 でレポート出力機能を追加。
@@ -119,21 +119,21 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 | RC 許容応力度（Fc 参照・鉄筋グレード・短期上限） | ✅ | `Material.fc` を新設し Fc を正しく取得（`allowable_stress.rs:156`）。鉄筋グレードを `mat.name` から（`:194`）。SD345 短期上限を F=345 ベースに（`:144`） |
 | RC 曲げの本格検定式（a_t·j 等） | 🔶 | `Section` に引張鉄筋断面積 a_t が無いため暫定（σc=M/Z でコンクリート圧縮検定）。P4 で SectionShape 経路が整ってから本格実装 |
 | RC せん断検定 | 🔶 | τ=Q/(b·j), j=7d/8 の暫定式を実装。αs·fw 等の詳細式は P7/AIJ 外部データ |
-| 編集トランザクション（Undo/Redo） | ✅ | `sc-edit` クレートに統一。断面・荷重編集コマンド（SetSectionField/SetSectionName/SetElementSection/SetLoadCaseName/SetNodalLoad/DeleteNodalLoad）も追加 |
+| 編集トランザクション（Undo/Redo） | ✅ | `squid-n-edit` クレートに統一。断面・荷重編集コマンド（SetSectionField/SetSectionName/SetElementSection/SetLoadCaseName/SetNodalLoad/DeleteNodalLoad）も追加 |
 | **UI 横断タスク（UI設計.md §9.2 UI-1〜UI-7）: 旧版では未達を過小申告** |
 | UI-1: 工程タブ + 4ペイン | ✅ | `Tab{Model,Loads,Analysis,Results,Design,Report}` へ改訂、ナビ/中央/インスペクタ/ステータス4ペイン化 |
 | UI-2: Navigator + 双方向連動 | ✅ | `Navigator` 構造体新設、テーブル/ナビのクリックで `nav.focus_*` 同期→インスペクタ連動 |
 | UI-3: 断面作成UI | ✅ | `section_editor.rs` 新設、8タイプ（H/箱/L/C/T/丸・RC矩形/RC丸）のドラフト→`SectionShape::to_section`→追加、RC配筋プレビュー |
-| UI-4: 3D選択→断面編集 | ✅ | インスペクタに影響数＋複製ボタン。`sc-edit` に `AddSectionShape`/`EditSectionShape`/`DuplicateSectionForMember` 新設 |
+| UI-4: 3D選択→断面編集 | ✅ | インスペクタに影響数＋複製ボタン。`squid-n-edit` に `AddSectionShape`/`EditSectionShape`/`DuplicateSectionForMember` 新設 |
 | UI-5: 即時バリデーション・コピペ・通り芯 | 🔶 | パース赤背景のみ継続。コピペ・通り芯は後続 |
 | UI-6: stale 表示＋手動再計算 | ✅ | `Staleness` 構造体新設、テーブル編集で mark_edited、解析で mark_fresh、タブとステータスバーに ⚠/✓/▷ 表示 |
 | UI-7: 結果可視化・検定比色分け | 🔶 | N/Q/M/CMQ 図・検定比表は egui Painter で実装済み。3D 検定比色分けと wgpu 本格統合は後続 |
-| UI-D1: `SectionShape` + `RcRebar`/`BarSet`/`ShearBar` | ✅ | 旧版は `RcRebar` 系が未定義だった。新設済み（`sc-section/src/shape.rs:8-36`、`to_section` 完備） |
+| UI-D1: `SectionShape` + `RcRebar`/`BarSet`/`ShearBar` | ✅ | 旧版は `RcRebar` 系が未定義だった。新設済み（`squid-n-section/src/shape.rs:8-36`、`to_section` 完備） |
 | GUI feature のビルド・検証 | ✅ | **旧版は虚偽**: 実際は egui_plot 0.34 が egui 0.33 依存で混在しビルド不能だった。egui_plot 0.35 に昇格して解消。time_history_view の PlotTransform API 差分も修正済み |
-| T0: sc-app 雛形（eframe 起動・タブ） | ✅ | `main.rs` + `[[bin]] structcalc` を追加。タブ切替・ツールバー実装 |
+| T0: squid-n-app 雛形（eframe 起動・タブ） | ✅ | `main.rs` + `[[bin]] squid-n` を追加。タブ切替・ツールバー実装 |
 | T1: テーブル入力（節点座標編集可能） | ✅ | 節点テーブルの X/Y/Z を `TextEdit` で編集可能。`SetNodeCoord` 経由で Undo/Redo 対応。数値以外は赤背景 |
 | T1: テーブル入力（部材・断面・荷重） | ✅ | 部材: 断面割当を ComboBox で編集（`SetElementSection`）。断面: 名称・A・Iy・Iz・J を TextEdit で編集。荷重: ケース名・節点荷重 6 成分を TextEdit で編集。全て Undo/Redo 対応・数値赤背景 |
-| T2: Undo/Redo GUI ボタン | ✅ | ツールバーに配置。`sc_edit::UndoStack` に接続 |
+| T2: Undo/Redo GUI ボタン | ✅ | ツールバーに配置。`squid_n_edit::UndoStack` に接続 |
 | T3: 解析実行（線形静的・固有値・地震） | ✅ | `run_linear_static`/`run_eigen`/`run_seismic` を実装。P2 `Analysis` API に接続 |
 | T4: 3Dビューア（形状・変形・モード形） | ✅ | egui Painter で簡易 3D 描画（等角投影・ドラッグ回転/パン・ズーム）。形状・変形図・モード形（倍率スライダー・モード選択）対応。wgpu 本格統合は後続 |
 | T5: 応力図 N/Q/M・CMQ図 | ✅ | N/Q/M 図: member_forces の評価位置を部材ローカルに沿ってポリゴン描画。CMQ 図: BeamLoad の c_i/c_j（モーメント・青）と q_i/q_j（せん断・橙）を描画 |

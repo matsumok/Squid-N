@@ -4826,187 +4826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sc-app"
-version = "0.0.1"
-dependencies = [
- "eframe",
- "egui",
- "egui_extras",
- "egui_plot",
- "sc-core",
- "sc-design-jp",
- "sc-edit",
- "sc-element",
- "sc-load",
- "sc-section",
- "sc-solver",
- "smallvec",
-]
-
-[[package]]
-name = "sc-core"
-version = "0.0.1"
-dependencies = [
- "approx",
- "serde",
- "smallvec",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sc-design-jp"
-version = "0.0.1"
-dependencies = [
- "approx",
- "sc-core",
- "sc-element",
- "sc-load",
- "sc-solver",
- "smallvec",
-]
-
-[[package]]
-name = "sc-edit"
-version = "0.0.1"
-dependencies = [
- "sc-core",
- "sc-section",
- "schemars 0.8.22",
- "serde",
- "smallvec",
-]
-
-[[package]]
-name = "sc-element"
-version = "0.0.1"
-dependencies = [
- "approx",
- "bincode",
- "sc-core",
- "sc-material",
- "sc-math",
- "sc-section",
- "sc-skeleton",
- "serde",
- "smallvec",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sc-gpu"
-version = "0.0.1"
-dependencies = [
- "approx",
- "cubecl",
- "faer",
- "sc-math",
- "wgpu 29.0.3",
-]
-
-[[package]]
-name = "sc-io"
-version = "0.0.1"
-dependencies = [
- "arrow",
- "bincode",
- "parquet",
- "quick-xml 0.36.2",
- "rmp-serde",
- "sc-core",
- "sc-element",
- "serde",
- "serde_json",
- "sha2",
- "smallvec",
- "thiserror 1.0.69",
- "zip",
-]
-
-[[package]]
-name = "sc-load"
-version = "0.0.1"
-dependencies = [
- "approx",
- "sc-core",
-]
-
-[[package]]
-name = "sc-material"
-version = "0.0.1"
-dependencies = [
- "approx",
- "bincode",
- "insta",
- "serde",
-]
-
-[[package]]
-name = "sc-math"
-version = "0.0.1"
-dependencies = [
- "approx",
- "faer",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "sc-mcp"
-version = "0.0.1"
-dependencies = [
- "rmcp",
- "sc-core",
- "sc-edit",
- "sc-io",
- "sc-solver",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "smallvec",
- "tokio",
-]
-
-[[package]]
-name = "sc-ml"
-version = "0.0.1"
-
-[[package]]
-name = "sc-section"
-version = "0.0.1"
-dependencies = [
- "approx",
- "sc-core",
- "sc-material",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "sc-skeleton"
-version = "0.0.1"
-dependencies = [
- "approx",
- "sc-core",
- "sc-material",
- "sc-section",
-]
-
-[[package]]
-name = "sc-solver"
-version = "0.0.1"
-dependencies = [
- "approx",
- "bincode",
- "faer",
- "sc-core",
- "sc-element",
- "sc-load",
- "sc-math",
- "serde",
- "smallvec",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "schemars"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5405,6 +5224,187 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.13.0",
+]
+
+[[package]]
+name = "squid-n-app"
+version = "0.0.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_extras",
+ "egui_plot",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-design-jp",
+ "squid-n-edit",
+ "squid-n-element",
+ "squid-n-load",
+ "squid-n-section",
+ "squid-n-solver",
+]
+
+[[package]]
+name = "squid-n-core"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "serde",
+ "smallvec",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "squid-n-design-jp"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-element",
+ "squid-n-load",
+ "squid-n-solver",
+]
+
+[[package]]
+name = "squid-n-edit"
+version = "0.0.1"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-section",
+]
+
+[[package]]
+name = "squid-n-element"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "bincode",
+ "serde",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-material",
+ "squid-n-math",
+ "squid-n-section",
+ "squid-n-skeleton",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "squid-n-gpu"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "cubecl",
+ "faer",
+ "squid-n-math",
+ "wgpu 29.0.3",
+]
+
+[[package]]
+name = "squid-n-io"
+version = "0.0.1"
+dependencies = [
+ "arrow",
+ "bincode",
+ "parquet",
+ "quick-xml 0.36.2",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-element",
+ "thiserror 1.0.69",
+ "zip",
+]
+
+[[package]]
+name = "squid-n-load"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "squid-n-core",
+]
+
+[[package]]
+name = "squid-n-material"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "bincode",
+ "insta",
+ "serde",
+]
+
+[[package]]
+name = "squid-n-math"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "faer",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "squid-n-mcp"
+version = "0.0.1"
+dependencies = [
+ "rmcp",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-edit",
+ "squid-n-io",
+ "squid-n-solver",
+ "tokio",
+]
+
+[[package]]
+name = "squid-n-ml"
+version = "0.0.1"
+
+[[package]]
+name = "squid-n-section"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "serde",
+ "serde_json",
+ "squid-n-core",
+ "squid-n-material",
+]
+
+[[package]]
+name = "squid-n-skeleton"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "squid-n-core",
+ "squid-n-material",
+ "squid-n-section",
+]
+
+[[package]]
+name = "squid-n-solver"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "bincode",
+ "faer",
+ "serde",
+ "smallvec",
+ "squid-n-core",
+ "squid-n-element",
+ "squid-n-load",
+ "squid-n-math",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

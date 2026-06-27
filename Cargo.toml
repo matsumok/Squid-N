@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/sc-core", "crates/sc-math", "crates/sc-io",
-    "crates/sc-material", "crates/sc-section", "crates/sc-element",
-    "crates/sc-skeleton", "crates/sc-load", "crates/sc-solver",
-    "crates/sc-design-jp", "crates/sc-gpu", "crates/sc-ml",
-    "crates/sc-edit", "crates/sc-mcp", "crates/sc-app",
+    "crates/squid-n-core", "crates/squid-n-math", "crates/squid-n-io",
+    "crates/squid-n-material", "crates/squid-n-section", "crates/squid-n-element",
+    "crates/squid-n-skeleton", "crates/squid-n-load", "crates/squid-n-solver",
+    "crates/squid-n-design-jp", "crates/squid-n-gpu", "crates/squid-n-ml",
+    "crates/squid-n-edit", "crates/squid-n-mcp", "crates/squid-n-app",
     "xtask",
 ]
 

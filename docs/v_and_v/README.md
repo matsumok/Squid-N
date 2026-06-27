@@ -1,6 +1,6 @@
 # V&V レポート（検証・妥当性確認）
 
-本ディレクトリは、Squidcan の各要素・各設計式に対する V&V（Verification & Validation）レポートを格納する。
+本ディレクトリは、Squid-N の各要素・各設計式に対する V&V（Verification & Validation）レポートを格納する。
 
 ## V&V の定義
 
@@ -43,31 +43,31 @@
 
 | # | 対象 | クレート | ソースファイル | テスト関数 | フェーズ | 状態 |
 |---|------|----------|---------------|-----------|---------|------|
-| 1 | ティモシェンコ梁 | sc-element | beam.rs | `test_phi_zero_converges_to_bernoulli`, `test_beam_axial_stiffness`, `test_beam_torsion_stiffness` | P1 | ✅ |
-| 2 | 剛域あり梁 | sc-element | beam.rs | `test_auto_rigid_zone_standard_formula` | P1 | 🔶 |
-| 3 | 端部ばね（ピン・半剛） | sc-element | beam.rs | `test_pinned_end_releases_moment` | P1 | 🔶 |
-| 4 | MITC4 シェル（膜） | sc-element | shell.rs | `test_patch_membrane_distorted`（歪みメッシュ・機械精度） | P1.5 | ✅ |
-| 5 | MITC4 シェル（曲げ） | sc-element | shell.rs | `test_patch_bending_distorted`（歪みメッシュ定曲率・機械精度） | P1.5 | ✅ |
-| 6 | MITC4 シェル（せん断/収束） | sc-solver | linear.rs | `test_ss_plate_convergence`, `test_clamped_plate_convergence`（板たわみ ±2% 収束＝ロッキングなし） | P1.5 | ✅ |
-| 7 | パネルゾーン弾性 | sc-element | panel.rs | `test_panel_zone_reference_case1`（pQc=851.135kN 等）, `test_panel_zone_reference_case2_t_joint`（ト型） | P1 | ✅ |
-| 8 | 線形静的解析 | sc-solver | linear.rs | `test_*`（座標変換回帰 `test_beam_to_global_transverse_uses_correct_inertia` 含む） | P2 | ✅ |
-| 9 | 固有値解析 | sc-solver | eigen.rs | `test_1dof_period` | P2 | ✅ |
-| 10 | Ai分布 | sc-load | ai.rs | `test_*` | P2 | ✅ |
-| 11 | 床荷重分割 | sc-load | floor.rs | `test_*` | P2 | ✅ |
-| 12 | 荷重組合せ | sc-load | combo.rs | `test_combinations` | P2 | ✅ |
-| 13 | 許容応力度設計 | sc-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
-| 14 | 保有耐力 | sc-design-jp | holding_capacity.rs | `test_*` | P7 | 🔶 |
-| 15 | プッシュオーバー | sc-solver | pushover.rs | — | P5 | 🔶 |
-| 16 | 壁（TVLEM） | sc-element | — | — | P5.5 | ❌ |
-| 17 | 時刻歴 | sc-solver | timehistory.rs | — | P6 | ❌ |
-| 18 | 限界耐力 | sc-design-jp | capacity_spectrum.rs | `test_capacity_spectrum` | P12 | ❌ |
-| 19 | 一軸履歴則（Concrete/Bilinear/MP） | sc-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
-| 20 | 部材履歴則（武田・原点指向・スリップ） | sc-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
-| 21 | ファイバ断面（M–φ 積分） | sc-section | fiber.rs | `test_section_*` | P4 | ✅ |
-| 22 | スケルトン自動算定（M–φ→M–θ） | sc-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
-| 23 | MCP サーバ（rmcp） | sc-mcp | lib.rs | — | P8 | ❌ |
-| 24 | ST-Bridge 入出力 | sc-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
-| 25 | 編集トランザクション（EditCommand/Undo） | sc-edit | lib.rs | `test_*` | P3/P8 | ✅ |
+| 1 | ティモシェンコ梁 | squid-n-element | beam.rs | `test_phi_zero_converges_to_bernoulli`, `test_beam_axial_stiffness`, `test_beam_torsion_stiffness` | P1 | ✅ |
+| 2 | 剛域あり梁 | squid-n-element | beam.rs | `test_auto_rigid_zone_standard_formula` | P1 | 🔶 |
+| 3 | 端部ばね（ピン・半剛） | squid-n-element | beam.rs | `test_pinned_end_releases_moment` | P1 | 🔶 |
+| 4 | MITC4 シェル（膜） | squid-n-element | shell.rs | `test_patch_membrane_distorted`（歪みメッシュ・機械精度） | P1.5 | ✅ |
+| 5 | MITC4 シェル（曲げ） | squid-n-element | shell.rs | `test_patch_bending_distorted`（歪みメッシュ定曲率・機械精度） | P1.5 | ✅ |
+| 6 | MITC4 シェル（せん断/収束） | squid-n-solver | linear.rs | `test_ss_plate_convergence`, `test_clamped_plate_convergence`（板たわみ ±2% 収束＝ロッキングなし） | P1.5 | ✅ |
+| 7 | パネルゾーン弾性 | squid-n-element | panel.rs | `test_panel_zone_reference_case1`（pQc=851.135kN 等）, `test_panel_zone_reference_case2_t_joint`（ト型） | P1 | ✅ |
+| 8 | 線形静的解析 | squid-n-solver | linear.rs | `test_*`（座標変換回帰 `test_beam_to_global_transverse_uses_correct_inertia` 含む） | P2 | ✅ |
+| 9 | 固有値解析 | squid-n-solver | eigen.rs | `test_1dof_period` | P2 | ✅ |
+| 10 | Ai分布 | squid-n-load | ai.rs | `test_*` | P2 | ✅ |
+| 11 | 床荷重分割 | squid-n-load | floor.rs | `test_*` | P2 | ✅ |
+| 12 | 荷重組合せ | squid-n-load | combo.rs | `test_combinations` | P2 | ✅ |
+| 13 | 許容応力度設計 | squid-n-design-jp | allowable_stress.rs | `test_steel_check_bending_spec_p3_6_4` 他 | P3 | ✅ |
+| 14 | 保有耐力 | squid-n-design-jp | holding_capacity.rs | `test_*` | P7 | 🔶 |
+| 15 | プッシュオーバー | squid-n-solver | pushover.rs | — | P5 | 🔶 |
+| 16 | 壁（TVLEM） | squid-n-element | — | — | P5.5 | ❌ |
+| 17 | 時刻歴 | squid-n-solver | timehistory.rs | — | P6 | ❌ |
+| 18 | 限界耐力 | squid-n-design-jp | capacity_spectrum.rs | `test_capacity_spectrum` | P12 | ❌ |
+| 19 | 一軸履歴則（Concrete/Bilinear/MP） | squid-n-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
+| 20 | 部材履歴則（武田・原点指向・スリップ） | squid-n-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
+| 21 | ファイバ断面（M–φ 積分） | squid-n-section | fiber.rs | `test_section_*` | P4 | ✅ |
+| 22 | スケルトン自動算定（M–φ→M–θ） | squid-n-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
+| 23 | MCP サーバ（rmcp） | squid-n-mcp | lib.rs | — | P8 | ❌ |
+| 24 | ST-Bridge 入出力 | squid-n-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
+| 25 | 編集トランザクション（EditCommand/Undo） | squid-n-edit | lib.rs | `test_*` | P3/P8 | ✅ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
 
@@ -83,7 +83,7 @@
 > #24: ST-Bridge は当初 import/export とも未実装だったが、P8 検証で **2.0 subset の意味的往復を実装**
 > （節点・層・材料・断面・部材・節点荷重。export 冪等・再import安定をテスト）。断面は形鋼ライブラリ
 > 参照でなく物性直持ち（StbSecRaw）の subset のため 🔶。完全な他社相互運用は将来。
-> #25: `sc-edit` の EditCommand/UndoStack は P3 で実装済み・健全（MCP からの利用は未配線）。
+> #25: `squid-n-edit` の EditCommand/UndoStack は P3 で実装済み・健全（MCP からの利用は未配線）。
 > P4（材料・断面）の監査結果は `docs/v_and_v/p4_review.md` を参照。
 > #19: 包絡線（軟化・接線符号・連続性）・ひび割れ判定・MP 反転検知/ξ 更新を修正し、単軸履歴則 insta スナップショット追加で ✅。
 > #20: 武田・原点指向・スリップに `UniaxialMaterial`(trial/commit/revert) を実装。武田内側ルール（ポリゴン則）・TakedaDegrading（ピーク劣化）を本格化。insta スナップショットでループ固定し ✅。

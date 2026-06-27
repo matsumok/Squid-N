@@ -1,0 +1,19 @@
+[package]
+name = "squid-n-solver"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+squid-n-core   = { path = "../squid-n-core" }
+squid-n-math   = { path = "../squid-n-math" }
+squid-n-element = { path = "../squid-n-element" }
+squid-n-load   = { path = "../squid-n-load" }
+faer      = { workspace = true }
+smallvec  = { workspace = true }
+thiserror = { workspace = true }
+serde     = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+bincode = { workspace = true }

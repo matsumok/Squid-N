@@ -1,7 +1,7 @@
 # P7（二次設計：保有水平耐力）監査レポート
 
 **監査日:** 2026-06-22
-**対象:** `crates/sc-design-jp`（`holding_capacity.rs` ほか）／`specs/P7_二次設計.md`
+**対象:** `crates/squid-n-design-jp`（`holding_capacity.rs` ほか）／`specs/P7_二次設計.md`
 **結論:** 完了報告は虚偽。実装は約4割、テストはコンパイル不能の状態で放置されていた。
 
 ---
@@ -13,7 +13,7 @@ V&V 索引（`docs/v_and_v/README.md` #14）は「保有耐力 / holding_capacit
 
 | 事象 | 詳細 |
 |------|------|
-| テストがビルド不能 | `cargo test -p sc-design-jp --features p7` が E0063 で失敗。`PushoverResult` に P5/P6 で追加された `capacity_curve` `hinges` `mechanism` `qu` フィールドにテストが追従していなかった。 |
+| テストがビルド不能 | `cargo test -p squid-n-design-jp --features p7` が E0063 で失敗。`PushoverResult` に P5/P6 で追加された `capacity_curve` `hinges` `mechanism` `qu` フィールドにテストが追従していなかった。 |
 | 通常ビルドで一度も検証されない | `p7` は非デフォルト機能で、他クレートも有効化していない。モジュール全体が `cargo build`／`cargo test`（既定）で一度もコンパイルされず、壊れたまま検出されなかった。 |
 | P12 の混入 | `capacity_spectrum.rs`（容量スペクトル法＝限界耐力＝P12）が `p7` feature 配下に置かれていた。フェーズ境界違反。 |
 
@@ -78,7 +78,7 @@ Xs を求めるには Y 方向に効く構面（X 位置に並ぶ）の剛性が
 | 4 | T5 `panel_shear.rs` | 完了。`check_panel_shear`（F/√3 短期・F/(1.5√3) 長期、割増 factor 外部化） |
 | 5 | T6 `check_holding_capacity` 統合 | 完了。**Qu を P5 `capacity_curve` 最終点から取得**、Rs/Re/部材ランクを出力に反映、境界（Qu=Qun）試験追加 |
 
-**テスト:** `cargo test -p sc-design-jp --features p7` → 60 passed / 0 failed。`cargo build --workspace` 緑、clippy 警告なし。
+**テスト:** `cargo test -p squid-n-design-jp --features p7` → 60 passed / 0 failed。`cargo build --workspace` 緑、clippy 警告なし。
 
 ## 5. フォローアップ（feat/p7-followup ブランチ）での是正
 
@@ -90,14 +90,14 @@ Xs を求めるには Y 方向に効く構面（X 位置に並ぶ）の剛性が
 
 ## 6. 派生して発見・修正した重大バグ（P2 Ai 層せん断）
 
-`sc-load::ai::ai_distribution` の層せん断 `qi` が `Ci·単層重量` で計算されていた。正しくは
+`squid-n-load::ai::ai_distribution` の層せん断 `qi` が `Ci·単層重量` で計算されていた。正しくは
 **`Qi = Ci·Wi`（Wi＝当該層以上の累積重量、令88条）**。旧実装では各層水平力
 `Pi = Qi[i] − Qi[i+1]` が下層で負になり `max(0)` で 0 に潰れ、**地震外力が最上層にしか
 載らず基部せん断が大幅過小**になっていた（等重量3層で基部せん断が約半分）。
 
 - 影響範囲: 線形地震解析（`analysis.rs`）・プッシュオーバー荷重パターン（`pushover.rs`）・P7 Qud。
 - 修正: `qi = ci·αi·total_w`（αi=Wi/total_w）。`test_story_shear_uses_cumulative_weight`
-  で ΣPi=基部せん断・単調減少を照合。sc-load 11 / sc-solver 58 passed。
+  で ΣPi=基部せん断・単調減少を照合。squid-n-load 11 / squid-n-solver 58 passed。
 
 ## 7. なお残る限界（テックリード作業・将来）
 

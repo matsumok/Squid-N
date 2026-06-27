@@ -1,0 +1,19 @@
+[package]
+name = "squid-n-gpu"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[features]
+default = []
+gpu = ["dep:wgpu", "dep:cubecl"]
+
+[dependencies]
+squid-n-math = { path = "../squid-n-math" }
+faer    = { workspace = true }
+
+wgpu   = { version = "29", optional = true }
+cubecl = { version = "0.3", optional = true, default-features = false, features = ["wgpu"] }
+
+[dev-dependencies]
+approx = { workspace = true }

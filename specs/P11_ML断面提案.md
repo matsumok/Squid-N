@@ -3,7 +3,7 @@
 **対象フェーズ:** v2.0 拡張 / P11 ML（設計書 §18）
 **対象読者:** Rust ジュニアエンジニア（ML は §8 で補う）
 **親文書:** `構造計算一貫プログラム_実装設計書.md`（以降「設計書」。`§x.y` はその章番号）
-**先行フェーズ:** [P0](P0_基盤.md)〜[P9](P9_仕上げ.md)（特に sc-design-jp/sc-solver を学習・検証に使う）
+**先行フェーズ:** [P0](P0_基盤.md)〜[P9](P9_仕上げ.md)（特に squid-n-design-jp/squid-n-solver を学習・検証に使う）
 **前提環境:** Rust stable / `burn = "0.21"`（backend: ndarray/wgpu/cuda を feature 切替）/ `feature = "ml"`
 
 ---
@@ -15,7 +15,7 @@
 設計者の初期断面選定を支援する **ML 提案エンジン**を作る。設計書 §16。
 
 > **★最重要の原則（§16.1 / §20-risk6）:** **ML は「提案」だけ。最終判断と適合性は必ず
-> `sc-design-jp` の断面算定（P3 許容応力度・P7 保有耐力）で検証する。** ML の出力を無検証で設計に
+> `squid-n-design-jp` の断面算定（P3 許容応力度・P7 保有耐力）で検証する。** ML の出力を無検証で設計に
 > 使わせない。本フェーズの成果物には**必ず規準計算による検証ゲートを通す**フローを組み込む。
 
 - **回帰/分類モデル**：スパン・荷重・階数・部材種別・想定軸力・地域係数 → 推奨断面寸法・配筋クラス。
@@ -35,7 +35,7 @@
 
 | 項目 | P11 で | 備考 |
 |---|---|---|
-| 学習データ自動生成（合成＋過去案件） | **含む** | §3。sc-design-jp/sc-solver を回す |
+| 学習データ自動生成（合成＋過去案件） | **含む** | §3。squid-n-design-jp/squid-n-solver を回す |
 | 回帰/分類モデル（断面提案） | **含む** | §4。初期版 |
 | サロゲートモデル（検定比近似） | **含む** | §5 |
 | 提案→規準検証ループ（MCP 連携） | **含む（必須ゲート）** | §6 |
@@ -48,8 +48,8 @@
 ## 1. タスク一覧と依存順序
 
 ```
-T0 sc-ml 雛形（burn backend・feature gate）(§2)
-   └─> T1 学習データ自動生成（sc-design-jp/sc-solver 合成）(§3)
+T0 squid-n-ml 雛形（burn backend・feature gate）(§2)
+   └─> T1 学習データ自動生成（squid-n-design-jp/squid-n-solver 合成）(§3)
           ├─> T2 回帰/分類モデル（断面提案）(§4)
           └─> T3 サロゲートモデル（検定比近似）(§5)
 T4 提案→規準検証ループ（MCP 連携・必須ゲート）(§6)  ← T2,T3, P3/P7/P8
@@ -59,23 +59,23 @@ T0..T5 ─> T6 テスト・DoD (§7)
 
 | ID | タスク | クレート | 依存 |
 |---|---|---|---|
-| T0 | sc-ml 雛形 | sc-ml | P0 |
-| T1 | 学習データ自動生成 | sc-ml | P7, P5 |
-| T2 | 回帰/分類モデル | sc-ml | T1 |
-| T3 | サロゲートモデル | sc-ml | T1 |
-| T4 | 提案→規準検証ループ | sc-ml/sc-mcp | T2,T3, P3/P7/P8 |
-| T5 | 最適化ループ（骨格） | sc-ml | T4 |
+| T0 | squid-n-ml 雛形 | squid-n-ml | P0 |
+| T1 | 学習データ自動生成 | squid-n-ml | P7, P5 |
+| T2 | 回帰/分類モデル | squid-n-ml | T1 |
+| T3 | サロゲートモデル | squid-n-ml | T1 |
+| T4 | 提案→規準検証ループ | squid-n-ml/squid-n-mcp | T2,T3, P3/P7/P8 |
+| T5 | 最適化ループ（骨格） | squid-n-ml | T4 |
 | T6 | テスト・DoD | 全体 | 上記 |
 
 ---
 
-## 2. T0: sc-ml 雛形（burn 0.21）
+## 2. T0: squid-n-ml 雛形（burn 0.21）
 
 > **⚠ API版依存:** burn の Module/Tensor/Backend API はマイナー版で変わる。下は burn 0.21 の標準パターン。
 > backend を **feature 切替**（ndarray=CPU / wgpu / cuda）。`ml` feature 内に隔離。
 
 ```rust
-// sc-ml/src/lib.rs   （[features] ml = ["dep:burn"]; backend は更に細分）
+// squid-n-ml/src/lib.rs   （[features] ml = ["dep:burn"]; backend は更に細分）
 use burn::prelude::*;
 use burn::nn::{Linear, LinearConfig, Relu};
 
@@ -105,18 +105,18 @@ impl<B: Backend> SectionNet<B> {
 
 ## 3. T1: 学習データ自動生成
 
-設計書 §16.3。**学習データは `sc-design-jp` と `sc-solver` を回して自動生成（合成データ）**＋過去案件で増強。
+設計書 §16.3。**学習データは `squid-n-design-jp` と `squid-n-solver` を回して自動生成（合成データ）**＋過去案件で増強。
 
 - 入力特徴ベクトル `x`：スパン・荷重・階数・部材種別・想定軸力・地域係数 Z 等（正規化）。
 - 教師 `y`：その条件で**規準計算が OK（検定比≤1.0）になる断面**（探索 or 過去設計）。
 - 合成：条件をサンプリング → 断面候補を規準計算（P3/P7）で評価 → ラベル付け。
 
 ```rust
-// sc-ml/src/dataset.rs
+// squid-n-ml/src/dataset.rs
 pub struct Sample { pub features: Vec<f32>, pub target: Vec<f32> }
 /// 条件をサンプリングし、規準計算でラベル付けして学習サンプルを作る。
 pub fn generate_synthetic(n: usize) -> Vec<Sample> {
-    // for _ in 0..n: 条件生成 → 断面候補 → sc_design_jp で検定 → OK断面を target に
+    // for _ in 0..n: 条件生成 → 断面候補 → squid_n_design_jp で検定 → OK断面を target に
     todo!()
 }
 ```
@@ -134,8 +134,8 @@ pub fn generate_synthetic(n: usize) -> Vec<Sample> {
 - 配布：burn ネイティブ形式 or onnx 互換。推論は MCP/GUI から呼ぶ。
 
 ```rust
-// sc-ml/src/propose.rs
-pub struct Proposal { pub section: sc_core::model::Section, pub confidence: f32 }
+// squid-n-ml/src/propose.rs
+pub struct Proposal { pub section: squid_n_core::model::Section, pub confidence: f32 }
 /// 学習済みモデルで断面を提案する（推論のみ）。
 pub fn propose_section(net: &SectionNet<impl burn::tensor::backend::Backend>, features: &[f32]) -> Proposal { todo!() }
 ```
@@ -160,15 +160,15 @@ pub fn propose_section(net: &SectionNet<impl burn::tensor::backend::Backend>, fe
 設計書 §16.1 / §16.3 / §20-risk6。**ML 提案を無検証で使わせない構造**をここで保証する。
 
 ```rust
-// sc-ml/src/verify_loop.rs
-pub struct VerifiedProposal { pub section: sc_core::model::Section, pub check: sc_design_jp::CheckResult }
+// squid-n-ml/src/verify_loop.rs
+pub struct VerifiedProposal { pub section: squid_n_core::model::Section, pub check: squid_n_design_jp::CheckResult }
 
 /// 提案 → 規準計算で検証 → 合格のみ返す。不合格は次候補へ（or 最適化ループ §7）。
-pub fn propose_and_verify(features: &[f32], model: &sc_core::model::Model)
+pub fn propose_and_verify(features: &[f32], model: &squid_n_core::model::Model)
     -> Option<VerifiedProposal>
 {
     // 1. ML で候補断面（複数）を提案（§4）/ サロゲートで足切り（§5）
-    // 2. 各候補を sc_design_jp で検定（P3 許容応力度 / P7 保有耐力）
+    // 2. 各候補を squid_n_design_jp で検定（P3 許容応力度 / P7 保有耐力）
     // 3. 検定比≤1.0 の最良案のみ VerifiedProposal で返す。無ければ None。
     todo!()
 }
@@ -221,7 +221,7 @@ pub fn propose_and_verify(features: &[f32], model: &sc_core::model::Model)
 
 ### 8.3 合成データ（→ §3）
 教師データは過去案件だけだと足りない。条件をサンプリングし、規準計算でラベル付けして**自前で量産**する
-（sc-design-jp/sc-solver が真値を与える）。これで ML を支える教師が揃う。
+（squid-n-design-jp/squid-n-solver が真値を与える）。これで ML を支える教師が揃う。
 
 ---
 
@@ -237,5 +237,5 @@ pub fn propose_and_verify(features: &[f32], model: &sc_core::model::Model)
 
 ---
 
-*本仕様書は P11（ML 断面提案）を対象とする。ML は提案のみ・判定は必ず sc-design-jp。最適化ループは将来。*
+*本仕様書は P11（ML 断面提案）を対象とする。ML は提案のみ・判定は必ず squid-n-design-jp。最適化ループは将来。*
 *次は P12（限界耐力計算）で v2.0 を完結。*

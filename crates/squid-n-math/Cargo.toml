@@ -1,0 +1,12 @@
+[package]
+name = "squid-n-math"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+faer      = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
