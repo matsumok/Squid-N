@@ -8,21 +8,46 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     // バッファを model に同期（長さ合わせ + 未編集セルの更新）
     app.sync_node_edit();
 
-    // 節点追加ボタン（node_edit 取り出し前に処理することで借用衝突を回避）
-    ui.horizontal(|ui| {
-        if ui.button("+ 節点追加").clicked() {
-            app.undo.run(
-                &mut app.model,
-                Box::new(AddNode {
-                    coord: [0.0, 0.0, 0.0],
-                    restraint: squid_n_core::dof::Dof6Mask::FREE,
-                }),
-            );
-            // model.nodes が +1 されたので node_edit の長さを再同期
-            // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
-            app.sync_node_edit();
-            app.staleness.mark_edited();
-        }
+    // 節点追加フォーム（既存節点の境界条件編集とは別の独立した UI）。
+    // 座標を入力してから「追加」を押すことで、その座標を持つ節点を作成する。
+    ui.group(|ui| {
+        ui.strong("節点を追加");
+        // 左パネルが狭い場合でも「追加」ボタンが見切れないよう折り返す
+        ui.horizontal_wrapped(|ui| {
+            for (label, k) in [("X", 0), ("Y", 1), ("Z", 2)] {
+                ui.label(label);
+                let slot = &mut app.node_draft[k];
+                let resp = ui.add(
+                    egui::TextEdit::singleline(slot)
+                        .desired_width(70.0)
+                        .clip_text(false),
+                );
+                if slot.trim().parse::<f64>().is_err() {
+                    ui.painter().rect_filled(
+                        resp.rect,
+                        0.0,
+                        crate::theme::translucent(crate::theme::ERROR_RED, 60),
+                    );
+                }
+            }
+            if ui.button("+ 追加").clicked() {
+                let mut coord = [0.0; 3];
+                for (k, slot) in app.node_draft.iter().enumerate() {
+                    coord[k] = slot.trim().parse::<f64>().unwrap_or(0.0);
+                }
+                app.undo.run(
+                    &mut app.model,
+                    Box::new(AddNode {
+                        coord,
+                        restraint: squid_n_core::dof::Dof6Mask::FREE,
+                    }),
+                );
+                // model.nodes が +1 されたので node_edit の長さを再同期
+                // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
+                app.sync_node_edit();
+                app.staleness.mark_edited();
+            }
+        });
     });
     ui.separator();
 

@@ -97,6 +97,8 @@ pub struct App {
     pub last_error: Option<String>,
     /// 節点座標の編集バッファ（model.nodes に同期）
     pub node_edit: Vec<[String; 3]>,
+    /// 節点追加フォームの入力中座標（境界条件の編集とは別の独立 UI）
+    pub node_draft: [String; 3],
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
     /// ナビゲータ（左ペイン）状態
@@ -158,6 +160,7 @@ impl Default for App {
             last_lc: None,
             last_error: None,
             node_edit: Vec::new(),
+            node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             staleness: Staleness::default(),
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
