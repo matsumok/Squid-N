@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod fiber;
 pub mod shape;
 pub use fiber::*;

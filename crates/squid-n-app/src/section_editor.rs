@@ -7,7 +7,8 @@
 
 use crate::app::App;
 use squid_n_core::ids::SectionId;
-use squid_n_edit::AddSectionShape;
+use squid_n_edit::{AddSection, AddSectionShape};
+use squid_n_section::catalog::CatalogShape;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 /// 断面作成UIのドラフト状態。App に保持して UI を跨いで維持。
@@ -112,6 +113,121 @@ impl ShapeKind {
         ShapeKind::RcRect,
         ShapeKind::RcCircle,
     ];
+}
+
+/// カタログ選択UIの選択状態（Shape→Family→Name の3段階）。
+#[derive(Debug, Clone)]
+pub struct CatalogDraft {
+    pub shape: CatalogShape,
+    pub family: Option<String>,
+    pub name: Option<String>,
+}
+
+impl Default for CatalogDraft {
+    fn default() -> Self {
+        Self {
+            shape: CatalogShape::H,
+            family: None,
+            name: None,
+        }
+    }
+}
+
+/// 断面カタログ選択パネル（日本国内規格）。Shape → Family → Name の順に絞り込み、
+/// 選んだ断面をそのまま `Section` として追加する。パラメトリック作成（[`section_editor_panel`]）
+/// とは別の独立した UI。
+pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
+    ui.group(|ui| {
+        ui.strong("断面カタログから選択（日本国内規格）");
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Shape:");
+            for s in CatalogShape::ALL {
+                let cur = app.catalog_draft.shape;
+                if ui.selectable_label(cur == s, s.label()).clicked() && cur != s {
+                    app.catalog_draft.shape = s;
+                    app.catalog_draft.family = None;
+                    app.catalog_draft.name = None;
+                }
+            }
+        });
+
+        let families = squid_n_section::catalog::families(app.catalog_draft.shape);
+        if families.is_empty() {
+            ui.label("該当する断面がありません");
+            return;
+        }
+        let family = app
+            .catalog_draft
+            .family
+            .clone()
+            .filter(|f| families.contains(&f.as_str()))
+            .unwrap_or_else(|| families[0].to_string());
+        if app.catalog_draft.family.as_deref() != Some(family.as_str()) {
+            app.catalog_draft.family = Some(family.clone());
+            app.catalog_draft.name = None;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Family:");
+            egui::ComboBox::from_id_salt("catalog_family_select")
+                .selected_text(&family)
+                .show_ui(ui, |ui| {
+                    for f in &families {
+                        if ui.selectable_label(family == *f, *f).clicked() {
+                            app.catalog_draft.family = Some((*f).to_string());
+                            app.catalog_draft.name = None;
+                        }
+                    }
+                });
+        });
+
+        let entries = squid_n_section::catalog::entries_in(app.catalog_draft.shape, &family);
+        if entries.is_empty() {
+            return;
+        }
+        let name = app
+            .catalog_draft
+            .name
+            .clone()
+            .filter(|n| entries.iter().any(|e| &e.name == n))
+            .unwrap_or_else(|| entries[0].name.clone());
+        if app.catalog_draft.name.as_deref() != Some(name.as_str()) {
+            app.catalog_draft.name = Some(name.clone());
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Name:");
+            egui::ComboBox::from_id_salt("catalog_name_select")
+                .selected_text(&name)
+                .show_ui(ui, |ui| {
+                    for e in &entries {
+                        if ui.selectable_label(name == e.name, &e.name).clicked() {
+                            app.catalog_draft.name = Some(e.name.clone());
+                        }
+                    }
+                });
+        });
+
+        let Some(entry) = entries.iter().find(|e| e.name == name) else {
+            return;
+        };
+        ui.separator();
+        ui.label(format!(
+            "算定: A = {:.3e} mm²   Iy = {:.3e} mm⁴   Iz = {:.3e} mm⁴   J = {:.3e} mm⁴",
+            entry.area, entry.iy, entry.iz, entry.j
+        ));
+
+        if ui.button("+ 追加").clicked() {
+            let new_id = SectionId(app.model.sections.len() as u32);
+            let sec = squid_n_section::catalog::to_section(entry, new_id);
+            let index = app.model.sections.len();
+            app.undo
+                .run(&mut app.model, Box::new(AddSection { old: sec, index }));
+            app.staleness.mark_edited();
+        }
+    });
 }
 
 /// 断面作成パネル。モデルタブの断面サブタブに併置。

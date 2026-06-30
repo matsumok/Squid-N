@@ -135,6 +135,9 @@ pub struct App {
     /// 断面作成UI のドラフト（UI-3）
     #[cfg(feature = "gui")]
     pub section_draft: crate::section_editor::SectionEditorDraft,
+    /// 断面カタログ選択UI のドラフト（Shape→Family→Name）
+    #[cfg(feature = "gui")]
+    pub catalog_draft: crate::section_editor::CatalogDraft,
     /// ビューアの梁作成モード（ON 中はクリックで節点を選び 2 点で梁を作る）
     #[cfg(feature = "gui")]
     pub beam_draw_mode: bool,
@@ -184,6 +187,8 @@ impl Default for App {
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
             #[cfg(feature = "gui")]
             section_draft: crate::section_editor::SectionEditorDraft::default(),
+            #[cfg(feature = "gui")]
+            catalog_draft: crate::section_editor::CatalogDraft::default(),
             #[cfg(feature = "gui")]
             beam_draw_mode: false,
             #[cfg(feature = "gui")]
@@ -721,6 +726,8 @@ impl App {
             ModelTab::Members => crate::tables::members::members_table(ui, self),
             ModelTab::Sections => {
                 crate::tables::sections::sections_table(ui, self);
+                ui.add_space(8.0);
+                crate::section_editor::catalog_section_panel(ui, self);
                 ui.add_space(8.0);
                 crate::section_editor::section_editor_panel(ui, self);
             }
