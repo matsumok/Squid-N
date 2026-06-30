@@ -1,6 +1,7 @@
 use crate::app::App;
+use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::NodeId;
-use squid_n_edit::{AddNode, SetNodeCoord, SetNodeRestraint};
+use squid_n_edit::{AddNode, DeleteNode, SetNodeCoord, SetNodeRestraint};
 
 pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     use egui_extras::{Column, TableBuilder};
@@ -8,7 +9,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     // バッファを model に同期（長さ合わせ + 未編集セルの更新）
     app.sync_node_edit();
 
-    // 節点追加フォーム（既存節点の境界条件編集とは別の独立した UI）。
+    // 節点追加フォーム（座標のみを扱う。境界条件は別パネルで編集する）。
     // 座標を入力してから「追加」を押すことで、その座標を持つ節点を作成する。
     ui.group(|ui| {
         ui.strong("節点を追加");
@@ -39,7 +40,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     &mut app.model,
                     Box::new(AddNode {
                         coord,
-                        restraint: squid_n_core::dof::Dof6Mask::FREE,
+                        restraint: Dof6Mask::FREE,
                     }),
                 );
                 // model.nodes が +1 されたので node_edit の長さを再同期
@@ -56,8 +57,8 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     let mut node_edit = std::mem::take(&mut app.node_edit);
     // 確定待ちの編集（行、列、パース結果）
     let mut pending: Vec<(usize, usize, f64)> = Vec::new();
-    // 確定待ちの拘束変更（行、新マスク）
-    let mut pending_restraint: Vec<(usize, squid_n_core::dof::Dof6Mask)> = Vec::new();
+    // 削除対象（末尾の節点のみ許可。DeleteNode の制約に合わせる）
+    let mut pending_delete: Option<NodeId> = None;
 
     TableBuilder::new(ui)
         .striped(true)
@@ -65,7 +66,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         .columns(Column::initial(80.0), 3)
         .column(Column::auto())
         .header(20.0, |mut h| {
-            for t in &["ID", "X", "Y", "Z", "拘束"] {
+            for t in &["ID", "X", "Y", "Z", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
                 });
@@ -113,37 +114,15 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 }
                 row.col(|ui| {
-                    let r = node.restraint;
-                    ui.horizontal(|ui| {
-                        // プリセットボタン（自由／ピン／固定）
-                        if ui.small_button("自由").clicked() {
-                            pending_restraint.push((i, squid_n_core::dof::Dof6Mask::FREE));
-                        }
-                        if ui.small_button("ピン").clicked() {
-                            pending_restraint.push((i, squid_n_core::dof::Dof6Mask::PINNED));
-                        }
-                        if ui.small_button("固定").clicked() {
-                            pending_restraint.push((i, squid_n_core::dof::Dof6Mask::FIXED));
-                        }
-                        ui.separator();
-                        // 各成分チェックボックス
-                        use squid_n_core::dof::Dof;
-                        for (d, lbl) in [
-                            (Dof::Ux, "X"),
-                            (Dof::Uy, "Y"),
-                            (Dof::Uz, "Z"),
-                            (Dof::Rx, "RX"),
-                            (Dof::Ry, "RY"),
-                            (Dof::Rz, "RZ"),
-                        ] {
-                            let mut on = r.is_fixed(d);
-                            if ui.checkbox(&mut on, lbl).changed() {
-                                let mut new_mask = r;
-                                new_mask.set(d, on);
-                                pending_restraint.push((i, new_mask));
-                            }
-                        }
-                    });
+                    // ID＝配列インデックスの不変条件のため、削除できるのは末尾の節点のみ
+                    // （DeleteNode の制約。中間節点の削除は部材参照の更新が必要で未対応）。
+                    let is_last = i + 1 == n;
+                    let resp = ui.add_enabled(is_last, egui::Button::new("🗑"));
+                    if !is_last {
+                        resp.on_hover_text("末尾の節点のみ削除できます（部材参照の整合性のため）");
+                    } else if resp.on_hover_text("この節点を削除").clicked() {
+                        pending_delete = Some(node.id);
+                    }
                 });
             });
         });
@@ -163,23 +142,111 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    let had_restraint = !pending_restraint.is_empty();
-    for (i, mask) in pending_restraint {
-        let node_id = app.model.nodes[i].id;
-        app.undo.run(
-            &mut app.model,
-            Box::new(SetNodeRestraint {
-                node: node_id,
-                restraint: mask,
-            }),
-        );
+    let had_delete = pending_delete.is_some();
+    if let Some(node_id) = pending_delete {
+        app.undo
+            .run(&mut app.model, Box::new(DeleteNode { id: node_id }));
+        app.sync_node_edit();
+        if app.nav.focus_node == Some(node_id) {
+            app.nav.focus_node = None;
+        }
     }
 
     // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
-    if had_pending || had_restraint {
+    if had_pending || had_delete {
         app.staleness.mark_edited();
     }
 
     // バッファを戻す
     app.node_edit = node_edit;
+
+    ui.add_space(8.0);
+    ui.separator();
+    boundary_condition_panel(ui, app);
+}
+
+/// 境界条件（拘束）の編集パネル。節点一覧・追加フォームとは完全に独立した UI。
+/// 節点を選んでから 自由／ピン／固定 やチェックボックスで拘束成分を設定する。
+fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
+    ui.group(|ui| {
+        ui.strong("境界条件");
+        if app.model.nodes.is_empty() {
+            ui.label("節点がありません");
+            return;
+        }
+
+        let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+        let selected = app
+            .nav
+            .focus_node
+            .filter(|id| node_ids.contains(id))
+            .unwrap_or(node_ids[0]);
+        app.nav.focus_node = Some(selected);
+
+        ui.horizontal(|ui| {
+            ui.label("対象節点:");
+            egui::ComboBox::from_id_salt("bc_node_select")
+                .selected_text(format!("N{}", selected.0))
+                .show_ui(ui, |ui| {
+                    for id in &node_ids {
+                        if ui
+                            .selectable_label(selected == *id, format!("N{}", id.0))
+                            .clicked()
+                        {
+                            app.nav.focus_node = Some(*id);
+                        }
+                    }
+                });
+        });
+
+        let selected = app.nav.focus_node.unwrap_or(selected);
+        let Some(node) = app.model.nodes.iter().find(|n| n.id == selected) else {
+            return;
+        };
+        let r = node.restraint;
+        let mut pending_restraint: Option<Dof6Mask> = None;
+
+        ui.horizontal(|ui| {
+            // プリセットボタン（自由／ピン／固定）
+            if ui.small_button("自由").clicked() {
+                pending_restraint = Some(Dof6Mask::FREE);
+            }
+            if ui.small_button("ピン").clicked() {
+                pending_restraint = Some(Dof6Mask::PINNED);
+            }
+            if ui.small_button("固定").clicked() {
+                pending_restraint = Some(Dof6Mask::FIXED);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            // 各成分チェックボックス
+            use squid_n_core::dof::Dof;
+            for (d, lbl) in [
+                (Dof::Ux, "X"),
+                (Dof::Uy, "Y"),
+                (Dof::Uz, "Z"),
+                (Dof::Rx, "RX"),
+                (Dof::Ry, "RY"),
+                (Dof::Rz, "RZ"),
+            ] {
+                let mut on = r.is_fixed(d);
+                if ui.checkbox(&mut on, lbl).changed() {
+                    let mut new_mask = r;
+                    new_mask.set(d, on);
+                    pending_restraint = Some(new_mask);
+                }
+            }
+        });
+
+        if let Some(mask) = pending_restraint {
+            app.undo.run(
+                &mut app.model,
+                Box::new(SetNodeRestraint {
+                    node: selected,
+                    restraint: mask,
+                }),
+            );
+            app.staleness.mark_edited();
+        }
+    });
 }
