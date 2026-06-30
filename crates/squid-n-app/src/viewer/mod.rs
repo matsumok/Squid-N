@@ -120,7 +120,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode_idx = app.view_mode_idx;
 
     // --- コントロール ---
-    ui.horizontal(|ui| {
+    // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
+    // はみ出さないよう、折り返し可能なレイアウトにする。
+    ui.horizontal_wrapped(|ui| {
         ui.label("表示:");
         ui.selectable_value(&mut mode, ViewMode::Shape, "形状");
         ui.selectable_value(&mut mode, ViewMode::Deformed, "変形");

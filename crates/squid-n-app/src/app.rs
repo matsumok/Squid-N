@@ -103,6 +103,9 @@ pub struct App {
     pub nav: Navigator,
     /// モデルタブ内のサブタブ
     pub model_tab: ModelTab,
+    /// 左ペインの幅（px）。ドラッグで調整可能（180–520 にクランプ）。
+    #[cfg(feature = "gui")]
+    pub left_panel_width: f32,
     /// 結果タブ内の表示切替（3D / 時刻歴）
     #[cfg(feature = "gui")]
     pub results_view: ResultsView,
@@ -158,6 +161,8 @@ impl Default for App {
             staleness: Staleness::default(),
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
+            #[cfg(feature = "gui")]
+            left_panel_width: 280.0,
             #[cfg(feature = "gui")]
             results_view: ResultsView::default(),
             #[cfg(feature = "gui")]
@@ -397,8 +402,6 @@ fn is_steel(name: &str) -> bool {
 
 #[cfg(feature = "gui")]
 impl eframe::App for App {
-    #![allow(deprecated)] // 4ペイン分割に allocate_ui_at_rect を使用（deprecation は cosmetic）
-
     // eframe のデフォルトは (12,12,12) ≒ 黒なので、テーマに合わせた白灰色で上書きする
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         crate::theme::GRAY_100.to_normalized_gamma_f32()
@@ -465,10 +468,11 @@ impl eframe::App for App {
         });
         ui.separator();
 
-        // 4ペイン：左ナビゲータ / 中央 / 右インスペクタ / 下ステータス
+        // 4ペイン：左ナビゲータ(+モデル/荷重設定) / 中央 / 右インスペクタ / 下ステータス
         // 下パネルは描画の都合上最後に置く。左右は egui::SidePanel を模して available_rect で分割。
+        // 左ペインの幅はドラッグで調整可能（self.left_panel_width）。
         let available = ui.available_rect_before_wrap();
-        let nav_width = 180.0;
+        let nav_width = self.left_panel_width.clamp(180.0, 520.0);
         let inspector_width = 240.0;
         let status_height = 22.0;
 
@@ -489,15 +493,53 @@ impl eframe::App for App {
             max: available.max,
         };
 
-        // 左：ナビゲータ
+        // 左：ナビゲータ（常時）＋ モデル/荷重タブ選択中はその設定編集を併設。
+        // モデル作成状況は中央の3Dビューで常時確認できるようにし、設定操作はここに集約する。
+        #[allow(deprecated)]
         ui.allocate_ui_at_rect(nav_rect, |ui| {
-            self.navigator_panel(ui);
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    self.navigator_panel(ui);
+                    if matches!(self.active_tab, Tab::Model | Tab::Loads) {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        match self.active_tab {
+                            Tab::Model => self.model_tab_panel(ui),
+                            Tab::Loads => crate::tables::loads::loads_table(ui, self),
+                            _ => unreachable!(),
+                        }
+                    }
+                });
         });
 
-        // 中央：工程タブの内容
+        // 左ペインの右端：ドラッグで幅調整するハンドル
+        let resize_rect = egui::Rect::from_min_max(
+            egui::pos2(nav_rect.max.x - 3.0, nav_rect.min.y),
+            egui::pos2(nav_rect.max.x + 3.0, nav_rect.max.y),
+        );
+        let resize_id = ui.id().with("left_panel_resize");
+        let resize_response = ui.interact(resize_rect, resize_id, egui::Sense::drag());
+        if resize_response.dragged() {
+            self.left_panel_width =
+                (self.left_panel_width + resize_response.drag_delta().x).clamp(180.0, 520.0);
+        }
+        if resize_response.hovered() || resize_response.dragged() {
+            ui.ctx()
+                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        ui.painter().vline(
+            nav_rect.max.x,
+            nav_rect.y_range(),
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
+
+        // 中央：モデル/荷重タブでは常に3Dビュー（作成状況を即座に確認できるようにする）。
+        // それ以外の工程タブは従来通りの内容を表示する。
+        #[allow(deprecated)]
         ui.allocate_ui_at_rect(central_rect, |ui| match self.active_tab {
-            Tab::Model => self.model_tab_panel(ui),
-            Tab::Loads => crate::tables::loads::loads_table(ui, self),
+            Tab::Model | Tab::Loads => crate::viewer::viewer_panel(ui, self),
             Tab::Analysis => self.analysis_tab_panel(ui),
             Tab::Results => self.results_tab_panel(ui),
             Tab::Design => crate::design_view::design_table(ui, self),
@@ -505,11 +547,13 @@ impl eframe::App for App {
         });
 
         // 右：インスペクタ
+        #[allow(deprecated)]
         ui.allocate_ui_at_rect(inspector_rect, |ui| {
             self.inspector_panel(ui);
         });
 
         // 下：ステータスバー
+        #[allow(deprecated)]
         ui.allocate_ui_at_rect(status_rect, |ui| {
             self.status_bar(ui);
         });
