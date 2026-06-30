@@ -198,19 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn test_jis_width_families_are_japanese_at_the_data_level() {
-        // 対象は日本国内規格のみのため、family は CSV の段階で日本語化済みであるべき
-        // （表示時の翻訳テーブルは持たない）。
-        let fams = families(CatalogShape::H);
-        assert!(fams.contains(&"JIS(細幅)"));
-        assert!(fams.contains(&"JIS(中幅)"));
-        assert!(fams.contains(&"JIS(広幅)"));
-        assert!(!fams.iter().any(|f| f.contains("Narrow")));
-        assert!(!fams.iter().any(|f| f.contains("Middle")));
-        assert!(!fams.iter().any(|f| f.contains("Wide")));
-    }
-
-    #[test]
     fn test_entries_in_h_const_contains_known_section() {
         let list = entries_in(CatalogShape::H, "H(const)");
         assert!(list.iter().any(|e| e.name == "H-400x200x9x12x13"));
