@@ -1252,11 +1252,11 @@ fn model_bbox_size(model: &squid_n_core::model::Model) -> f64 {
 
 /// §3-2 の 3D 規約に沿ってグリッド・座標軸（赤=X / 緑=Y / 青=Z）・原点マーカーを描く。
 ///
-/// グリッド間隔は 2.5 m（= 2500 mm）固定。描画範囲はビューポートに映るワールド範囲
-/// （`rect` と `scale` から逆算）を 2500 mm の倍数に切り上げて決めるため、モデルの
-/// バウンディングボックスに依存しない。グリッドはワールド原点 (0,0,0) を通る 3 面
-/// （XY/XZ/YZ）に引く。軸線は原点から両方向（正=濃色 / 負=淡色）へ伸ばし、原点位置を
-/// 一目で判別できるようにする。軸ラベルの値はワールド座標（実寸）を表示する。
+/// グリッド間隔は 1 m（= 1000 mm）固定。XY 平面（z=0）にのみ描画する。
+/// 描画範囲はビューポートに映るワールド範囲（`rect` と `scale` から逆算）を
+/// 1000 mm の倍数に切り上げて決めるため、モデルのバウンディングボックスに依存しない。
+/// 軸線は原点から両方向（正=濃色 / 負=淡色）へ伸ばし、原点位置を一目で判別できるようにする。
+/// 軸ラベルの値はワールド座標（実寸）を表示する。
 fn draw_grid_and_axes(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -1270,8 +1270,8 @@ fn draw_grid_and_axes(
         egui::pos2(s[0], s[1])
     };
 
-    /// グリッド間隔 [mm]（2.5 m）。
-    const STEP: f64 = 2500.0;
+    /// グリッド間隔 [mm]（1 m）。
+    const STEP: f64 = 1000.0;
     // ダーク半透明・線幅 0.5（淡グレー背景の上で奥行きを示す）
     let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_black_alpha(36));
     let origin: [f64; 3] = [0.0; 3];
@@ -1296,37 +1296,25 @@ fn draw_grid_and_axes(
         ),
     ];
 
-    // 1 面の格子線を描く。fixed 軸を fixed_val に固定し、a,b 軸方向に原点基準で線を引く。
-    let plane = |fixed: usize, fixed_val: f64, a: usize, b: usize| {
-        let a_lo = (range[a].0 / STEP).round() as i64;
-        let a_hi = (range[a].1 / STEP).round() as i64;
-        for k in a_lo..=a_hi {
-            let av = k as f64 * STEP;
-            let mut p0 = [0.0; 3];
-            p0[fixed] = fixed_val;
-            p0[a] = av;
-            p0[b] = range[b].0;
-            let mut p1 = p0;
-            p1[b] = range[b].1;
-            painter.line_segment([proj(p0), proj(p1)], grid_stroke);
-        }
-        let b_lo = (range[b].0 / STEP).round() as i64;
-        let b_hi = (range[b].1 / STEP).round() as i64;
-        for k in b_lo..=b_hi {
-            let bv = k as f64 * STEP;
-            let mut q0 = [0.0; 3];
-            q0[fixed] = fixed_val;
-            q0[b] = bv;
-            q0[a] = range[a].0;
-            let mut q1 = q0;
-            q1[a] = range[a].1;
-            painter.line_segment([proj(q0), proj(q1)], grid_stroke);
-        }
-    };
-
-    plane(2, origin[2], 0, 1); // XY 面（z=0）
-    plane(1, origin[1], 0, 2); // XZ 面（y=0）
-    plane(0, origin[0], 1, 2); // YZ 面（x=0）
+    // XY 平面（z=0）の格子線を描く。a=X, b=Y 方向に原点基準で線を引く。
+    let a = 0usize; // X
+    let b = 1usize; // Y
+    let a_lo = (range[a].0 / STEP).round() as i64;
+    let a_hi = (range[a].1 / STEP).round() as i64;
+    for k in a_lo..=a_hi {
+        let av = k as f64 * STEP;
+        let p0 = [av, range[b].0, origin[2]];
+        let p1 = [av, range[b].1, origin[2]];
+        painter.line_segment([proj(p0), proj(p1)], grid_stroke);
+    }
+    let b_lo = (range[b].0 / STEP).round() as i64;
+    let b_hi = (range[b].1 / STEP).round() as i64;
+    for k in b_lo..=b_hi {
+        let bv = k as f64 * STEP;
+        let q0 = [range[a].0, bv, origin[2]];
+        let q1 = [range[a].1, bv, origin[2]];
+        painter.line_segment([proj(q0), proj(q1)], grid_stroke);
+    }
 
     // 原点からの座標軸（赤=X / 緑=Y / 青=Z）。正方向=濃色 / 負方向=淡色。
     for (axis, col, name) in [
