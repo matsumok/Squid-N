@@ -602,7 +602,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let scale = fit * (cam.zoom / 3.0);
 
     // グリッド・軸（§3-2: 赤=X / 緑=Y / 青=Z）。モデルの背後に先に描く。
-    draw_grid_and_axes(&painter, bmin, bmax, center3, &cam, scale, center);
+    draw_grid_and_axes(&painter, rect, center3, &cam, scale, center);
 
     // 節点座標（変形・モード時は変位を加味）
     let disp = match mode {
@@ -1250,38 +1250,16 @@ fn model_bbox_size(model: &squid_n_core::model::Model) -> f64 {
     ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2) + (max[2] - min[2]).powi(2)).sqrt()
 }
 
-/// モデルサイズに応じた「きりの良い」グリッド間隔（1, 2, 5, 10, ... の倍数）を返す。
-/// モデルサイズの約 1/6 になる値を 1-2-5 系で丸める。
-fn nice_step(size: f64) -> f64 {
-    if size < 1e-9 {
-        return 1.0;
-    }
-    let target = size / 6.0;
-    let mag = 10.0_f64.powi(target.abs().log10().floor() as i32);
-    let norm = target / mag;
-    if norm < 1.5 {
-        mag
-    } else if norm < 3.5 {
-        2.0 * mag
-    } else if norm < 7.5 {
-        5.0 * mag
-    } else {
-        10.0 * mag
-    }
-}
-
 /// §3-2 の 3D 規約に沿ってグリッド・座標軸（赤=X / 緑=Y / 青=Z）・原点マーカーを描く。
 ///
-/// グリッドはワールド原点 (0,0,0) を通る 3 面（XY/XZ/YZ）に、`nice_step` で求めた
-/// きりの良い間隔で格子線を引く。各軸の描画範囲はモデルのバウンディングボックスを
-/// 最低限広げて原点まわり ±1 メッシュを確保するため、1 次元的なモデル（梁1本など）
-/// でバウンディングボックスが縮退していてもグリッドが表示される。
-/// 軸線は原点から両方向（正=濃色 / 負=淡色）へ伸ばし、原点位置を一目で判別できるようにする。
-/// 軸ラベルの値はワールド座標（実寸）を表示する。
+/// グリッド間隔は 2.5 m（= 2500 mm）固定。描画範囲はビューポートに映るワールド範囲
+/// （`rect` と `scale` から逆算）を 2500 mm の倍数に切り上げて決めるため、モデルの
+/// バウンディングボックスに依存しない。グリッドはワールド原点 (0,0,0) を通る 3 面
+/// （XY/XZ/YZ）に引く。軸線は原点から両方向（正=濃色 / 負=淡色）へ伸ばし、原点位置を
+/// 一目で判別できるようにする。軸ラベルの値はワールド座標（実寸）を表示する。
 fn draw_grid_and_axes(
     painter: &egui::Painter,
-    bmin: [f64; 3],
-    bmax: [f64; 3],
+    rect: egui::Rect,
     center3: [f64; 3],
     cam: &CameraState,
     scale: f32,
@@ -1292,26 +1270,38 @@ fn draw_grid_and_axes(
         egui::pos2(s[0], s[1])
     };
 
-    let model_size = [bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]];
-    let step = nice_step(model_size[0].max(model_size[1]).max(model_size[2]));
+    /// グリッド間隔 [mm]（2.5 m）。
+    const STEP: f64 = 2500.0;
     // ダーク半透明・線幅 0.5（淡グレー背景の上で奥行きを示す）
     let grid_stroke = egui::Stroke::new(0.5, egui::Color32::from_black_alpha(36));
     let origin: [f64; 3] = [0.0; 3];
 
-    // 各軸の描画範囲。縮退軸（サイズ < step）は原点まわりに最低 ±step を確保し、
-    // グリッド線が長さ 0 にならないようにする。
+    // ビューポートに映るワールド範囲を計算。対角ピクセル長 / scale で大まかな半径を得て
+    // 余裕（1.5 倍）を持たせる（回転で端が見切れないように）。
+    let view_radius = (rect.width().hypot(rect.height()) / scale) as f64 * 0.75;
+
+    // 各軸の描画範囲: center3 ± view_radius を STEP の倍数に丸める
     let range = [
-        (bmin[0].min(origin[0] - step), bmax[0].max(origin[0] + step)),
-        (bmin[1].min(origin[1] - step), bmax[1].max(origin[1] + step)),
-        (bmin[2].min(origin[2] - step), bmax[2].max(origin[2] + step)),
+        (
+            ((center3[0] - view_radius) / STEP).floor() * STEP,
+            ((center3[0] + view_radius) / STEP).ceil() * STEP,
+        ),
+        (
+            ((center3[1] - view_radius) / STEP).floor() * STEP,
+            ((center3[1] + view_radius) / STEP).ceil() * STEP,
+        ),
+        (
+            ((center3[2] - view_radius) / STEP).floor() * STEP,
+            ((center3[2] + view_radius) / STEP).ceil() * STEP,
+        ),
     ];
 
     // 1 面の格子線を描く。fixed 軸を fixed_val に固定し、a,b 軸方向に原点基準で線を引く。
     let plane = |fixed: usize, fixed_val: f64, a: usize, b: usize| {
-        let a_lo = (range[a].0 / step).floor() as i64;
-        let a_hi = (range[a].1 / step).ceil() as i64;
+        let a_lo = (range[a].0 / STEP).round() as i64;
+        let a_hi = (range[a].1 / STEP).round() as i64;
         for k in a_lo..=a_hi {
-            let av = k as f64 * step;
+            let av = k as f64 * STEP;
             let mut p0 = [0.0; 3];
             p0[fixed] = fixed_val;
             p0[a] = av;
@@ -1320,10 +1310,10 @@ fn draw_grid_and_axes(
             p1[b] = range[b].1;
             painter.line_segment([proj(p0), proj(p1)], grid_stroke);
         }
-        let b_lo = (range[b].0 / step).floor() as i64;
-        let b_hi = (range[b].1 / step).ceil() as i64;
+        let b_lo = (range[b].0 / STEP).round() as i64;
+        let b_hi = (range[b].1 / STEP).round() as i64;
         for k in b_lo..=b_hi {
-            let bv = k as f64 * step;
+            let bv = k as f64 * STEP;
             let mut q0 = [0.0; 3];
             q0[fixed] = fixed_val;
             q0[b] = bv;
