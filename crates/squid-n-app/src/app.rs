@@ -100,6 +100,9 @@ pub struct App {
     pub node_edit: Vec<[String; 3]>,
     /// 節点追加フォームの入力中座標（境界条件の編集とは別の独立 UI）
     pub node_draft: [String; 3],
+    /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
+    /// セットされている間は確認ダイアログを表示し、ユーザの判断を待つ。
+    pub pending_duplicate_node_coord: Option<[f64; 3]>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
     /// ナビゲータ（左ペイン）状態
@@ -165,6 +168,7 @@ impl Default for App {
             last_error: None,
             node_edit: Vec::new(),
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
+            pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
             nav: Navigator::default(),
             model_tab: ModelTab::default(),

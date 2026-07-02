@@ -36,17 +36,29 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                 for (k, slot) in app.node_draft.iter().enumerate() {
                     coord[k] = slot.trim().parse::<f64>().unwrap_or(0.0);
                 }
-                app.undo.run(
-                    &mut app.model,
-                    Box::new(AddNode {
-                        coord,
-                        restraint: Dof6Mask::FREE,
-                    }),
-                );
-                // model.nodes が +1 されたので node_edit の長さを再同期
-                // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
-                app.sync_node_edit();
-                app.staleness.mark_edited();
+                // 同一座標の既存節点がある場合は確認ダイアログを挟む
+                // （同じ座標の節点を重複して作成してよいかユーザに確認する）
+                const COORD_TOL: f64 = 1e-9;
+                let dup = app.model.nodes.iter().any(|n| {
+                    (n.coord[0] - coord[0]).abs() < COORD_TOL
+                        && (n.coord[1] - coord[1]).abs() < COORD_TOL
+                        && (n.coord[2] - coord[2]).abs() < COORD_TOL
+                });
+                if dup {
+                    app.pending_duplicate_node_coord = Some(coord);
+                } else {
+                    app.undo.run(
+                        &mut app.model,
+                        Box::new(AddNode {
+                            coord,
+                            restraint: Dof6Mask::FREE,
+                        }),
+                    );
+                    // model.nodes が +1 されたので node_edit の長さを再同期
+                    // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
+                    app.sync_node_edit();
+                    app.staleness.mark_edited();
+                }
             }
         });
     });
@@ -161,6 +173,55 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
 
     // バッファを戻す
     app.node_edit = node_edit;
+
+    // 重複座標の節点追加確認ダイアログ
+    // （追加ボタン押下時に同一座標の既存節点が見つかった場合、ここで確認を取る）
+    if app.pending_duplicate_node_coord.is_some() {
+        let mut do_add = false;
+        let mut do_cancel = false;
+        let mut open = true;
+        egui::Window::new("節点座標の重複")
+            .title_bar(true)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                if let Some(coord) = app.pending_duplicate_node_coord {
+                    ui.label(format!(
+                        "({:.3}, {:.3}, {:.3}) と同じ座標の節点がすでに存在します。",
+                        coord[0], coord[1], coord[2]
+                    ));
+                }
+                ui.label("本当にこの節点を追加しますか？");
+                ui.horizontal(|ui| {
+                    if ui.button("追加する").clicked() {
+                        do_add = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        do_cancel = true;
+                    }
+                });
+            });
+        // 閉じるボタン（×）またはキャンセルで保留を破棄
+        if !open || do_cancel {
+            app.pending_duplicate_node_coord = None;
+        }
+        // 追加確定
+        if do_add {
+            if let Some(coord) = app.pending_duplicate_node_coord.take() {
+                app.undo.run(
+                    &mut app.model,
+                    Box::new(AddNode {
+                        coord,
+                        restraint: Dof6Mask::FREE,
+                    }),
+                );
+                app.sync_node_edit();
+                app.staleness.mark_edited();
+            }
+        }
+    }
 }
 
 /// 境界条件（拘束）タブ：節点一覧・追加フォームとは別の独立したサブタブ。
