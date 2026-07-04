@@ -254,6 +254,21 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
 }
 
 impl App {
+    /// モデルを丸ごと差し替える（新規作成・サンプル読込・ファイル読込で共用）。
+    /// undo 履歴・結果・選択・stale 状態をすべてリセットする。
+    pub fn load_model(&mut self, model: squid_n_core::model::Model) {
+        self.model = model;
+        self.results = None;
+        self.selection = Selection::default();
+        self.undo = UndoStack::new();
+        self.nav = Navigator::default();
+        self.last_lc = None;
+        self.last_error = None;
+        self.beam_loads.clear();
+        self.staleness = Staleness::default();
+        self.sync_node_edit();
+    }
+
     /// 節点編集バッファを model.nodes に同期する。
     /// 編集中でない（フォーカス外）セルのみ model 値で更新する。
     pub fn sync_node_edit(&mut self) {
@@ -703,6 +718,23 @@ impl App {
     /// モデルタブ：サブタブ切替で節点/部材/断面/材料を編集するテーブルを表示。
     fn model_tab_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            if ui
+                .button("📄 新規")
+                .on_hover_text("現在のモデルを破棄して空のモデルを作成します")
+                .clicked()
+            {
+                self.load_model(squid_n_core::model::Model::default());
+            }
+            if ui
+                .button("🏠 サンプル読込")
+                .on_hover_text("現在のモデルを破棄して門型ラーメンのサンプルを読み込みます")
+                .clicked()
+            {
+                self.load_model(crate::sample::portal_frame());
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
             let subs = [
                 ("節点", ModelTab::Nodes),
                 ("境界条件", ModelTab::BoundaryConditions),
@@ -731,7 +763,7 @@ impl App {
                 ui.add_space(8.0);
                 crate::section_editor::section_editor_panel(ui, self);
             }
-            ModelTab::Materials => materials_panel(ui, self),
+            ModelTab::Materials => crate::tables::materials::materials_table(ui, self),
         }
     }
 
@@ -959,47 +991,6 @@ impl App {
             ));
         });
     }
-}
-
-/// 材料テーブル（既存の beginners テーブル相当。簡易表示のみ）。
-#[cfg(feature = "gui")]
-fn materials_panel(ui: &mut egui::Ui, app: &mut App) {
-    let n = app.model.materials.len();
-    ui.label(format!("材料一覧（{} 件）", n));
-    ui.separator();
-    use egui_extras::{Column, TableBuilder};
-    TableBuilder::new(ui)
-        .striped(true)
-        .resizable(true)
-        .column(Column::auto().resizable(true))
-        .column(Column::auto())
-        .column(Column::remainder())
-        .header(20.0, |mut header| {
-            header.col(|ui| {
-                ui.strong("ID");
-            });
-            header.col(|ui| {
-                ui.strong("名称");
-            });
-            header.col(|ui| {
-                ui.strong("E [N/mm²]");
-            });
-        })
-        .body(|body| {
-            body.rows(22.0, n, |mut row| {
-                let idx = row.index();
-                let mat = &app.model.materials[idx];
-                row.col(|ui| {
-                    ui.label(format!("{}", mat.id.0));
-                });
-                row.col(|ui| {
-                    ui.label(&mat.name);
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.1}", mat.young));
-                });
-            });
-        });
 }
 
 #[cfg(test)]

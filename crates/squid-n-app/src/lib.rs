@@ -1,4 +1,5 @@
 pub mod app;
+pub mod sample;
 
 #[cfg(feature = "gui")]
 pub mod design_view;
