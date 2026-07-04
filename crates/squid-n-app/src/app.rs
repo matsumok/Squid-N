@@ -1423,10 +1423,41 @@ impl App {
         });
     }
 
-    /// レポートタブ：P9 で実装予定（プレースホルダー）。
+    /// レポートタブ：CSV レポートのプレビューとエクスポート。
     fn report_tab_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("レポート");
-        ui.label("P9 仕上げフェーズで実装予定（PDF / Excel / CSV の章選択出力）");
+        if !crate::summary::has_report_content(&self.results) {
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "解析結果がありません。解析タブから実行するとレポートを生成できます。",
+            );
+            return;
+        }
+        let csv = crate::summary::build_report_csv(self);
+        ui.horizontal(|ui| {
+            if ui.button("💾 CSV エクスポート…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("CSV", &["csv"])
+                    .set_file_name("report.csv")
+                    .save_file()
+                {
+                    if let Err(e) = std::fs::write(&path, &csv) {
+                        self.last_error = Some(format!("レポート保存エラー: {}", e));
+                    }
+                }
+            }
+            if ui.button("📋 クリップボードへコピー").clicked() {
+                ui.ctx().copy_text(csv.clone());
+            }
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut csv.as_str())
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY),
+            );
+        });
     }
 
     /// 右ペイン：選択要素のインスペクタ。
