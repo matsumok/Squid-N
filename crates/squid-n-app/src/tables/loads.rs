@@ -2,7 +2,8 @@ use crate::app::App;
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId};
 use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind};
 use squid_n_edit::{
-    AddLoadCase, AddMemberLoad, DeleteLoadCase, DeleteMemberLoad, SetLoadCaseName, SetNodalLoad,
+    AddLoadCase, AddMemberLoad, DeleteLoadCase, DeleteMemberLoad, DeleteNodalLoad, SetLoadCaseName,
+    SetNodalLoad,
 };
 
 #[derive(Clone)]
@@ -177,6 +178,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
 
     let nodal_count = app.model.load_cases[lc_idx].nodal.len();
     let mut pending_load: Vec<(NodeId, [f64; 6])> = Vec::new();
+    let mut pending_nodal_delete: Option<NodeId> = None;
     let mut value_bufs: Vec<[String; 6]> = app.model.load_cases[lc_idx]
         .nodal
         .iter()
@@ -187,6 +189,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .striped(true)
         .column(Column::auto())
         .columns(Column::initial(70.0), 6)
+        .column(Column::auto())
         .header(20.0, |mut h| {
             h.col(|ui| {
                 ui.strong("節点");
@@ -196,6 +199,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                     ui.strong(*t);
                 });
             }
+            h.col(|_| {});
         })
         .body(|body| {
             body.rows(22.0, nodal_count, |mut row| {
@@ -230,10 +234,15 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                         }
                     });
                 }
+                row.col(|ui| {
+                    if ui.button("🗑").on_hover_text("この節点荷重を削除").clicked() {
+                        pending_nodal_delete = Some(nodal.node);
+                    }
+                });
             });
         });
 
-    let had_load = !pending_load.is_empty();
+    let had_load = !pending_load.is_empty() || pending_nodal_delete.is_some();
     for (node, values) in pending_load {
         app.undo.run(
             &mut app.model,
@@ -242,6 +251,12 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                 node,
                 values,
             }),
+        );
+    }
+    if let Some(node) = pending_nodal_delete {
+        app.undo.run(
+            &mut app.model,
+            Box::new(DeleteNodalLoad { lc: lc_id, node }),
         );
     }
     if had_load {
