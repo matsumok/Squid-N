@@ -55,6 +55,9 @@ pub struct Staleness {
     pub results_stale: bool,
     pub design_stale: bool,
     pub last_run: Option<SystemTime>,
+    /// ファイル保存後に編集があったか（タイトル/ステータスの未保存マーカー用）。
+    /// `mark_fresh`（解析完了）ではクリアされず、保存/読込時のみクリアする。
+    pub unsaved_changes: bool,
 }
 
 impl Staleness {
@@ -62,6 +65,7 @@ impl Staleness {
     pub fn mark_edited(&mut self) {
         self.results_stale = true;
         self.design_stale = true;
+        self.unsaved_changes = true;
     }
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
@@ -150,6 +154,8 @@ pub struct App {
     /// 壁作成モードで選択済みの節点（4 点目で壁を生成しリセット）
     #[cfg(feature = "gui")]
     pub wall_draw_nodes: Vec<squid_n_core::ids::NodeId>,
+    /// 現在のプロジェクトファイル（.scz）パス。未保存なら None。
+    pub project_path: Option<std::path::PathBuf>,
 }
 
 impl Default for App {
@@ -197,6 +203,7 @@ impl Default for App {
             wall_draw_mode: false,
             #[cfg(feature = "gui")]
             wall_draw_nodes: Vec::new(),
+            project_path: None,
         }
     }
 }
@@ -267,6 +274,34 @@ impl App {
         self.beam_loads.clear();
         self.staleness = Staleness::default();
         self.sync_node_edit();
+    }
+
+    /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
+    pub fn save_project_to(&mut self, path: std::path::PathBuf) {
+        self.last_error = None;
+        match squid_n_io::scz::save_scz(&path, &self.model) {
+            Ok(()) => {
+                self.project_path = Some(path);
+                self.staleness.unsaved_changes = false;
+            }
+            Err(e) => self.last_error = Some(format!("保存エラー: {}", e)),
+        }
+    }
+
+    /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
+    pub fn open_project_from(&mut self, path: std::path::PathBuf) {
+        self.last_error = None;
+        match squid_n_io::scz::load_scz(&path) {
+            Ok(model) => {
+                if let Err(e) = model.validate() {
+                    self.last_error = Some(format!("読込モデルの検証エラー: {:?}", e));
+                    return;
+                }
+                self.load_model(model);
+                self.project_path = Some(path);
+            }
+            Err(e) => self.last_error = Some(format!("読込エラー: {}", e)),
+        }
     }
 
     /// 節点編集バッファを model.nodes に同期する。
@@ -432,8 +467,34 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // 上部ツールバー: 工程タブ（自由遷移）+ Undo/Redo
+        // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo
         ui.horizontal(|ui| {
+            ui.menu_button("ファイル", |ui| {
+                if ui.button("📄 新規").clicked() {
+                    self.load_model(squid_n_core::model::Model::default());
+                    self.project_path = None;
+                    ui.close();
+                }
+                if ui.button("🏠 サンプル(門型ラーメン)").clicked() {
+                    self.load_model(crate::sample::portal_frame());
+                    self.project_path = None;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("📂 開く…").clicked() {
+                    self.open_project_dialog();
+                    ui.close();
+                }
+                if ui.button("💾 保存").clicked() {
+                    self.save_project_dialog(false);
+                    ui.close();
+                }
+                if ui.button("💾 名前を付けて保存…").clicked() {
+                    self.save_project_dialog(true);
+                    ui.close();
+                }
+            });
+            ui.separator();
             let tabs = [
                 ("モデル", Tab::Model),
                 ("荷重", Tab::Loads),
@@ -585,6 +646,34 @@ impl eframe::App for App {
 
 #[cfg(feature = "gui")]
 impl App {
+    /// 「開く…」ダイアログを表示して読み込む。
+    fn open_project_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Squid-N プロジェクト", &["scz"])
+            .pick_file()
+        {
+            self.open_project_from(path);
+        }
+    }
+
+    /// 保存する。`force_ask` またはパス未設定時はダイアログで保存先を尋ねる。
+    fn save_project_dialog(&mut self, force_ask: bool) {
+        let path = if force_ask {
+            None
+        } else {
+            self.project_path.clone()
+        };
+        let path = path.or_else(|| {
+            rfd::FileDialog::new()
+                .add_filter("Squid-N プロジェクト", &["scz"])
+                .set_file_name("model.scz")
+                .save_file()
+        });
+        if let Some(path) = path {
+            self.save_project_to(path);
+        }
+    }
+
     /// 左ペイン：ナビゲータ（階/部材群/荷重ケース/結果ケースのツリー）。
     fn navigator_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
@@ -970,6 +1059,20 @@ impl App {
     fn status_bar(&self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
+            // プロジェクトファイル名 + 未保存マーカー
+            let file_label = self
+                .project_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "(未保存プロジェクト)".to_string());
+            let marker = if self.staleness.unsaved_changes {
+                " ●"
+            } else {
+                ""
+            };
+            ui.label(format!("{}{}", file_label, marker));
+            ui.separator();
             // stale アイコン
             if self.staleness.results_stale {
                 ui.colored_label(crate::theme::BEST_YELLOW, "⚠ stale");
@@ -1031,5 +1134,38 @@ mod tests {
     #[test]
     fn test_tab_default_is_model() {
         assert_eq!(Tab::Model, Tab::default());
+    }
+
+    #[test]
+    fn test_save_and_open_project_roundtrip() {
+        let dir = std::env::temp_dir().join("squid_n_app_test_scz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("roundtrip.scz");
+
+        let mut app = App::default();
+        app.load_model(crate::sample::portal_frame());
+        app.staleness.mark_edited();
+        app.save_project_to(path.clone());
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(!app.staleness.unsaved_changes);
+        assert_eq!(app.project_path.as_ref(), Some(&path));
+
+        let saved_model = app.model.clone();
+        let mut app2 = App::default();
+        app2.open_project_from(path.clone());
+        assert!(app2.last_error.is_none(), "{:?}", app2.last_error);
+        assert!(app2.model.eq_ignoring_dofmap(&saved_model));
+        assert_eq!(app2.project_path.as_ref(), Some(&path));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_open_project_missing_file_sets_error() {
+        let mut app = App::default();
+        app.open_project_from(std::path::PathBuf::from(
+            "/nonexistent/dir/does_not_exist.scz",
+        ));
+        assert!(app.last_error.is_some());
     }
 }
