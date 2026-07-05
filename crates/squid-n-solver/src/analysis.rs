@@ -533,6 +533,7 @@ mod tests {
                 as_z: 83.33,
                 panel_thickness: None,
                 thickness: None,
+                shape: None,
             }],
             materials: vec![Material {
                 id: MaterialId(0),

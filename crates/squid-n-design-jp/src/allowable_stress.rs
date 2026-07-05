@@ -293,6 +293,7 @@ mod tests {
             as_z: 0.0,
             panel_thickness: None,
             thickness: None,
+            shape: None,
         };
         // iz は強軸まわり（ここでは b 側）だが、§6.4 の Z=B·D²/6 は D を載せる方向。
         // 検算例の Z=5.3333e6 は B·D²/6 = 200·400²/6。これを sec.iz に設定して検定する。
@@ -362,6 +363,7 @@ mod tests {
             as_z: 800.0,
             panel_thickness: None,
             thickness: None,
+            shape: None,
         };
         let mat = Material {
             id: squid_n_core::ids::MaterialId(0),
@@ -444,6 +446,7 @@ mod tests {
             as_z: 0.0,
             panel_thickness: None,
             thickness: None,
+            shape: None,
         };
         let mat = Material {
             id: squid_n_core::ids::MaterialId(0),
@@ -490,6 +493,7 @@ mod tests {
             as_z: 0.0,
             panel_thickness: None,
             thickness: None,
+            shape: None,
         };
         let mat = Material {
             id: squid_n_core::ids::MaterialId(0),

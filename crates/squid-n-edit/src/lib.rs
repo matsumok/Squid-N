@@ -2097,6 +2097,7 @@ mod tests {
                 as_z: 80.0,
                 panel_thickness: None,
                 thickness: None,
+                shape: None,
             });
         }
         // 部材 0 に断面 1 を割当（断面 0 は未使用）

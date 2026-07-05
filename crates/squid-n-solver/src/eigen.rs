@@ -484,6 +484,7 @@ mod tests {
                 as_z: 1.0,
                 panel_thickness: None,
                 thickness: None,
+                shape: None,
             }],
             materials: vec![Material {
                 id: MaterialId(0),
@@ -546,6 +547,7 @@ mod tests {
                 as_z: 1.0,
                 panel_thickness: None,
                 thickness: None,
+                shape: None,
             }],
             materials: vec![Material {
                 id: MaterialId(0),
