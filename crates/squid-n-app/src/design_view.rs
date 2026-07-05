@@ -234,12 +234,17 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut app.design_frame, FrameType::SteelBrace, "Sブレース");
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.design_rank_auto, "自動判定（鋼・幅厚比）")
-            .on_hover_text(
-                "鋼部材(断面形状を持つもの)の幅厚比から部材ランクを層ごとに自動判定します。\
-                 RC 部材・断面形状未設定の部材・幅厚比の対象外形状(円形鋼管等)はスキップされ、\
-                 1 本も算定できなかった層は下記の選択値にフォールバックします。",
-            );
+        ui.checkbox(
+            &mut app.design_rank_auto,
+            "自動判定（鋼=幅厚比・RC矩形=Qsu/Qmu）",
+        )
+        .on_hover_text(
+            "鋼部材(断面形状を持つもの)は幅厚比から、RC矩形部材(断面形状 RcRect かつ\
+                 コンクリート強度Fc設定済みの材料)はせん断余裕度 Qsu/Qmu の略算から\
+                 部材ランクを層ごとに自動判定します。断面形状未設定の部材・幅厚比の対象外\
+                 形状(円形鋼管等)・RC円形・Fc未設定材料はスキップされ、1 本も算定できなかった\
+                 層は下記の選択値にフォールバックします。",
+        );
     });
     ui.horizontal(|ui| {
         use squid_n_design_jp::holding_capacity::MemberRank;
@@ -335,8 +340,9 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 });
             let note = if app.design_rank_auto {
-                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は幅厚比による鋼部材ランク\
-                 自動判定（RC・形状未設定部材は選択値フォールバック）。"
+                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は部材ランク自動判定\
+                 （鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算）。形状未設定・RC円形・\
+                 Fc未設定材料は選択値フォールバック。"
             } else {
                 "Qu はプッシュオーバー最終ステップの層せん断力。Ds は選択値（部材ランク自動判定OFF）。"
             };
