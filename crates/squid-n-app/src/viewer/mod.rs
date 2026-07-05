@@ -121,8 +121,12 @@ pub struct CameraState {
 impl Default for CameraState {
     fn default() -> Self {
         Self {
-            // 既定は正面（X 右・Z 上）。ワールド Z をビュー上方向へ向けるため X 軸まわり -90°。
-            rot: q_axis_angle([1.0, 0.0, 0.0], -std::f32::consts::FRAC_PI_2),
+            // 45° の斜めビュー（X 軸まわり -45° で上から見下ろし、Y 軸まわり 45° で横に振る）。
+            // XY 平面のグリッドが斜めから見えるようにする。
+            rot: q_mul(
+                q_axis_angle([0.0, 1.0, 0.0], std::f32::consts::FRAC_PI_4),
+                q_axis_angle([1.0, 0.0, 0.0], -std::f32::consts::FRAC_PI_4),
+            ),
             pan: [0.0, 0.0],
             zoom: 3.0,
         }
@@ -572,19 +576,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     let center = [rect.center().x, rect.center().y];
 
-    // モデルが空なら何も描かない
-    if app.model.nodes.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "モデルが空です",
-            egui::FontId::default(),
-            theme::GRAY_600,
-        );
-        return;
-    }
-
     // 投影スケールとモデル中心（回転中心）。一様スケールで実寸比を保持する。
+    // モデルが空でもグリッド・軸を描画するため早期 return はしない。
     let (bmin, bmax) = model_bbox(&app.model);
     let center3 = [
         (bmin[0] + bmax[0]) * 0.5,
@@ -1225,10 +1218,10 @@ fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     (p - proj).length()
 }
 
-/// モデルのバウンディングボックス（min, max）。空なら単位ボックスを返す。
+/// モデルのバウンディングボックス（min, max）。空なら原点を返す。
 fn model_bbox(model: &squid_n_core::model::Model) -> ([f64; 3], [f64; 3]) {
     if model.nodes.is_empty() {
-        return ([0.0; 3], [1.0; 3]);
+        return ([0.0; 3], [0.0; 3]);
     }
     let mut min = [f64::MAX; 3];
     let mut max = [f64::MIN; 3];
