@@ -136,6 +136,74 @@ fn compute_base_shear(model: &Model, dofmap: &DofMap, f_int: &[f64], dir: Seismi
     v
 }
 
+/// 層せん断力を内力の釣合いから求める（P5 §7.4、P7 の Qu 突合に使用）。
+///
+/// 第 i 層のせん断力 Q_i = 第 i 層以上の階に属する節点へ作用する
+/// 載荷方向水平内力の合計（上層から累積）。階に属さない中間節点は
+/// 集計対象外（階の自動生成はレベル単位で節点をクラスタリングするため、
+/// 通常のフレームでは全自由節点がいずれかの階に属する）。
+/// stories が空なら空ベクトルを返す。
+fn compute_story_shear(model: &Model, dofmap: &DofMap, f_int: &[f64], dir: SeismicDir) -> Vec<f64> {
+    let dir_idx = match dir {
+        SeismicDir::X => 0,
+        SeismicDir::Y => 1,
+    };
+    let n = model.stories.len();
+    let mut level_force = vec![0.0; n];
+    for (i, story) in model.stories.iter().enumerate() {
+        for nid in &story.node_ids {
+            let g = nid.index() * 6 + dir_idx;
+            if let Some(a) = dofmap.active(g) {
+                if let Some(&v) = f_int.get(a as usize) {
+                    level_force[i] += v;
+                }
+            }
+        }
+    }
+    let mut shear = vec![0.0; n];
+    let mut acc = 0.0;
+    for i in (0..n).rev() {
+        acc += level_force[i];
+        shear[i] = acc;
+    }
+    shear
+}
+
+/// 層間変位を剛床マスター節点の水平変位差から求める。
+/// 第 i 層の層間変位 = マスター変位(第 i 層) − マスター変位(1 つ下の階)。
+/// 最下層は基部（変位 0）との差。マスターが無い／拘束済みの階は変位 0 とみなす。
+fn compute_story_drift(
+    model: &Model,
+    dofmap: &DofMap,
+    total_disp: &[f64],
+    dir: SeismicDir,
+) -> Vec<f64> {
+    let dir_idx = match dir {
+        SeismicDir::X => 0,
+        SeismicDir::Y => 1,
+    };
+    let mut prev = 0.0;
+    model
+        .stories
+        .iter()
+        .map(|story| {
+            let d = story
+                .diaphragms
+                .first()
+                .and_then(|dia| {
+                    let g = dia.master.index() * 6 + dir_idx;
+                    dofmap
+                        .active(g)
+                        .and_then(|a| total_disp.get(a as usize).copied())
+                })
+                .unwrap_or(0.0);
+            let drift = d - prev;
+            prev = d;
+            drift
+        })
+        .collect()
+}
+
 fn get_roof_disp(total_disp: &[f64], model: &Model, dofmap: &DofMap, dir: SeismicDir) -> f64 {
     if let Some(story) = model.stories.last() {
         if let Some(dia) = story.diaphragms.first() {
@@ -296,8 +364,8 @@ pub fn pushover_analysis(
                     step: step as u32,
                     roof_disp: roof,
                     base_shear,
-                    story_shear: vec![],
-                    story_drift: vec![],
+                    story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
+                    story_drift: compute_story_drift(model, dofmap, &total_disp, dir),
                 });
                 track_hinges(
                     model,
@@ -408,8 +476,8 @@ pub fn pushover_analysis(
                             step: cstep,
                             roof_disp: roof,
                             base_shear,
-                            story_shear: vec![],
-                            story_drift: vec![],
+                            story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
+                            story_drift: compute_story_drift(model, dofmap, &total_disp, dir),
                         });
                         track_hinges(model, dofmap, &behaviors, &thresholds, cstep, &mut hinges);
                         step_ok = true;
@@ -493,8 +561,8 @@ pub fn pushover_analysis(
                         step: (n_steps + 1 + _step) as u32,
                         roof_disp: roof,
                         base_shear,
-                        story_shear: vec![],
-                        story_drift: vec![],
+                        story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
+                        story_drift: compute_story_drift(model, dofmap, &total_disp, dir),
                     });
                 }
                 _ => {
