@@ -1,4 +1,4 @@
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::Model;
 
 pub trait EditCommand {
@@ -1377,6 +1377,125 @@ impl EditCommand for RestoreStories {
     }
 }
 
+/// 床追加。末尾に `SlabId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
+/// 逆操作は床削除。
+pub struct AddSlab {
+    pub boundary: Vec<NodeId>,
+    pub joists: Vec<squid_n_core::model::JoistLine>,
+    pub loads: Vec<squid_n_core::model::AreaLoad>,
+    pub method: squid_n_core::model::DistributionMethod,
+}
+
+impl EditCommand for AddSlab {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let new_id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(squid_n_core::model::Slab {
+            id: new_id,
+            boundary: self.boundary.clone(),
+            joists: self.joists.clone(),
+            loads: self.loads.clone(),
+            method: self.method,
+        });
+        Box::new(DeleteSlab { id: new_id })
+    }
+
+    fn label(&self) -> &str {
+        "床追加"
+    }
+}
+
+/// 床削除（中間の床も可）。逆操作は [`InsertSlab`]。
+///
+/// ID＝配列インデックスの不変条件を保つため、削除後は当該床より後ろの
+/// 床 ID を 1 つずつ繰り上げる。`SlabId` は床自身の ID 以外からは参照されない
+/// （`crates` 全体で grep 済み）ため、他データへの追従は不要。
+pub struct DeleteSlab {
+    pub id: SlabId,
+}
+
+impl EditCommand for DeleteSlab {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let removed = model.slabs.remove(idx);
+        shift_slab_ids(model, |id| {
+            if id.0 > self.id.0 {
+                id.0 -= 1;
+            }
+        });
+        Box::new(InsertSlab {
+            index: idx,
+            old: removed,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "床削除"
+    }
+}
+
+/// 指定インデックスへ床を再挿入する（[`DeleteSlab`] の逆操作専用）。
+pub struct InsertSlab {
+    pub index: usize,
+    pub old: squid_n_core::model::Slab,
+}
+
+impl EditCommand for InsertSlab {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if self.index > model.slabs.len() {
+            return Box::new(Noop);
+        }
+        let id = SlabId(self.index as u32);
+        shift_slab_ids(model, |sid| {
+            if sid.0 >= id.0 {
+                sid.0 += 1;
+            }
+        });
+        let mut slab = self.old.clone();
+        slab.id = id;
+        model.slabs.insert(self.index, slab);
+        Box::new(DeleteSlab { id })
+    }
+
+    fn label(&self) -> &str {
+        "床削除の取り消し"
+    }
+}
+
+/// モデル内の全ての `SlabId` 参照（床自身の ID を含む）に `f` を適用する。
+fn shift_slab_ids(model: &mut Model, mut f: impl FnMut(&mut SlabId)) {
+    for slab in &mut model.slabs {
+        f(&mut slab.id);
+    }
+}
+
+/// 階の地震重量（`seismic_weight`）変更。逆操作は変更前の値への復元。
+/// 存在しない `StoryId` は Noop。
+pub struct SetStoryWeight {
+    pub story: StoryId,
+    pub weight: Option<f64>,
+}
+
+impl EditCommand for SetStoryWeight {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.story.index();
+        if idx >= model.stories.len() || model.stories[idx].id != self.story {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.stories[idx].seismic_weight, self.weight);
+        Box::new(SetStoryWeight {
+            story: self.story,
+            weight: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "階地震重量変更"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2211,5 +2330,149 @@ mod tests {
         // Noop の undo でも状態は変わらない
         stack.undo(&mut model);
         assert!(model.combinations.is_empty());
+    }
+
+    #[test]
+    fn test_add_delete_slab_roundtrip() {
+        use squid_n_core::model::DistributionMethod;
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        stack.run(
+            &mut model,
+            Box::new(AddSlab {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                joists: vec![],
+                loads: vec![],
+                method: DistributionMethod::TriTrapezoid,
+            }),
+        );
+        assert_eq!(model.slabs.len(), 1);
+        assert_eq!(model.slabs[0].id, SlabId(0));
+        assert!(model.validate().is_ok());
+
+        // 採番の確認：2 枚目は SlabId(1)
+        stack.run(
+            &mut model,
+            Box::new(AddSlab {
+                boundary: vec![NodeId(0), NodeId(1)],
+                joists: vec![],
+                loads: vec![],
+                method: DistributionMethod::OneWay,
+            }),
+        );
+        assert_eq!(model.slabs.len(), 2);
+        assert_eq!(model.slabs[1].id, SlabId(1));
+
+        stack.undo(&mut model);
+        assert_eq!(model.slabs.len(), 1);
+        assert_eq!(model.slabs[0].id, SlabId(0));
+
+        stack.redo(&mut model);
+        assert_eq!(model.slabs.len(), 2);
+        assert_eq!(model.slabs[1].id, SlabId(1));
+    }
+
+    #[test]
+    fn test_delete_slab_middle_renumbers_and_roundtrips() {
+        use squid_n_core::model::{AreaLoad, DistributionMethod};
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        for (i, kind) in ["A", "B", "C"].iter().enumerate() {
+            stack.run(
+                &mut model,
+                Box::new(AddSlab {
+                    boundary: vec![NodeId(i as u32)],
+                    joists: vec![],
+                    loads: vec![AreaLoad {
+                        kind: kind.to_string(),
+                        value: 1.0,
+                    }],
+                    method: DistributionMethod::TributaryArea,
+                }),
+            );
+        }
+        assert_eq!(model.slabs.len(), 3);
+        let before = model.clone();
+
+        // 中間（SlabId(1) = "B"）を削除 → 後続 ID が繰り上がる
+        stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(1) }));
+        assert_eq!(model.slabs.len(), 2);
+        assert_eq!(model.slabs[0].id, SlabId(0));
+        assert_eq!(model.slabs[0].loads[0].kind, "A");
+        assert_eq!(model.slabs[1].id, SlabId(1));
+        assert_eq!(model.slabs[1].loads[0].kind, "C");
+        assert!(model.validate().is_ok());
+
+        // undo で完全復元
+        stack.undo(&mut model);
+        assert!(model.eq_ignoring_dofmap(&before));
+        assert!(model.validate().is_ok());
+
+        stack.redo(&mut model);
+        assert_eq!(model.slabs.len(), 2);
+        assert_eq!(model.slabs[1].loads[0].kind, "C");
+    }
+
+    #[test]
+    fn test_delete_slab_out_of_range_is_noop() {
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+        stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) }));
+        assert!(model.slabs.is_empty());
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
+        assert!(model.slabs.is_empty());
+    }
+
+    fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
+        squid_n_core::model::Story {
+            id: StoryId(id),
+            name: format!("{}F", id + 1),
+            elevation: id as f64 * 3000.0,
+            node_ids: vec![],
+            diaphragms: vec![],
+            seismic_weight: weight,
+        }
+    }
+
+    #[test]
+    fn test_set_story_weight_roundtrip() {
+        let mut model = empty_model();
+        model.stories.push(make_story(0, None));
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(SetStoryWeight {
+                story: StoryId(0),
+                weight: Some(1234.5),
+            }),
+        );
+        assert_eq!(model.stories[0].seismic_weight, Some(1234.5));
+
+        stack.undo(&mut model);
+        assert_eq!(model.stories[0].seismic_weight, None);
+
+        stack.redo(&mut model);
+        assert_eq!(model.stories[0].seismic_weight, Some(1234.5));
+    }
+
+    #[test]
+    fn test_set_story_weight_invalid_id_is_noop() {
+        let mut model = empty_model();
+        model.stories.push(make_story(0, Some(999.0)));
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(SetStoryWeight {
+                story: StoryId(99),
+                weight: Some(1.0),
+            }),
+        );
+        assert_eq!(model.stories[0].seismic_weight, Some(999.0));
+        assert!(stack.can_undo());
+        stack.undo(&mut model);
+        assert_eq!(model.stories[0].seismic_weight, Some(999.0));
     }
 }
