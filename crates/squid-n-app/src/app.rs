@@ -711,6 +711,9 @@ impl App {
                 // story のうち最大値）に算入される。
                 let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
                 let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
+                // 長期軸力の簡易近似として使う先頭荷重ケースの id
+                // （`generate_stories_action` の gravity_lc と同じ規則）。
+                let gravity_lc = self.model.load_cases.first().map(|c| c.id);
                 for elem in &self.model.elements {
                     let Some(sec) = elem
                         .section
@@ -756,13 +759,23 @@ impl App {
                         else {
                             continue;
                         };
-                        // σ0: 最後に実行した静的解析結果(self.results.member_forces)から
-                        // 当該部材の軸力を引き、圧縮のときのみ設定する(長期軸力を用いるのが
-                        // 本筋だが、ここでは最後に実行した静的ケースの軸力を用いる簡易運用)。
+                        // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
+                        // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
+                        // (self.results.member_forces)から当該部材の軸力を引き、
+                        // 圧縮のときのみ設定する。
                         let sigma_0 = self
                             .results
                             .as_ref()
-                            .map(|r| rc_sigma_0_from_last_static(&r.member_forces, elem.id, *b, *d))
+                            .map(|r| {
+                                rc_sigma_0_from_gravity_or_last_static(
+                                    &r.statics,
+                                    &r.member_forces,
+                                    gravity_lc,
+                                    elem.id,
+                                    *b,
+                                    *d,
+                                )
+                            })
                             .unwrap_or(0.0);
                         input.sigma_0 = sigma_0;
                         let qmu = rc_qmu_simple(&input);
@@ -1401,9 +1414,17 @@ fn rc_capacity_input_from_rect(
     })
 }
 
-/// 最後に実行した静的解析結果(`member_forces`)から部材の軸力を取得し、
-/// 圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。引張・軸力なし・
-/// 対象部材の結果が無い場合は 0.0（安全側）。
+/// 長期軸力の簡易近似として先頭荷重ケース(`model.load_cases.first()`)の結果を優先し、
+/// `bundle.statics` に無ければ従来どおり最後に実行した静的解析結果(`member_forces`)を
+/// 用いて部材の軸力を取得する。圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。
+/// 引張・軸力なし・対象部材の結果が無い場合は 0.0（安全側）。
+///
+/// # 制約（要確認済み・推測ではない、docs/申し送り.md §4）
+/// `LoadCaseId(0)` は地震静的(`run_seismic`)の結果格納にも使われる既存仕様のため、
+/// 先頭荷重ケースの id が 0 のときは「先頭荷重ケース(長期相当)の結果」と
+/// 「直近実行した地震静的の結果」を id だけでは区別できない。本関数は
+/// `statics` 内の該当 id の最新格納結果（地震静的が最後に上書きしていればその軸力）を
+/// そのまま用いる。
 ///
 /// # 符号規約（要確認済み・推測ではない）
 /// `squid_n_element::beam::BeamElement::recover_forces` は局所剛性 K・u を
@@ -1414,12 +1435,19 @@ fn rc_capacity_input_from_rect(
 /// 確認済み（すなわち f_local\[0\] は「圧縮正」）。よって `mf.at.first()`
 /// (= pos=0.0、始端)の n は「圧縮正」（n>0 のとき圧縮）であり、
 /// n<=0（引張または軸力なし）なら σ0=0（安全側）とする。
-fn rc_sigma_0_from_last_static(
-    member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
+fn rc_sigma_0_from_gravity_or_last_static(
+    statics: &[(LoadCaseId, squid_n_solver::linear::StaticOnce)],
+    fallback_member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
+    gravity_lc: Option<LoadCaseId>,
     elem_id: ElemId,
     b: f64,
     d: f64,
 ) -> f64 {
+    let member_forces = gravity_lc
+        .and_then(|lc| statics.iter().find(|(id, _)| *id == lc))
+        .map(|(_, s)| s.member_forces.as_slice())
+        .unwrap_or(fallback_member_forces);
+
     member_forces
         .iter()
         .find(|(id, _)| *id == elem_id)
@@ -3606,16 +3634,28 @@ mod tests {
         // 柱: 節点間距離 3000mm、梁: 節点間距離 4000mm。それぞれ手計算で
         // rc_capacity_input_from_rect → rc_qsu/qmu_simple → rc_member_rank を再現する。
         //
-        // σ0 は実運用と同じ規則(rc_sigma_0_from_last_static、最後の静的解析結果=
-        // 地震静的の軸力から圧縮時のみ算定)で個別に反映する。地震水平力による
+        // σ0 は実運用と同じ規則(rc_sigma_0_from_gravity_or_last_static)で個別に反映する。
+        // このモデルの先頭荷重ケース("長期")の id は LoadCaseId(0) だが、地震静的
+        // (run_seismic)も結果を LoadCaseId(0) に格納する既存仕様(docs/申し送り.md §4)
+        // のため、gravity_lc=LoadCaseId(0) で statics を引いても実体は直近実行した
+        // 地震静的の結果になる(= 最後の静的解析結果と同じ)。地震水平力による
         // 柱の転倒モーメント抵抗で柱0・柱1の軸力は一方が圧縮・他方が引張(または
         // 大きさが異なる)になり得るため、部材ごとに算定する(柱を一括りにしない)。
         let mat = &app.model.materials[0];
+        let statics = &app.results.as_ref().unwrap().statics;
         let member_forces = &app.results.as_ref().unwrap().member_forces;
+        let gravity_lc = app.model.load_cases.first().map(|c| c.id);
         let expected_rank_for = |elem_id: ElemId, clear_span: f64| {
             let mut input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
                 .expect("fc 設定済みなので Some");
-            input.sigma_0 = rc_sigma_0_from_last_static(member_forces, elem_id, 400.0, 600.0);
+            input.sigma_0 = rc_sigma_0_from_gravity_or_last_static(
+                statics,
+                member_forces,
+                gravity_lc,
+                elem_id,
+                400.0,
+                600.0,
+            );
             let qmu = rc_qmu_simple(&input);
             let qsu = rc_qsu_simple(&input);
             rc_member_rank(qsu, qmu, &RankCriteria::default())
@@ -3638,7 +3678,7 @@ mod tests {
         }
     }
 
-    /// `rc_sigma_0_from_last_static`: 圧縮軸力から σ0 が正しく算定されることを、
+    /// `rc_sigma_0_from_gravity_or_last_static`: 圧縮軸力から σ0 が正しく算定されることを、
     /// 実際に静的解析を実行して確認する。
     ///
     /// モデル: 鉛直片持ち柱（節点0=基部, 固定, z=0 / 節点1=先端, 自由, z=3000）に
@@ -3753,11 +3793,176 @@ mod tests {
         // 圧縮なので符号規約上「圧縮正」の n_raw は正で、大きさは P と厳密に一致する。
         assert!((n_raw - p).abs() < 1e-6, "n_raw={} (expected {})", n_raw, p);
 
-        let sigma_0 = rc_sigma_0_from_last_static(member_forces, ElemId(0), b, d);
+        let statics = &app.results.as_ref().unwrap().statics;
+        let gravity_lc = app.model.load_cases.first().map(|c| c.id);
+        let sigma_0 = rc_sigma_0_from_gravity_or_last_static(
+            statics,
+            member_forces,
+            gravity_lc,
+            ElemId(0),
+            b,
+            d,
+        );
         let expected_sigma_0 = p / (b * d);
         assert!(
             (sigma_0 - expected_sigma_0).abs() < 1e-9,
             "sigma_0={} expected={}",
+            sigma_0,
+            expected_sigma_0
+        );
+    }
+
+    /// `rc_sigma_0_from_gravity_or_last_static`: 先頭荷重ケース(gravity_lc)の静的解析結果が
+    /// `bundle.statics` にあれば、最後に実行した(かつ結果が異なる)静的解析ではなく
+    /// 先頭荷重ケースの結果が優先されることを確認する。
+    ///
+    /// モデル: `test_rc_sigma_0_from_compression_axial_force` と同じ片持ち柱に、
+    /// 先頭荷重ケース(id=0,"長期")として圧縮荷重 P1、2番目のケース(id=1,"地震")として
+    /// 引張荷重 P2 を設定する。両ケースをこの順に実行すると
+    /// `bundle.member_forces`(=最後に実行したケース)は引張(id=1)の結果になり、
+    /// これをそのまま使うと σ0=0(引張は 0 とみなす安全側処理)になってしまう。
+    /// 優先順位が正しく効いていれば、`bundle.statics` 内の id=0(長期)の圧縮軸力から
+    /// σ0=P1/(b・D) (>0) が算定される。
+    #[test]
+    fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::MaterialId;
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material,
+            Model, NodalLoad, Node,
+        };
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let b = 400.0;
+        let d = 600.0;
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 8,
+                dia: 22.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 150.0,
+                legs: 2,
+            },
+        };
+        let rc_shape = SectionShape::RcRect {
+            b,
+            d,
+            rebar: rebar.clone(),
+        };
+
+        let p1 = 100_000.0; // 先頭ケース(長期)の圧縮荷重 [N]
+        let p2 = 60_000.0; // 2番目のケース(地震想定)の引張荷重 [N]
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+            ],
+            sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "FC24".into(),
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Beam,
+                nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+            }],
+            load_cases: vec![
+                LoadCase {
+                    id: LoadCaseId(0),
+                    name: "長期".into(),
+                    nodal: vec![NodalLoad {
+                        node: NodeId(1),
+                        values: [0.0, 0.0, -p1, 0.0, 0.0, 0.0], // 下向き=圧縮
+                    }],
+                    member: Vec::new(),
+                },
+                LoadCase {
+                    id: LoadCaseId(1),
+                    name: "地震".into(),
+                    nodal: vec![NodalLoad {
+                        node: NodeId(1),
+                        values: [0.0, 0.0, p2, 0.0, 0.0, 0.0], // 上向き=引張
+                    }],
+                    member: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut app = App::default();
+        app.load_model(model);
+        // 先頭ケース(長期,圧縮)→2番目のケース(地震,引張)の順に実行し、
+        // 「最後に実行した静的解析結果」は引張(id=1)になるようにする。
+        app.run_linear_static(LoadCaseId(0));
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        app.run_linear_static(LoadCaseId(1));
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+        let bundle = app.results.as_ref().unwrap();
+        // 最後に実行した静的解析結果(bundle.member_forces)は引張なので、
+        // これをそのまま使うと σ0=0 になってしまうことの確認(比較対象)。
+        let sigma_0_last_only = rc_sigma_0_from_gravity_or_last_static(
+            &[],
+            &bundle.member_forces,
+            None,
+            ElemId(0),
+            b,
+            d,
+        );
+        assert_eq!(sigma_0_last_only, 0.0, "引張のみなら σ0=0 のはず(比較対象)");
+
+        // 優先順位が正しく効いていれば、先頭ケース(長期,id=0)の圧縮軸力から
+        // σ0=P1/(b・D) (>0) が算定される。
+        let gravity_lc = app.model.load_cases.first().map(|c| c.id);
+        assert_eq!(gravity_lc, Some(LoadCaseId(0)));
+        let sigma_0 = rc_sigma_0_from_gravity_or_last_static(
+            &bundle.statics,
+            &bundle.member_forces,
+            gravity_lc,
+            ElemId(0),
+            b,
+            d,
+        );
+        let expected_sigma_0 = p1 / (b * d);
+        assert!(
+            (sigma_0 - expected_sigma_0).abs() < 1e-9,
+            "sigma_0={} expected={}(先頭ケースの圧縮軸力が優先されるはず)",
             sigma_0,
             expected_sigma_0
         );
