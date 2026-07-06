@@ -53,12 +53,30 @@ pub struct Navigator {
     pub focus_result: Option<StaticKey>,
 }
 
-/// 表示対象の静的解析結果を指すキー。荷重ケース単体か荷重組合せかを区別する。
+/// 静的解析結果の格納キー。ユーザー荷重ケースと地震静的(Ai)を型で区別し、
+/// LoadCaseId(0) の二重使用(ユーザーケース0と地震結果の同居)を解消する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticCaseKey {
+    /// ユーザー定義の荷重ケース
+    User(LoadCaseId),
+    /// 地震静的(Ai 分布)。方向別に共存できる
+    Seismic(SeismicDir),
+}
+
+/// 表示対象の静的解析結果を指すキー。荷重ケース単体（ユーザー／地震静的）か
+/// 荷重組合せかを区別する。
+///
+/// `Case` は `StaticCaseKey` をそのままネストする形を採る（`User`/`Seismic`/`Combo`
+/// にフラット化する案もあったが、`current_static` やナビゲータでの
+/// `bundle.statics` 引き当ては User/Seismic を区別する必要がなく
+/// `StaticCaseKey` の等値比較 1 本で完結するため、ネストの方が呼び出し側の
+/// 分岐が増えずシンプルに書ける）。
+///
 /// `Combo` のインデックスは **`ResultsBundle.combos` 上の位置**
 /// （`model.combinations` のインデックスではない）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StaticKey {
-    Case(LoadCaseId),
+    Case(StaticCaseKey),
     Combo(usize),
 }
 
@@ -96,7 +114,7 @@ pub struct Selection {
 
 #[derive(Default)]
 pub struct ResultsBundle {
-    pub statics: Vec<(LoadCaseId, squid_n_solver::linear::StaticOnce)>,
+    pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
     /// 荷重組合せの解析結果（組合せ名で保持）
     pub combos: Vec<(String, squid_n_solver::linear::StaticOnce)>,
     pub modal: Option<squid_n_solver::eigen::ModalResult>,
@@ -543,11 +561,12 @@ impl App {
                 Ok(res) => {
                     let member_forces = res.member_forces.clone();
                     let mut bundle = self.results.take().unwrap_or_default();
-                    bundle.statics.retain(|(id, _)| *id != lc);
-                    bundle.statics.push((lc, res));
+                    let key = StaticCaseKey::User(lc);
+                    bundle.statics.retain(|(id, _)| *id != key);
+                    bundle.statics.push((key, res));
                     bundle.member_forces = member_forces;
                     self.results = Some(bundle);
-                    self.last_static = Some(StaticKey::Case(lc));
+                    self.last_static = Some(StaticKey::Case(key));
                     self.staleness.mark_fresh();
                     self.run_design_check();
                 }
@@ -604,10 +623,10 @@ impl App {
         let bundle = self.results.as_ref()?;
         let resolve = |key: StaticKey| -> Option<&squid_n_solver::linear::StaticOnce> {
             match key {
-                StaticKey::Case(id) => bundle
+                StaticKey::Case(case_key) => bundle
                     .statics
                     .iter()
-                    .find(|(cid, _)| *cid == id)
+                    .find(|(k, _)| *k == case_key)
                     .map(|(_, s)| s),
                 StaticKey::Combo(idx) => bundle.combos.get(idx).map(|(_, s)| s),
             }
@@ -865,6 +884,8 @@ impl App {
 
     /// T3: 地震静的解析（Ai一気通貫）を実行し、結果を `self.results` に格納する。
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
+    /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
+    /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
     pub fn run_seismic(&mut self, dir: SeismicDir) {
         self.last_error = None;
         let cfg = squid_n_solver::analysis::SeismicCfg {
@@ -879,11 +900,12 @@ impl App {
                 Ok(res) => {
                     let member_forces = res.member_forces.clone();
                     let mut bundle = self.results.take().unwrap_or_default();
-                    bundle.statics.retain(|(id, _)| *id != LoadCaseId(0));
-                    bundle.statics.push((LoadCaseId(0), res));
+                    let key = StaticCaseKey::Seismic(dir);
+                    bundle.statics.retain(|(id, _)| *id != key);
+                    bundle.statics.push((key, res));
                     bundle.member_forces = member_forces;
                     self.results = Some(bundle);
-                    self.last_static = Some(StaticKey::Case(LoadCaseId(0)));
+                    self.last_static = Some(StaticKey::Case(key));
                     self.staleness.mark_fresh();
                     self.run_design_check();
                 }
@@ -1419,12 +1441,12 @@ fn rc_capacity_input_from_rect(
 /// 用いて部材の軸力を取得する。圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。
 /// 引張・軸力なし・対象部材の結果が無い場合は 0.0（安全側）。
 ///
-/// # 制約（要確認済み・推測ではない、docs/申し送り.md §4）
-/// `LoadCaseId(0)` は地震静的(`run_seismic`)の結果格納にも使われる既存仕様のため、
-/// 先頭荷重ケースの id が 0 のときは「先頭荷重ケース(長期相当)の結果」と
-/// 「直近実行した地震静的の結果」を id だけでは区別できない。本関数は
-/// `statics` 内の該当 id の最新格納結果（地震静的が最後に上書きしていればその軸力）を
-/// そのまま用いる。
+/// `statics` は `StaticCaseKey` をキーとするため、ユーザー荷重ケースの結果
+/// (`StaticCaseKey::User`)と地震静的の結果(`StaticCaseKey::Seismic`)は別々に
+/// 格納される（旧実装では両者とも `LoadCaseId(0)` を共有し、後から実行した方が
+/// 先頭荷重ケースの結果を上書きしてしまう問題があったが、型で区別したことで解消済み）。
+/// 先頭荷重ケースが `statics` に無い（未実行）場合のみ `fallback_member_forces`
+/// （最後に実行した静的解析の内力）を用いる。
 ///
 /// # 符号規約（要確認済み・推測ではない）
 /// `squid_n_element::beam::BeamElement::recover_forces` は局所剛性 K・u を
@@ -1436,7 +1458,7 @@ fn rc_capacity_input_from_rect(
 /// (= pos=0.0、始端)の n は「圧縮正」（n>0 のとき圧縮）であり、
 /// n<=0（引張または軸力なし）なら σ0=0（安全側）とする。
 fn rc_sigma_0_from_gravity_or_last_static(
-    statics: &[(LoadCaseId, squid_n_solver::linear::StaticOnce)],
+    statics: &[(StaticCaseKey, squid_n_solver::linear::StaticOnce)],
     fallback_member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
     gravity_lc: Option<LoadCaseId>,
     elem_id: ElemId,
@@ -1444,7 +1466,11 @@ fn rc_sigma_0_from_gravity_or_last_static(
     d: f64,
 ) -> f64 {
     let member_forces = gravity_lc
-        .and_then(|lc| statics.iter().find(|(id, _)| *id == lc))
+        .and_then(|lc| {
+            statics
+                .iter()
+                .find(|(id, _)| *id == StaticCaseKey::User(lc))
+        })
         .map(|(_, s)| s.member_forces.as_slice())
         .unwrap_or(fallback_member_forces);
 
@@ -1871,20 +1897,28 @@ impl App {
                     if r.statics.is_empty() && r.combos.is_empty() && r.modal.is_none() {
                         ui.label("（未実行）");
                     } else {
-                        for (id, _) in r.statics.iter() {
-                            let lc_name = self
-                                .model
-                                .load_cases
-                                .iter()
-                                .find(|lc| lc.id == *id)
-                                .map(|lc| lc.name.as_str())
-                                .unwrap_or("");
-                            let is_sel = self.nav.focus_result == Some(StaticKey::Case(*id));
-                            if ui
-                                .selectable_label(is_sel, format!("静的 LC {} {}", id.0, lc_name))
-                                .clicked()
-                            {
-                                self.nav.focus_result = Some(StaticKey::Case(*id));
+                        for (key, _) in r.statics.iter() {
+                            let label = match key {
+                                StaticCaseKey::User(id) => {
+                                    let lc_name = self
+                                        .model
+                                        .load_cases
+                                        .iter()
+                                        .find(|lc| lc.id == *id)
+                                        .map(|lc| lc.name.as_str())
+                                        .unwrap_or("");
+                                    format!("静的 LC {} {}", id.0, lc_name)
+                                }
+                                StaticCaseKey::Seismic(SeismicDir::X) => {
+                                    "地震静的 (X方向)".to_string()
+                                }
+                                StaticCaseKey::Seismic(SeismicDir::Y) => {
+                                    "地震静的 (Y方向)".to_string()
+                                }
+                            };
+                            let is_sel = self.nav.focus_result == Some(StaticKey::Case(*key));
+                            if ui.selectable_label(is_sel, label).clicked() {
+                                self.nav.focus_result = Some(StaticKey::Case(*key));
                             }
                         }
                         for (i, (name, _)) in r.combos.iter().enumerate() {
@@ -2836,12 +2870,51 @@ mod tests {
         assert_eq!(app.model.stories.len(), 1);
         assert!(app.model.stories[0].seismic_weight.unwrap() > 0.0);
 
+        // ユーザー荷重ケース0("長期")を先に実行しておく。
+        app.run_linear_static(LoadCaseId(0));
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        let user_disp = app.results.as_ref().unwrap().statics[0].1.disp.clone();
+
         app.run_seismic(SeismicDir::X);
         assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+        // 地震静的の結果は StaticCaseKey::Seismic(X) に格納され、直前に実行した
+        // ユーザーケース0(StaticCaseKey::User)の結果を上書きしない
+        // (旧実装ではどちらも LoadCaseId(0) を共有し、後勝ちで上書きされていた)。
         let r = app.results.as_ref().unwrap();
-        let (_, res) = r.statics.first().unwrap();
-        // 柱頭が X 方向へ変位している
-        assert!(res.disp[2][0].abs() > 1e-3, "{}", res.disp[2][0]);
+        assert_eq!(
+            r.statics.len(),
+            2,
+            "ユーザーケース0と地震静的Xの結果が両方残っているはず"
+        );
+        let seismic_disp = r
+            .statics
+            .iter()
+            .find(|(k, _)| *k == StaticCaseKey::Seismic(SeismicDir::X))
+            .expect("地震静的Xの結果が残っているはず")
+            .1
+            .disp
+            .clone();
+        let kept_user_disp = r
+            .statics
+            .iter()
+            .find(|(k, _)| *k == StaticCaseKey::User(LoadCaseId(0)))
+            .expect("ユーザーケース0の結果が地震静的実行後も残っているはず")
+            .1
+            .disp
+            .clone();
+        assert_eq!(
+            kept_user_disp, user_disp,
+            "ユーザーケース0の結果は地震静的の実行後も変わらないはず（衝突していない）"
+        );
+        // 柱頭が X 方向へ変位している(地震静的の結果)
+        assert!(seismic_disp[2][0].abs() > 1e-3, "{}", seismic_disp[2][0]);
+
+        // ナビゲータでそれぞれのキーを選択すれば current_static が個別に引ける
+        app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
+        assert_eq!(app.current_static().unwrap().disp, kept_user_disp);
+        app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
+        assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
         // undo で階定義が戻る
         app.undo.undo(&mut app.model);
@@ -3285,7 +3358,7 @@ mod tests {
         assert_eq!(fallback.disp, expected_disp);
 
         // Case を選択すれば該当ケースの結果が返る
-        app.nav.focus_result = Some(StaticKey::Case(LoadCaseId(0)));
+        app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
         let by_case = app
             .current_static()
             .expect("Case 選択時は該当ケースの結果が返るはず");
@@ -3635,10 +3708,10 @@ mod tests {
         // rc_capacity_input_from_rect → rc_qsu/qmu_simple → rc_member_rank を再現する。
         //
         // σ0 は実運用と同じ規則(rc_sigma_0_from_gravity_or_last_static)で個別に反映する。
-        // このモデルの先頭荷重ケース("長期")の id は LoadCaseId(0) だが、地震静的
-        // (run_seismic)も結果を LoadCaseId(0) に格納する既存仕様(docs/申し送り.md §4)
-        // のため、gravity_lc=LoadCaseId(0) で statics を引いても実体は直近実行した
-        // 地震静的の結果になる(= 最後の静的解析結果と同じ)。地震水平力による
+        // このテストでは run_linear_static(先頭ケース="長期")を実行していないため、
+        // gravity_lc=LoadCaseId(0) は statics 内の StaticCaseKey::User(LoadCaseId(0))
+        // として見つからず、フォールバック(bundle.member_forces = 直近実行した
+        // run_seismic の内力)が使われる(= 最後の静的解析結果と同じ)。地震水平力による
         // 柱の転倒モーメント抵抗で柱0・柱1の軸力は一方が圧縮・他方が引張(または
         // 大きさが異なる)になり得るため、部材ごとに算定する(柱を一括りにしない)。
         let mat = &app.model.materials[0];

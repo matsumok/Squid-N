@@ -151,7 +151,11 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         if app.nav.focus_load_case == Some(lc_id) {
             app.nav.focus_load_case = None;
         }
-        if app.last_static == Some(crate::app::StaticKey::Case(lc_id)) {
+        if app.last_static
+            == Some(crate::app::StaticKey::Case(
+                crate::app::StaticCaseKey::User(lc_id),
+            ))
+        {
             app.last_static = None;
         }
     }
@@ -177,10 +181,13 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .and_then(|id| app.model.load_cases.iter().position(|lc| lc.id == id))
         .or_else(|| {
             app.last_static.and_then(|key| match key {
-                crate::app::StaticKey::Case(id) => {
+                // 地震静的(Seismic)はユーザー荷重ケースに対応しないため None
+                // （呼び出し元のフォールバックで先頭ケースが選ばれる）。
+                crate::app::StaticKey::Case(crate::app::StaticCaseKey::User(id)) => {
                     app.model.load_cases.iter().position(|lc| lc.id == id)
                 }
-                crate::app::StaticKey::Combo(_) => None,
+                crate::app::StaticKey::Case(crate::app::StaticCaseKey::Seismic(_))
+                | crate::app::StaticKey::Combo(_) => None,
             })
         })
         .unwrap_or(0);
