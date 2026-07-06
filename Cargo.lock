@@ -5439,12 +5439,14 @@ dependencies = [
 name = "squid-n-mcp"
 version = "0.0.1"
 dependencies = [
+ "arrow",
  "rmcp",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "smallvec",
  "squid-n-core",
+ "squid-n-design-jp",
  "squid-n-edit",
  "squid-n-io",
  "squid-n-solver",
