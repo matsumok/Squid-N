@@ -170,13 +170,18 @@ pub fn build_nonlinear_behavior(
     }
 }
 
-/// ファイバー梁の生成。`plastic_zone` が指定されていれば塑性化域考慮モデル
-/// （端部 Lp 区間にファイバー断面、中央弾性）、なければ従来の全長ファイバー積分。
+/// ファイバー梁の生成。既定で塑性化域考慮モデル（端部 Lp 区間にファイバー断面、
+/// 中央弾性）とし、Lp は `plastic_zone` 指定値、未指定なら断面せいの 0.5 倍
+/// （MS 要素と同じ既定。0.5D は既往検討で標準的に用いられる値）。
 fn build_fiber(data: &ElementData, model: &Model) -> crate::fiber_elem::FiberBeam {
-    match data.plastic_zone {
-        Some(lp) => crate::fiber_elem::FiberBeam::with_plastic_zone(data, model, lp),
-        None => crate::fiber_elem::FiberBeam::new(data, model),
-    }
+    let depth = data
+        .section
+        .and_then(|sid| model.sections.get(sid.index()))
+        .map(|s| s.depth)
+        .filter(|d| *d > 0.0)
+        .unwrap_or(200.0);
+    let lp = data.plastic_zone.unwrap_or(0.5 * depth);
+    crate::fiber_elem::FiberBeam::with_plastic_zone(data, model, lp)
 }
 
 /// 集中バネの降伏モーメント My0 と軸許容耐力 N許容 = σy·A（MN 相関用）。
