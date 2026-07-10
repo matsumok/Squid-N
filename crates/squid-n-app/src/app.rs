@@ -892,6 +892,8 @@ impl App {
                         stories: gen.stories,
                         node_story: gen.node_story,
                         constraints: gen.constraints,
+                        rep_nodes: gen.rep_nodes,
+                        generated_masters: gen.generated_masters,
                     }),
                 );
                 self.staleness.mark_edited();
@@ -2956,6 +2958,42 @@ mod tests {
         // undo で階定義が戻る
         app.undo.undo(&mut app.model);
         assert!(app.model.stories.is_empty());
+    }
+
+    /// 剛床代表節点は慣性力重心に自動生成される。再度自動生成しても
+    /// 既存の代表節点を再利用するため節点数が増えないことを確認する
+    /// （story_gen + edit の統合: `generate_stories` → `ApplyStories` の往復）。
+    #[test]
+    fn test_generate_stories_action_reuses_rep_node_on_regenerate() {
+        let mut app = App::default();
+        app.load_model(crate::sample::portal_frame());
+        let n0 = app.model.nodes.len();
+        assert!(app.model.generated_masters.is_empty());
+
+        app.generate_stories_action();
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        let n1 = app.model.nodes.len();
+        assert_eq!(n1, n0 + 1, "剛床代表節点が 1 つ新規生成される");
+        assert_eq!(app.model.generated_masters.len(), 1);
+        let master_after_first = app.model.generated_masters[0];
+        assert!(app.model.validate().is_ok());
+
+        // 再生成しても代表節点は再利用され、節点数は増えない。
+        app.generate_stories_action();
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert_eq!(
+            app.model.nodes.len(),
+            n1,
+            "再生成でノード数が増えてはいけない（代表節点の再利用）"
+        );
+        assert_eq!(app.model.generated_masters, vec![master_after_first]);
+        assert!(app.model.validate().is_ok());
+
+        // 固有値解析・地震静的解析が正常に動作する（生成された剛床を含む縮約の統合確認）。
+        app.run_eigen(1);
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        app.run_seismic(SeismicDir::X);
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
     }
 
     #[test]
