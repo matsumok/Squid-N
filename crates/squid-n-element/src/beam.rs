@@ -152,13 +152,34 @@ impl BeamElement {
             squid_n_core::model::rect_shear_area(sec.area)
         };
 
-        // 軸剛性用断面積: SRC は An = rcAn + sAn·(ns−1)（RESP-D 計算編 02）。
-        // その他の形状・shape 無し断面は従来どおり sec.area。
-        let a_stiff = match &sec.shape {
-            Some(shape @ squid_n_core::section_shape::SectionShape::SrcRect { .. }) => {
-                shape.calc_axial_stiffness_area()
-            }
+        // SRC/CFT の複合換算断面性能（RESP-D 計算編 02「剛性計算」）。
+        // 要素材料からヤング係数比を算定して剛性用の断面性能を上書きする。
+        // - SRC: 材料=コンクリート（fc あり）のとき ns=Es/Ec で累加。
+        // - CFT: 材料=鋼管の young と充填コンクリート強度 fc から 1/n 換算で累加。
+        // 算定不能（fc 無し・Ec≤0 等）なら to_section の既定値
+        // （SRC: N_S_EQ 固定、CFT: 鋼管のみ）のまま。質量用 a_mass は常に幾何断面。
+        use squid_n_core::section_shape::SectionShape;
+        let composite = sec.shape.as_ref().and_then(|shape| match shape {
+            SectionShape::SrcRect { .. } => mat
+                .fc
+                .is_some()
+                .then(|| shape.src_equivalent_props(mat.young, mat.poisson))
+                .flatten(),
+            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => mat
+                .fc
+                .and_then(|fc| shape.cft_equivalent_props(mat.young, mat.poisson, fc)),
+            _ => None,
+        });
+
+        // SRC で材料から算定できない場合も、軸剛性だけは既定 N_S_EQ の累加を維持する。
+        let a_stiff = match (&composite, &sec.shape) {
+            (Some(p), _) => p.area_ax,
+            (None, Some(shape @ SectionShape::SrcRect { .. })) => shape.calc_axial_stiffness_area(),
             _ => sec.area,
+        };
+        let (iy, iz, j, as_y, as_z) = match &composite {
+            Some(p) => (p.iy, p.iz, p.j, p.as_y, p.as_z),
+            None => (sec.iy, sec.iz, sec.j, as_y, as_z),
         };
 
         Self {
@@ -167,9 +188,9 @@ impl BeamElement {
             g,
             a: a_stiff,
             a_mass: sec.area,
-            iy: sec.iy,
-            iz: sec.iz,
-            j: sec.j,
+            iy,
+            iz,
+            j,
             as_y,
             as_z,
             length: len,
@@ -961,6 +982,137 @@ mod tests {
             material: None,
             committed_disp: [0.0; 12],
         }
+    }
+
+    /// SRC/CFT の複合換算が要素生成へ配線されていること（RESP-D 計算編 02）。
+    #[test]
+    fn test_beam_new_src_cft_composite_props() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{MaterialId, SectionId};
+        use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Model};
+        use squid_n_core::section_shape::{
+            BarSet, RcRebar, SectionShape, ShearBar, E_STEEL, N_S_EQ,
+        };
+
+        let src_shape = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+            steel_grade: "SN400B".into(),
+        };
+        let cft_shape = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 12.0,
+        };
+
+        let mut model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+            ],
+            sections: vec![
+                src_shape.to_section(SectionId(0), "SRC-600".into()),
+                cft_shape.to_section(SectionId(1), "CFT-400".into()),
+            ],
+            materials: vec![
+                Material {
+                    id: MaterialId(0),
+                    name: "FC24".into(),
+                    young: 23000.0,
+                    poisson: 0.2,
+                    density: 2.4e-9,
+                    shear: None,
+                    fc: Some(24.0),
+                    fy: None,
+                },
+                Material {
+                    id: MaterialId(1),
+                    name: "BCR295(充填FC36)".into(),
+                    young: 205000.0,
+                    poisson: 0.3,
+                    density: 7.85e-9,
+                    shear: None,
+                    fc: Some(36.0),
+                    fy: Some(295.0),
+                },
+            ],
+            ..Default::default()
+        };
+        let make_elem = |sec: u32, mat: u32| ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(squid_n_core::ids::SectionId(sec)),
+            material: Some(squid_n_core::ids::MaterialId(mat)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // SRC + コンクリート材料: ns=Es/Ec による等価断面性能
+        let src_beam = BeamElement::new(&make_elem(0, 0), &model);
+        let p = src_shape.src_equivalent_props(23000.0, 0.2).unwrap();
+        assert!((src_beam.a - p.area_ax).abs() < 1e-6);
+        assert!((src_beam.iy - p.iy).abs() / p.iy < 1e-12);
+        assert!((src_beam.j - p.j).abs() / p.j < 1e-12);
+        assert!((src_beam.as_z - p.as_z).abs() < 1e-6);
+        // ns=205000/23000≈8.91 は既定 N_S_EQ=15 と異なる値になること
+        let ns = E_STEEL / 23000.0;
+        assert!((ns - N_S_EQ).abs() > 1.0);
+        // 質量用断面積は幾何断面(コンクリート全断面)のまま
+        assert!((src_beam.a_mass - 360_000.0).abs() < 1e-9);
+
+        // CFT + 鋼材料(fc=充填強度): 充填コンクリートの 1/n 換算累加
+        let cft_beam = BeamElement::new(&make_elem(1, 1), &model);
+        let pc = cft_shape.cft_equivalent_props(205000.0, 0.3, 36.0).unwrap();
+        assert!((cft_beam.a - pc.area_ax).abs() < 1e-6);
+        assert!((cft_beam.iy - pc.iy).abs() / pc.iy < 1e-12);
+        assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
+
+        // SRC + fc の無い材料: 既定 N_S_EQ の軸剛性累加へフォールバック
+        model.materials[0].fc = None;
+        let src_fallback = BeamElement::new(&make_elem(0, 0), &model);
+        assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
+        assert!((src_fallback.iy - model.sections[0].iy).abs() < 1e-6);
     }
 
     #[test]
