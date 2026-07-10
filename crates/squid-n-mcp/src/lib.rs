@@ -1208,7 +1208,7 @@ fn compute_time_history_job(
     Ok(JobOutcome::TimeHistory { summary })
 }
 
-/// 鋼材判定（Material.name に "S" で始まる JIS 鋼種名が含まれるか）。
+/// 鋼材判定（Material.name が JIS 鋼種名で始まるか。鉄筋 SD/SR は RC 扱い）。
 /// squid-n-app の `is_steel`（app.rs）と同じロジック
 /// （squid-n-mcp は squid-n-app に依存しないため複製している）。
 fn is_steel(name: &str) -> bool {
@@ -1218,6 +1218,42 @@ fn is_steel(name: &str) -> bool {
         || upper.starts_with("SM")
         || upper.starts_with("STK")
         || upper.starts_with("ST")
+        || upper.starts_with("SA")
+        || upper.starts_with("BC")
+}
+
+/// 部材種別判定（部材軸の鉛直成分による幾何判定）。
+/// squid-n-app の `member_kind_of`（app.rs）と同じロジック。
+fn member_kind_of(
+    elem: &squid_n_core::model::ElementData,
+    model: &Model,
+) -> squid_n_design_jp::MemberKind {
+    use squid_n_design_jp::MemberKind;
+    let coords: Vec<[f64; 3]> = elem
+        .nodes
+        .iter()
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .map(|n| n.coord)
+        .take(2)
+        .collect();
+    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
+        return MemberKind::Beam;
+    };
+    let dx = p1[0] - p0[0];
+    let dy = p1[1] - p0[1];
+    let dz = p1[2] - p0[2];
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len < 1e-9 {
+        return MemberKind::Beam;
+    }
+    let ez = (dz / len).abs();
+    if ez >= 0.8 {
+        MemberKind::Column
+    } else if ez <= 0.2 {
+        MemberKind::Beam
+    } else {
+        MemberKind::Brace
+    }
 }
 
 /// DesignCheck ジョブの純粋計算部分。
@@ -1235,9 +1271,6 @@ fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<Job
         .linear_static(lc.id)
         .map_err(|e| format!("solve failed: {e}"))?;
 
-    let ctx = squid_n_design_jp::DesignCtx {
-        term: squid_n_design_jp::LoadTerm::Long,
-    };
     let mut member_force_rows: Vec<(u32, f64, [f64; 6])> = Vec::new();
     let mut n_checks = 0usize;
     let mut n_ng = 0usize;
@@ -1261,19 +1294,53 @@ fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<Job
             continue;
         };
 
+        // 部材種別・部材長・せん断スパン比代表値（app.rs の run_design_check と同じ規則）。
+        let kind = member_kind_of(elem, model);
+        let length = {
+            let coords: Vec<[f64; 3]> = elem
+                .nodes
+                .iter()
+                .filter_map(|nid| model.nodes.get(nid.index()))
+                .map(|n| n.coord)
+                .take(2)
+                .collect();
+            match (coords.first(), coords.get(1)) {
+                (Some(p0), Some(p1)) => {
+                    let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+                    (dx * dx + dy * dy + dz * dz).sqrt()
+                }
+                _ => 0.0,
+            }
+        };
+        let shear_span = mf
+            .at
+            .iter()
+            .map(|(_, f)| (f[5].abs(), f[1].abs()))
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let ctx = squid_n_design_jp::DesignCtx {
+            term: squid_n_design_jp::LoadTerm::Long,
+            kind,
+            length,
+            lb: None,
+            lk: None,
+            shear_span,
+            rc_damage_control: true,
+        };
+
         let checker: Box<dyn squid_n_design_jp::DesignCheck> = if is_steel(&mat.name) {
             Box::new(squid_n_design_jp::SteelDesign)
         } else {
             Box::new(squid_n_design_jp::RcDesign)
         };
         for (pos, forces) in &mf.at {
-            // [N, Qy, Qz, Mx, My, Mz] -> MemberForcesAt（暫定: 強軸まわりとして
-            // Mz[5] と Qy[1] を使用。app.rs の run_design_check と同じ簡略化）。
+            // [N, Qy, Qz, Mx, My, Mz] -> MemberForcesAt（N は引張正の部材内力）
             let mfa = squid_n_design_jp::MemberForcesAt {
                 pos: *pos,
                 n: forces[0],
-                q: forces[1],
-                m: forces[5],
+                qy: forces[1],
+                qz: forces[2],
+                my: forces[4],
+                mz: forces[5],
             };
             let cr = checker.check(&mfa, sec, mat, &ctx);
             n_checks += 1;
