@@ -260,6 +260,10 @@ pub struct Model {
     pub constraints: Vec<Constraint>,
     pub load_cases: Vec<LoadCase>,
     pub combinations: Vec<LoadCombination>,
+    /// 階の自動生成が作る剛床代表節点（慣性力重心に置く仮想節点）の ID。
+    /// 構造節点と区別するために保持し、再生成時に再利用する。
+    #[serde(default)]
+    pub generated_masters: Vec<NodeId>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -431,6 +435,7 @@ impl Model {
             && self.constraints == other.constraints
             && self.load_cases == other.load_cases
             && self.combinations == other.combinations
+            && self.generated_masters == other.generated_masters
     }
 }
 

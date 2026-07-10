@@ -184,6 +184,14 @@ impl EditCommand for DeleteNode {
         if model.node_in_use(self.id) {
             return Box::new(Noop);
         }
+        // 剛床代表節点かどうかを退避し、リストからは先に除去してから ID を繰り上げる。
+        let generated_master =
+            if let Some(pos) = model.generated_masters.iter().position(|n| *n == self.id) {
+                model.generated_masters.remove(pos);
+                true
+            } else {
+                false
+            };
         let removed = model.nodes.remove(idx);
         shift_node_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -196,6 +204,7 @@ impl EditCommand for DeleteNode {
             restraint: removed.restraint,
             mass: removed.mass,
             story: removed.story,
+            generated_master,
         })
     }
 
@@ -212,6 +221,9 @@ pub struct InsertNode {
     pub restraint: squid_n_core::dof::Dof6Mask,
     pub mass: Option<[f64; 6]>,
     pub story: Option<squid_n_core::ids::StoryId>,
+    /// 削除された節点が `generated_masters`（剛床代表節点）に含まれていたか。
+    /// 含まれていた場合、再挿入後の ID を `generated_masters` へ戻す。
+    pub generated_master: bool,
 }
 
 impl EditCommand for InsertNode {
@@ -232,6 +244,10 @@ impl EditCommand for InsertNode {
                 story: self.story,
             },
         );
+        if self.generated_master {
+            model.generated_masters.push(id);
+            model.generated_masters.sort();
+        }
         Box::new(DeleteNode { id })
     }
 
@@ -245,6 +261,9 @@ impl EditCommand for InsertNode {
 fn shift_node_ids(model: &mut Model, mut f: impl FnMut(&mut NodeId)) {
     for node in &mut model.nodes {
         f(&mut node.id);
+    }
+    for id in &mut model.generated_masters {
+        f(id);
     }
     for elem in &mut model.elements {
         for n in &mut elem.nodes {
@@ -1324,14 +1343,20 @@ pub struct ApplyStories {
     pub node_story: Vec<Option<squid_n_core::ids::StoryId>>,
     /// 追加する剛床拘束（既存の RigidDiaphragm と置換）。
     pub constraints: Vec<squid_n_core::model::Constraint>,
+    /// 剛床代表節点。ID が既存範囲内なら置換（再利用）、範囲外（＝末尾連番）なら追加。
+    pub rep_nodes: Vec<squid_n_core::model::Node>,
+    /// 適用後の `model.generated_masters` の全量。
+    pub generated_masters: Vec<NodeId>,
 }
 
 impl EditCommand for ApplyStories {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         use squid_n_core::model::Constraint;
+        // 変更前の全量スナップショット（rep_nodes の置換/追加も含めて丸ごと復元できるようにする）。
+        let old_nodes = model.nodes.clone();
+        let old_generated_masters = model.generated_masters.clone();
+
         let old_stories = std::mem::replace(&mut model.stories, self.stories.clone());
-        let old_node_story: Vec<Option<squid_n_core::ids::StoryId>> =
-            model.nodes.iter().map(|n| n.story).collect();
         for (node, st) in model.nodes.iter_mut().zip(self.node_story.iter()) {
             node.story = *st;
         }
@@ -1341,10 +1366,24 @@ impl EditCommand for ApplyStories {
             .constraints
             .retain(|c| !matches!(c, Constraint::RigidDiaphragm { .. }));
         model.constraints.extend(self.constraints.iter().cloned());
+
+        // 剛床代表節点：ID＝配列インデックス不変条件を保って置換 or 追加する。
+        for rn in &self.rep_nodes {
+            let idx = rn.id.index();
+            if idx < model.nodes.len() {
+                model.nodes[idx] = rn.clone();
+            } else {
+                debug_assert_eq!(idx, model.nodes.len(), "rep_nodes は昇順の連番である前提");
+                model.nodes.push(rn.clone());
+            }
+        }
+        model.generated_masters = self.generated_masters.clone();
+
         Box::new(RestoreStories {
             stories: old_stories,
-            node_story: old_node_story,
+            nodes: old_nodes,
             constraints: old_constraints,
+            generated_masters: old_generated_masters,
         })
     }
 
@@ -1353,26 +1392,27 @@ impl EditCommand for ApplyStories {
     }
 }
 
-/// [`ApplyStories`] の逆操作。拘束リストを丸ごと復元する。
+/// [`ApplyStories`] の逆操作。`model.nodes` を丸ごと復元することで、
+/// 追加された剛床代表節点の除去（truncate）や既存節点の置換をまとめて元に戻す。
 pub struct RestoreStories {
     pub stories: Vec<squid_n_core::model::Story>,
-    pub node_story: Vec<Option<squid_n_core::ids::StoryId>>,
+    pub nodes: Vec<squid_n_core::model::Node>,
     pub constraints: Vec<squid_n_core::model::Constraint>,
+    pub generated_masters: Vec<NodeId>,
 }
 
 impl EditCommand for RestoreStories {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let new_stories = std::mem::replace(&mut model.stories, self.stories.clone());
-        let new_node_story: Vec<Option<squid_n_core::ids::StoryId>> =
-            model.nodes.iter().map(|n| n.story).collect();
-        for (node, st) in model.nodes.iter_mut().zip(self.node_story.iter()) {
-            node.story = *st;
-        }
+        let new_nodes = std::mem::replace(&mut model.nodes, self.nodes.clone());
         let new_constraints = std::mem::replace(&mut model.constraints, self.constraints.clone());
+        let new_generated_masters =
+            std::mem::replace(&mut model.generated_masters, self.generated_masters.clone());
         Box::new(RestoreStories {
             stories: new_stories,
-            node_story: new_node_story,
+            nodes: new_nodes,
             constraints: new_constraints,
+            generated_masters: new_generated_masters,
         })
     }
 
@@ -2479,5 +2519,143 @@ mod tests {
         assert!(stack.can_undo());
         stack.undo(&mut model);
         assert_eq!(model.stories[0].seismic_weight, Some(999.0));
+    }
+
+    /// `ApplyStories` が剛床代表節点(`rep_nodes`/`generated_masters`)込みで適用され、
+    /// undo で節点数・`generated_masters`・stories・constraints が完全に元へ戻ること
+    /// （`eq_ignoring_dofmap` で比較）。redo も確認する。
+    #[test]
+    fn test_apply_stories_roundtrip_with_generated_masters() {
+        use squid_n_core::dof::Dof;
+        use squid_n_core::model::{Constraint, DiaphragmDef, Story};
+
+        let mut model = empty_model();
+        for i in 0..2u32 {
+            model.nodes.push(Node {
+                id: NodeId(i),
+                coord: [i as f64 * 1000.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            });
+        }
+        let before = model.clone();
+        let mut stack = UndoStack::new();
+
+        let mut rep_restraint = Dof6Mask::FREE;
+        rep_restraint.set_fixed(Dof::Uz);
+        rep_restraint.set_fixed(Dof::Rx);
+        rep_restraint.set_fixed(Dof::Ry);
+        let rep_node = Node {
+            id: NodeId(2),
+            coord: [500.0, 0.0, 3000.0],
+            restraint: rep_restraint,
+            mass: None,
+            story: Some(StoryId(0)),
+        };
+        let cmd = ApplyStories {
+            stories: vec![Story {
+                id: StoryId(0),
+                name: "1F".into(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(0), NodeId(1)],
+                diaphragms: vec![DiaphragmDef {
+                    master: NodeId(2),
+                    slaves: vec![NodeId(0), NodeId(1)],
+                    rigid: true,
+                }],
+                seismic_weight: Some(1000.0),
+            }],
+            node_story: vec![Some(StoryId(0)), Some(StoryId(0))],
+            constraints: vec![Constraint::RigidDiaphragm {
+                story: StoryId(0),
+                master: NodeId(2),
+                slaves: vec![NodeId(0), NodeId(1)],
+            }],
+            rep_nodes: vec![rep_node],
+            generated_masters: vec![NodeId(2)],
+        };
+
+        stack.run(&mut model, Box::new(cmd));
+        assert_eq!(model.nodes.len(), 3);
+        assert_eq!(model.generated_masters, vec![NodeId(2)]);
+        assert_eq!(model.stories.len(), 1);
+        assert_eq!(model.constraints.len(), 1);
+        assert!(model.validate().is_ok());
+
+        stack.undo(&mut model);
+        assert!(model.eq_ignoring_dofmap(&before));
+        assert!(model.generated_masters.is_empty());
+        assert!(model.stories.is_empty());
+        assert!(model.validate().is_ok());
+
+        stack.redo(&mut model);
+        assert_eq!(model.nodes.len(), 3);
+        assert_eq!(model.generated_masters, vec![NodeId(2)]);
+        assert_eq!(model.stories.len(), 1);
+        assert_eq!(model.constraints.len(), 1);
+    }
+
+    /// 階数が減って不活性化された剛床代表節点（`generated_masters` には残るが
+    /// `restraint=FIXED`/`story=None`）の `DeleteNode` → undo(`InsertNode`) で
+    /// `generated_masters` が（ID 繰り上げ込みで）正しく維持されること。
+    #[test]
+    fn test_delete_leftover_generated_master_roundtrip() {
+        let mut model = empty_model();
+        model.nodes.push(Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: None,
+        });
+        // 不活性化された旧代表節点(story_gen.rs の仕様どおり restraint=FIXED, story=None)。
+        model.nodes.push(Node {
+            id: NodeId(1),
+            coord: [3000.0, 0.0, 3000.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(2),
+            coord: [6000.0, 0.0, 3000.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+        model.generated_masters = vec![NodeId(1)];
+        model.elements.push(ElementData {
+            id: squid_n_core::ids::ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(0), NodeId(2)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+        });
+        let before = model.clone();
+        let mut stack = UndoStack::new();
+
+        // 不活性節点は何にも参照されていないため削除できる。
+        stack.run(&mut model, Box::new(DeleteNode { id: NodeId(1) }));
+        assert_eq!(model.nodes.len(), 2);
+        assert!(model.generated_masters.is_empty());
+        // 旧 NodeId(2) だった部材参照は NodeId(1) に繰り上がる
+        assert_eq!(model.elements[0].nodes[1], NodeId(1));
+        assert!(model.validate().is_ok());
+
+        stack.undo(&mut model);
+        assert!(model.eq_ignoring_dofmap(&before));
+        assert_eq!(model.generated_masters, vec![NodeId(1)]);
+        assert!(model.validate().is_ok());
+
+        stack.redo(&mut model);
+        assert_eq!(model.nodes.len(), 2);
+        assert!(model.generated_masters.is_empty());
     }
 }

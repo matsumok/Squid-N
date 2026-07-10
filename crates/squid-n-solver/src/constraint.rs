@@ -363,6 +363,74 @@ mod tests {
         assert!(reducer.n_indep < reducer.n_free);
     }
 
+    /// 代表節点（要素非接続・Uz/Rx/Ry 固定の浮遊節点）をマスターとした剛床で、
+    /// スレーブの面内変位が ix = Gx − iry·Gθz, iy = Gy + irx·Gθz（RESP技術ブログ
+    /// 「剛床に関連する操作や考え方のまとめ」）どおりに復元されることを確認する。
+    #[test]
+    fn test_rigid_diaphragm_master_recovers_translation_and_torsion() {
+        let mut model = make_3node_model();
+        let mut rep_restraint = Dof6Mask::FREE;
+        rep_restraint.set_fixed(Dof::Uz);
+        rep_restraint.set_fixed(Dof::Rx);
+        rep_restraint.set_fixed(Dof::Ry);
+        let master_coord = [500.0, 1000.0, 0.0];
+        model.nodes.push(Node {
+            id: NodeId(3),
+            coord: master_coord,
+            restraint: rep_restraint,
+            mass: None,
+            story: None,
+        });
+        model.constraints.push(Constraint::RigidDiaphragm {
+            story: StoryId(0),
+            master: NodeId(3),
+            slaves: vec![NodeId(1), NodeId(2)],
+        });
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let g_master_ux = 3 * DOF_PER_NODE;
+        let g_master_uy = 3 * DOF_PER_NODE + 1;
+        let g_master_rz = 3 * DOF_PER_NODE + 5;
+        let a_ux = dofmap.active(g_master_ux).unwrap() as usize;
+        let a_uy = dofmap.active(g_master_uy).unwrap() as usize;
+        let a_rz = dofmap.active(g_master_rz).unwrap() as usize;
+        // マスター自身の DOF は独立(恒等写像の行)のはず。
+        let idx_ux = reducer.t_rows[a_ux][0].0;
+        let idx_uy = reducer.t_rows[a_uy][0].0;
+        let idx_rz = reducer.t_rows[a_rz][0].0;
+
+        let (gx, gy, gtheta) = (2.0, -1.5, 0.002);
+        let mut u_indep = vec![0.0; reducer.n_indep];
+        u_indep[idx_ux] = gx;
+        u_indep[idx_uy] = gy;
+        u_indep[idx_rz] = gtheta;
+
+        let u_free = reducer.expand_u(&u_indep);
+
+        for &slave in &[NodeId(1), NodeId(2)] {
+            let si = slave.index();
+            let dx = model.nodes[si].coord[0] - master_coord[0];
+            let dy = model.nodes[si].coord[1] - master_coord[1];
+            let expected_ux = gx - dy * gtheta;
+            let expected_uy = gy + dx * gtheta;
+            let a_slave_ux = dofmap.active(si * DOF_PER_NODE).unwrap() as usize;
+            let a_slave_uy = dofmap.active(si * DOF_PER_NODE + 1).unwrap() as usize;
+            assert!(
+                (u_free[a_slave_ux] - expected_ux).abs() < 1e-9,
+                "ix: got={} want={}",
+                u_free[a_slave_ux],
+                expected_ux
+            );
+            assert!(
+                (u_free[a_slave_uy] - expected_uy).abs() < 1e-9,
+                "iy: got={} want={}",
+                u_free[a_slave_uy],
+                expected_uy
+            );
+        }
+    }
+
     #[test]
     fn test_mpc() {
         let mut model = make_3node_model();
