@@ -4647,6 +4647,7 @@ mod tests {
             mk_beam(3, 3, 0),
         ];
         let slab = Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: SlabId(0),
@@ -4748,6 +4749,7 @@ mod tests {
             mk_beam(3, 3, 0),
         ];
         let slab = Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: SlabId(0),

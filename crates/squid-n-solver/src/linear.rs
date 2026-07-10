@@ -1055,6 +1055,7 @@ mod tests {
             elevation: 0.0,
             node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             diaphragms: vec![DiaphragmDef {
+                ci_override: None,
                 weight: None,
                 master: NodeId(0),
                 slaves: vec![NodeId(1), NodeId(2), NodeId(3)],
@@ -1150,6 +1151,7 @@ mod tests {
                 elevation: 0.0,
                 node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 diaphragms: vec![DiaphragmDef {
+                    ci_override: None,
                     weight: None,
                     master: NodeId(0),
                     slaves: vec![NodeId(1), NodeId(2), NodeId(3)],

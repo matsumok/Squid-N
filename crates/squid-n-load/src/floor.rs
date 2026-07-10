@@ -955,6 +955,7 @@ mod tests {
             ..Default::default()
         };
         let slab = Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: SlabId(0),
@@ -1090,6 +1091,7 @@ mod tests {
             ..Default::default()
         };
         let slab = Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: SlabId(0),
@@ -1205,6 +1207,7 @@ mod tests {
             ..Default::default()
         };
         let slab = Slab {
+            edge_supported: None,
             kind: SlabKind::Cantilever,
             one_way: None,
             id: SlabId(0),
@@ -1275,6 +1278,7 @@ mod tests {
             },
         ];
         let slab = Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: SlabId(0),

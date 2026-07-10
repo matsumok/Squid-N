@@ -1435,6 +1435,7 @@ impl EditCommand for AddSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let new_id = SlabId(model.slabs.len() as u32);
         model.slabs.push(squid_n_core::model::Slab {
+            edge_supported: None,
             kind: Default::default(),
             one_way: None,
             id: new_id,
@@ -2671,6 +2672,7 @@ mod tests {
                 elevation: 3000.0,
                 node_ids: vec![NodeId(0), NodeId(1)],
                 diaphragms: vec![DiaphragmDef {
+                    ci_override: None,
                     weight: None,
                     master: NodeId(2),
                     slaves: vec![NodeId(0), NodeId(1)],

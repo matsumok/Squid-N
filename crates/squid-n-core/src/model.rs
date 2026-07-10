@@ -19,6 +19,9 @@ pub enum ElementKind {
     Ms,
     Wall,
     PanelZone,
+    /// ブレース（軸材）。剛性は当面 Beam 相当のスタブ。
+    /// K 型ブレースの重量配分規則（`LoadCfg::k_brace_rule`）の適用対象。
+    Brace,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -115,6 +118,12 @@ pub struct DiaphragmDef {
     /// 「多剛床の設計用せん断力」）。None は未算定（階に単一剛床なら層重量全量）。
     #[serde(default)]
     pub weight: Option<f64>,
+    /// 副剛床の層せん断力係数 Ci の直接入力（RESP-D マニュアル
+    /// 「副剛床の Ci を直接入力した場合」）。Some の剛床は主系統の Ai 分布から
+    /// 除外され、水平力 = ci_override × 剛床重量（等価震度扱い。上階に同一系統の
+    /// 剛床が積み上がらない副剛床を想定）として作用する。None は主系統（Ai 分布）。
+    #[serde(default)]
+    pub ci_override: Option<f64>,
 }
 
 /// 階の主要構造種別。設計用一次固有周期の略算式 T=h(0.02+0.01α) の
@@ -182,6 +191,10 @@ pub enum SlabKind {
     #[default]
     Interior,
     Cantilever,
+    /// 出隅の片持ちスラブ。荷重は伝達方向・片持ち梁の有無に関わらず
+    /// 全て節点荷重として柱（`boundary[0]` の節点）へ伝達する
+    /// （RESP-D マニュアル「出隅の片持ちスラブ」）。
+    Corner,
 }
 
 /// 一方向スラブの荷重伝達方向（床ごとに指定。RESP-D マニュアル「スラブ荷重」の〔X〕〔Y〕）。
@@ -206,6 +219,13 @@ pub struct Slab {
     /// （境界辺 0・2 が負担＝辺 1 方向スパン）の暗黙規則。
     #[serde(default)]
     pub one_way: Option<OneWayDir>,
+    /// 境界辺ごとの支持有無（`boundary` の辺数と同長）。`None` は既定
+    /// （Interior は全辺支持、Cantilever は辺 0 のみ支持）。片持ちスラブに
+    /// 片持ち梁・先端リブ小梁が取り付く場合、支持辺を追加指定すると
+    /// スラブと同様のルール（最近接支持辺の負担面積）で分割伝達される
+    /// （RESP-D マニュアル「片持ちスラブ」の片持ち梁あり/先端リブ小梁ありの場合）。
+    #[serde(default)]
+    pub edge_supported: Option<Vec<bool>>,
 }
 
 use crate::dof::Dof;
@@ -351,15 +371,57 @@ pub struct LoadCombination {
     pub terms: Vec<(LoadCaseId, f64)>,
 }
 
+/// ダンパー装置の自重諸元（RESP-D マニュアル「ダンパー自重」）。
+/// 自重 = 装置重量 + 支持部断面積 ×（節点間距離 − 装置長さ）× 鋼材単位体積重量。
+/// 両端節点へ 1/2 ずつ伝達（鉛直配置は上下階へ、水平配置は同一階の両節点へ、
+/// が節点標高から自然に成立する）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DamperSpec {
+    pub elem: ElemId,
+    /// 装置重量 [N]（直接入力）。自重を考慮しない装置は 0 を入力する
+    /// （マニュアル「自重を考慮しない部材」）。
+    pub device_weight: f64,
+    /// 装置長さ [mm]。支持部長さ =（節点間距離 − 装置長さ）の算定に用いる。
+    pub device_length: f64,
+    /// 支持部断面積 [mm²]。0 なら支持部重量なし。
+    pub support_area: f64,
+}
+
+/// K 型ブレースの重量配分規則（RESP-D 荷重計算条件「K型ブレースの重量配分」）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum KBraceWeightRule {
+    /// 内部節点（ブレース同士のみが接続する節点）にも重量を配分する（両端 1/2）。
+    #[default]
+    InternalNodes,
+    /// 基準節点（柱梁が接続する節点）にのみ重量を配分する。
+    BaseNodesOnly,
+}
+
 /// 自重算定の付加設定（RESP-D マニュアル「柱梁自重」の鉄骨重量割増率・
-/// 仕上げ荷重・耐火被覆に対応する簡易版）。
+/// 仕上げ荷重・耐火被覆・ダンパー自重・K型ブレース配分に対応する簡易版）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LoadCfg {
     /// 鉄骨重量割増率 α（デフォルト 1.0）。コンクリート材（`fc` あり）には適用しない。
     /// 0 以下が入力された場合は 1.0 として扱う（RESP-D と同じ規則）。
     pub steel_weight_factor: f64,
-    /// 部材ごとの付加線重量 [N/mm]（仕上げ w_f·φ・耐火被覆 γc·Ac 等の合算値）。
+    /// 部材ごとの付加線重量 [N/mm]（耐火被覆 γc·Ac 等の直接入力）。
     pub extra_line_weight: Vec<(ElemId, f64)>,
+    /// 部材ごとの仕上げ面重量 w_f [N/mm²]。断面寸法から仕上げ周長
+    /// （梁: b+2D の三面、柱: 2(b+D) の四周）を求めて線重量 w_f·φ に換算し
+    /// 自重へ加算する（RESP-D マニュアル「柱梁自重」の仕上げ荷重）。
+    #[serde(default)]
+    pub finish_area_weight: Vec<(ElemId, f64)>,
+    /// ダンパー装置の自重諸元。対象部材の断面自重（ρ·A·L·g）は使わず、
+    /// この諸元による装置+支持部重量で置き換える。
+    #[serde(default)]
+    pub dampers: Vec<DamperSpec>,
+    /// K 型ブレース（`ElementKind::Brace`）の重量配分規則。
+    #[serde(default)]
+    pub k_brace_rule: KBraceWeightRule,
+    /// 支える床の数に応じた柱軸力算定時の積載荷重低減（令85条2項）を考慮するか。
+    /// RESP-D と同じくデフォルトは「低減を考慮しない」。
+    #[serde(default)]
+    pub live_load_reduction: bool,
 }
 
 impl Default for LoadCfg {
@@ -367,6 +429,10 @@ impl Default for LoadCfg {
         Self {
             steel_weight_factor: 1.0,
             extra_line_weight: Vec::new(),
+            finish_area_weight: Vec::new(),
+            dampers: Vec::new(),
+            k_brace_rule: KBraceWeightRule::default(),
+            live_load_reduction: false,
         }
     }
 }
@@ -380,6 +446,53 @@ impl LoadCfg {
             1.0
         }
     }
+}
+
+/// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性
+/// （RESP-D マニュアル「壁自重」の開口・三方スリット）。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WallAttr {
+    pub elem: ElemId,
+    /// 開口面積の合計 [mm²]。壁自重から ρ·t·開口面積·g を控除する。
+    #[serde(default)]
+    pub opening_area: f64,
+    /// 開口部（サッシ等）の重量 [N]。控除後に加算する。
+    #[serde(default)]
+    pub opening_weight: f64,
+    /// 三方スリット。true の場合、壁自重は上下分配せず全て上部の節点
+    /// （壁頂部の節点）へ伝達する（マニュアル「壁に三方スリットが指定されて
+    /// いる場合、壁荷重は全て上部の大梁に伝達され」の節点重量版）。
+    #[serde(default)]
+    pub three_side_slit: bool,
+}
+
+/// フレーム外雑壁の荷重伝達タイプ（RESP-D マニュアル「フレーム外雑壁」）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MiscWallTransfer {
+    /// 0.5m 分割した各領域の中心から最も近い柱の上下節点へ 1/2 ずつ伝達。
+    #[default]
+    Column,
+    /// 0.5m 分割した各領域の中心から最も近い大梁・小梁側の節点へ集中伝達。
+    Beam,
+    /// 自立。配置階の剛床（最も近い節点）へ伝達する簡易扱い。
+    SelfStanding,
+}
+
+/// フレーム外雑壁（部材としてモデル化しない壁）。始点→終点の直線区間に
+/// 高さ・面重量を持ち、0.5m 分割規則で近傍の節点へ重量を集計する。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MiscWall {
+    /// 壁下端の始点座標 [mm]。
+    pub start: [f64; 3],
+    /// 壁下端の終点座標 [mm]。
+    pub end: [f64; 3],
+    /// 壁高さ [mm]。
+    pub height: f64,
+    /// 面重量 [N/mm²]（仕上げ込み）。
+    pub weight_per_area: f64,
+    /// 荷重伝達タイプ。
+    #[serde(default)]
+    pub transfer: MiscWallTransfer,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -400,6 +513,12 @@ pub struct Model {
     /// 自重算定の付加設定（鉄骨重量割増率・部材付加線重量）。`None` は既定値。
     #[serde(default)]
     pub load_cfg: Option<LoadCfg>,
+    /// 壁要素の自重算定属性（開口・三方スリット）。
+    #[serde(default)]
+    pub wall_attrs: Vec<WallAttr>,
+    /// フレーム外雑壁。
+    #[serde(default)]
+    pub misc_walls: Vec<MiscWall>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -573,6 +692,8 @@ impl Model {
             && self.combinations == other.combinations
             && self.generated_masters == other.generated_masters
             && self.load_cfg == other.load_cfg
+            && self.wall_attrs == other.wall_attrs
+            && self.misc_walls == other.misc_walls
     }
 }
 

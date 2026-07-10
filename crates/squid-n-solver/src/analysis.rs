@@ -1052,6 +1052,7 @@ mod tests {
     #[test]
     fn test_distribute_pi_single_diaphragm_gets_full_pi() {
         let story = make_diaphragm_story(vec![DiaphragmDef {
+            ci_override: None,
             master: NodeId(10),
             slaves: vec![],
             rigid: true,
@@ -1065,12 +1066,14 @@ mod tests {
     fn test_distribute_pi_weight_ratio_3_to_1() {
         let story = make_diaphragm_story(vec![
             DiaphragmDef {
+                ci_override: None,
                 master: NodeId(10),
                 slaves: vec![],
                 rigid: true,
                 weight: Some(300.0),
             },
             DiaphragmDef {
+                ci_override: None,
                 master: NodeId(11),
                 slaves: vec![],
                 rigid: true,
@@ -1092,12 +1095,14 @@ mod tests {
     fn test_distribute_pi_equal_split_when_no_weight() {
         let story = make_diaphragm_story(vec![
             DiaphragmDef {
+                ci_override: None,
                 master: NodeId(10),
                 slaves: vec![],
                 rigid: true,
                 weight: None,
             },
             DiaphragmDef {
+                ci_override: None,
                 master: NodeId(11),
                 slaves: vec![],
                 rigid: true,

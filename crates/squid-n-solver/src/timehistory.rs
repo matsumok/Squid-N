@@ -2553,6 +2553,7 @@ mod tests {
                 elevation: 3000.0,
                 node_ids: vec![NodeId(1)],
                 diaphragms: vec![DiaphragmDef {
+                    ci_override: None,
                     weight: None,
                     master: NodeId(1),
                     slaves: vec![],

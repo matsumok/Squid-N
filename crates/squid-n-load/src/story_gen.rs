@@ -381,6 +381,7 @@ pub fn generate_stories_multi(
             elevation: elev,
             node_ids,
             diaphragms: vec![DiaphragmDef {
+                ci_override: None,
                 master,
                 slaves,
                 rigid: true,
@@ -915,6 +916,10 @@ mod tests {
         let area = 90000.0;
         let density = 7.85e-9;
         let cfg = LoadCfg {
+            live_load_reduction: false,
+            dampers: Vec::new(),
+            finish_area_weight: Vec::new(),
+            k_brace_rule: Default::default(),
             steel_weight_factor: 1.3,
             extra_line_weight: vec![],
         };
@@ -958,6 +963,10 @@ mod tests {
         let area = 90000.0;
         let density = 7.85e-9;
         let cfg = LoadCfg {
+            live_load_reduction: false,
+            dampers: Vec::new(),
+            finish_area_weight: Vec::new(),
+            k_brace_rule: Default::default(),
             steel_weight_factor: 1.0,
             extra_line_weight: vec![(ElemId(0), 5.0)],
         };
