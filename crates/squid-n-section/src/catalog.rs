@@ -67,9 +67,9 @@ pub struct CatalogEntry {
     pub width: f64,
     /// 断面積 [mm²]
     pub area: f64,
-    /// せん断断面積（強軸側）[mm²]
+    /// せん断断面積（y方向せん断＝弱軸曲げ Iz 用）[mm²]
     pub as_y: f64,
-    /// せん断断面積（弱軸側）[mm²]
+    /// せん断断面積（z方向せん断＝強軸曲げ Iy 用。H形ではウェブ）[mm²]
     pub as_z: f64,
     /// 強軸断面二次モーメント [mm⁴]
     pub iy: f64,

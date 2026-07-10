@@ -70,12 +70,16 @@ impl PanelZone {
             let is_horizontal = axis[2].abs() < 0.707;
 
             if let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) {
+                // dc はパネルの柱せい方向寸法（鉛直材＝柱の depth）、
+                // db は梁せい方向寸法（水平材＝梁の depth）。evaluate() では
+                // dc/2 を梁フェイス距離、db/2 を柱フェイス距離として使うため、
+                // 水平材→db / 鉛直材→dc の対応を取り違えないこと。
                 if is_horizontal {
-                    if sec.depth > dc {
-                        dc = sec.depth;
+                    if sec.depth > db {
+                        db = sec.depth;
                     }
-                } else if sec.depth > db {
-                    db = sec.depth;
+                } else if sec.depth > dc {
+                    dc = sec.depth;
                 }
                 if tp == 0.0 {
                     tp = sec.panel_thickness.unwrap_or(0.0);
@@ -245,6 +249,98 @@ mod tests {
         assert!((res.b_mr - (mr_b - conn.bqr * dc2)).abs() < 1e-9);
         assert!((res.c_ml - (ml_c - conn.cql * db2)).abs() < 1e-9);
         assert!((res.c_mu - (mu_c - conn.cqu * db2)).abs() < 1e-9);
+    }
+
+    /// PanelZone::new のモデルからの寸法推定: dc=柱（鉛直材）せい、db=梁（水平材）せい。
+    /// evaluate() は dc/2 を梁フェイス距離・db/2 を柱フェイス距離として使うため、
+    /// 水平材→db / 鉛直材→dc の対応が入れ替わると全結果が誤る（回帰テスト）。
+    #[test]
+    fn test_panel_zone_new_assigns_column_depth_to_dc() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
+        };
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let make_sec = |id: u32, depth: f64| squid_n_core::model::Section {
+            id: SectionId(id),
+            name: String::new(),
+            area: 1.0e4,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e8,
+            depth,
+            width: depth,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: Some(12.0),
+            thickness: None,
+            shape: None,
+        };
+        let make_elem = |id: u32, n0: u32, n1: u32, sec: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+            section: Some(SectionId(sec)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        let model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 3000.0]),    // 接合部中心
+                make_node(1, [5000.0, 0.0, 3000.0]), // 梁の先端
+                make_node(2, [0.0, 0.0, 0.0]),       // 柱脚
+            ],
+            sections: vec![make_sec(0, 500.0), make_sec(1, 700.0)], // 0: 梁, 1: 柱
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: String::new(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: None,
+            }],
+            elements: vec![
+                make_elem(0, 0, 1, 0), // 水平材（梁, せい500）
+                make_elem(1, 2, 0, 1), // 鉛直材（柱, せい700）
+            ],
+            ..Default::default()
+        };
+
+        let panel_data = ElementData {
+            id: ElemId(2),
+            kind: ElementKind::PanelZone,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        let pz = PanelZone::new(&panel_data, &model);
+        assert!((pz.dc - 700.0).abs() < 1e-9, "dc は柱せい: {}", pz.dc);
+        assert!((pz.db - 500.0).abs() < 1e-9, "db は梁せい: {}", pz.db);
     }
 
     /// 添付資料『パネルゾーンの力学』(小野瀬, 2009) ケース1 の数値例照合（仕様 §11.5）。
