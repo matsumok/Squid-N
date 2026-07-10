@@ -128,6 +128,13 @@ pub struct ResultsBundle {
     pub modal: Option<squid_n_solver::eigen::ModalResult>,
     pub member_forces: Vec<(ElemId, squid_n_element::beam::MemberForces)>,
     pub checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)>,
+    /// 節点単位の検定結果（柱梁接合部・パネルゾーン・冷間成形耐力比など）。
+    /// ラベルは「接合部(RC)」等の種別表示用。
+    pub joint_checks: Vec<(
+        squid_n_core::ids::NodeId,
+        String,
+        squid_n_design_jp::CheckResult,
+    )>,
     pub pushover: Option<squid_n_solver::pushover::PushoverResult>,
     pub time_history: Option<squid_n_solver::timehistory::ResponseResult>,
 }
