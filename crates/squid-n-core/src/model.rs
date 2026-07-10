@@ -291,6 +291,10 @@ pub struct Model {
     /// 構造節点と区別するために保持し、再生成時に再利用する。
     #[serde(default)]
     pub generated_masters: Vec<NodeId>,
+    /// 剛性計算用の床スラブ厚 [mm]（建物全体で一律。RESP-D 計算編 02「剛性計算」
+    /// 注1 の設定に対応）。0 以下でスラブ協力幅による梁剛性増大を無効化（既定）。
+    #[serde(default)]
+    pub slab_thickness: f64,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }

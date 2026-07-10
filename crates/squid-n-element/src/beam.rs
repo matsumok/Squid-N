@@ -103,6 +103,89 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
     })
 }
 
+/// スラブ協力幅による強軸曲げ剛性の増大率（RESP-D 計算編 02「RC大梁」。
+/// 協力幅は RC 規準 8 条による）。
+///
+/// 対象は水平な RC 矩形梁のみ。梁の両端節点をともに境界節点に含むスラブを
+/// 「梁に取り付く床」とみなし、梁軸から左右のスラブ奥行き a を求めて
+/// ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）で協力幅を算定する。
+/// スラブ（厚さ t=`Model::slab_thickness`、建物一律・上端は梁上端と同面）を
+/// 考慮した中立軸による T 形断面の Ie を元断面 I0=b·D³/12 で除した値を返す。
+/// t≤0・非水平・取り付く床なしでは 1.0（増大なし）。
+/// 連続梁の λ・吹抜け補正・二重スラブ/片持ちスラブの区別は未対応（v1。
+/// docs/v_and_v/剛性計算_RESP-D照合.md 参照）。
+fn slab_stiffness_factor(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+    b: f64,
+    d: f64,
+) -> f64 {
+    let t = model.slab_thickness;
+    if t <= 0.0 || b <= 0.0 || d <= 0.0 || data.nodes.len() < 2 || model.slabs.is_empty() {
+        return 1.0;
+    }
+    let n0 = data.nodes[0];
+    let n1 = data.nodes[data.nodes.len() - 1];
+    let (Some(node0), Some(node1)) = (model.nodes.get(n0.index()), model.nodes.get(n1.index()))
+    else {
+        return 1.0;
+    };
+    let (p0, p1) = (node0.coord, node1.coord);
+    let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+    let lp = (dx * dx + dy * dy).sqrt();
+    // 水平材のみ対象（勾配 5% までは水平とみなす）
+    if lp < 1e-9 || dz.abs() > 0.05 * lp {
+        return 1.0;
+    }
+    let l = (lp * lp + dz * dz).sqrt();
+    let (ex, ey) = (dx / lp, dy / lp);
+
+    // 梁軸の左右それぞれのスラブ奥行き a（複数スラブは大きい方を採用）
+    let mut a_pos: f64 = 0.0;
+    let mut a_neg: f64 = 0.0;
+    for slab in &model.slabs {
+        if !(slab.boundary.contains(&n0) && slab.boundary.contains(&n1)) {
+            continue;
+        }
+        for nid in &slab.boundary {
+            let Some(q) = model.nodes.get(nid.index()) else {
+                continue;
+            };
+            // 平面内で梁軸に直交する符号付き距離
+            let s = -(q.coord[0] - p0[0]) * ey + (q.coord[1] - p0[1]) * ex;
+            a_pos = a_pos.max(s);
+            a_neg = a_neg.max(-s);
+        }
+    }
+
+    // RC 規準 8 条の片側協力幅
+    let ba = |a: f64| -> f64 {
+        if a <= 0.0 {
+            0.0
+        } else if a < 0.5 * l {
+            (0.5 - 0.6 * a / l) * a
+        } else {
+            0.1 * l
+        }
+    };
+    let bf = b + ba(a_pos) + ba(a_neg);
+    if bf <= b {
+        return 1.0;
+    }
+
+    // スラブを考慮した中立軸による T 形断面の Ie
+    let tf = t.min(d);
+    let aw = b * d;
+    let af = (bf - b) * tf;
+    let g = (aw * d / 2.0 + af * (d - tf / 2.0)) / (aw + af);
+    let i0 = b * d.powi(3) / 12.0;
+    let ie = i0
+        + aw * (g - d / 2.0).powi(2)
+        + (bf - b) * tf.powi(3) / 12.0
+        + af * (d - tf / 2.0 - g).powi(2);
+    (ie / i0).max(1.0)
+}
+
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
         let n0 = data.nodes[0];
@@ -180,6 +263,14 @@ impl BeamElement {
         let (iy, iz, j, as_y, as_z) = match &composite {
             Some(p) => (p.iy, p.iz, p.j, p.as_y, p.as_z),
             None => (sec.iy, sec.iz, sec.j, as_y, as_z),
+        };
+
+        // スラブ協力幅による強軸剛性増大（RESP-D 計算編 02「RC大梁」）。
+        // RC 矩形梁のみ対象。Model::slab_thickness=0（既定）では 1.0 で無効。
+        let iy = if matches!(&sec.shape, Some(SectionShape::RcRect { .. })) {
+            iy * slab_stiffness_factor(model, data, sec.width, sec.depth)
+        } else {
+            iy
         };
 
         Self {
@@ -1113,6 +1204,119 @@ mod tests {
         let src_fallback = BeamElement::new(&make_elem(0, 0), &model);
         assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
         assert!((src_fallback.iy - model.sections[0].iy).abs() < 1e-6);
+    }
+
+    /// スラブ協力幅による強軸剛性増大（RESP-D 計算編 02「RC大梁」・RC規準8条）。
+    #[test]
+    fn test_beam_new_slab_cooperation_width_amplifies_iy() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{MaterialId, SectionId, SlabId};
+        use squid_n_core::model::{
+            DistributionMethod, EndCondition, ForceRegime, LocalAxis, Model, Slab,
+        };
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let shape = SectionShape::RcRect {
+            b: 300.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+        };
+        let mut model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 3000.0]),
+                make_node(1, [6000.0, 0.0, 3000.0]),
+                make_node(2, [6000.0, 2500.0, 3000.0]),
+                make_node(3, [0.0, 2500.0, 3000.0]),
+            ],
+            sections: vec![shape.to_section(SectionId(0), "RC-300x600".into())],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "FC24".into(),
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            slabs: vec![Slab {
+                id: SlabId(0),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                joists: vec![],
+                loads: vec![],
+                method: DistributionMethod::TriTrapezoid,
+            }],
+            slab_thickness: 150.0,
+            ..Default::default()
+        };
+        let elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // 期待値: a=2500 < l/2=3000 → ba=(0.5−0.6·2500/6000)·2500=625(片側のみ)
+        let (b, d, t, l) = (300.0_f64, 600.0_f64, 150.0_f64, 6000.0_f64);
+        let ba = (0.5 - 0.6 * 2500.0 / l) * 2500.0;
+        assert!((ba - 625.0).abs() < 1e-9);
+        let bf = b + ba;
+        let (aw, af) = (b * d, (bf - b) * t);
+        let g = (aw * d / 2.0 + af * (d - t / 2.0)) / (aw + af);
+        let i0 = b * d.powi(3) / 12.0;
+        let ie = i0
+            + aw * (g - d / 2.0).powi(2)
+            + (bf - b) * t.powi(3) / 12.0
+            + af * (d - t / 2.0 - g).powi(2);
+
+        let beam = BeamElement::new(&elem, &model);
+        assert!(
+            (beam.iy - ie).abs() / ie < 1e-12,
+            "iy={} ie={}",
+            beam.iy,
+            ie
+        );
+        assert!(beam.iy / i0 > 1.3, "増大率が小さすぎる: {}", beam.iy / i0);
+        // 弱軸は増大しない
+        assert!((beam.iz - model.sections[0].iz).abs() < 1e-9);
+
+        // 床厚 0(既定)では従来どおり
+        model.slab_thickness = 0.0;
+        let beam0 = BeamElement::new(&elem, &model);
+        assert!((beam0.iy - i0).abs() < 1e-9);
     }
 
     #[test]
