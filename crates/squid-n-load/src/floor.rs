@@ -49,22 +49,32 @@ pub struct BeamLoad {
 /// スラブの面荷重を大梁（および小梁経由の節点反力）へ分配する。
 ///
 /// 分岐は次の優先順で決まる:
-/// 1. `slab.kind == Cantilever` → 片持ちスラブ経路（[`distribute_cantilever`]）。
-///    4頂点を想定し、境界辺 0（`boundary[0]`→`boundary[1]`）を取付き辺とする。
-///    片持ち梁・先端リブ小梁がある場合の分割、および出隅の柱への集中荷重伝達は
-///    未対応（マニュアルにある機能だが本実装のスコープ外。残課題）。
-/// 2. 境界が矩形（[`slab_dimensions`] が `Some` を返す）かつ `slab.joists` が
+/// 1. `slab.kind == Corner` → 出隅の片持ちスラブ経路（[`distribute_corner`]）。
+///    荷重伝達方向・片持ち梁の取付きに関わらず、全荷重を柱（`boundary[0]` の節点）への
+///    単一の節点荷重として返す。
+/// 2. `slab.kind == Cantilever` → 片持ちスラブ経路。
+///    - `slab.edge_supported` が `None`（既定）→ 4頂点を想定し、境界辺 0
+///      （`boundary[0]`→`boundary[1]`）を取付き辺とする単純な等分布伝達
+///      （[`distribute_cantilever`]。従来互換）。
+///    - `slab.edge_supported` が `Some` → 片持ち梁・先端リブ小梁の取付きに応じて
+///      指定された支持辺のみへ、最近接辺グリッドサンプリングで分割伝達する
+///      （[`distribute_polygon_supported`]）。
+/// 3. `slab.kind == Interior` かつ `slab.edge_supported` が `Some` → 指定された支持辺
+///    のみへの最近接辺グリッドサンプリング経路（[`distribute_polygon_supported`]）。
+///    開口際などで一部の辺が非支持となる一般スラブの分配に用いる。
+/// 4. 境界が矩形（[`slab_dimensions`] が `Some` を返す）かつ `slab.joists` が
 ///    非空で `method` が `TriTrapezoid`/`OneWay` → 小梁二段階伝達経路
 ///    （[`distribute_rect_with_joists`]）。
-/// 3. 境界が矩形 → 従来の矩形床経路（[`distribute_rect`]）。`slab.one_way` が
+/// 5. 境界が矩形 → 従来の矩形床経路（[`distribute_rect`]）。`slab.one_way` が
 ///    `Some` の場合は指定方向（全体座標 X/Y）に伝達し、`None` は従来互換
 ///    （境界辺 0・2 が負担）。
-/// 4. それ以外（矩形でない凸/凹多角形。三角形・台形・五角形など） →
+/// 6. それ以外（矩形でない凸/凹多角形。三角形・台形・五角形など） →
 ///    多角形の負担面積法経路（[`distribute_polygon`]）。`one_way` 指定があっても
 ///    非矩形の場合はこの経路にフォールバックする。
 ///
-/// いずれの経路も総和保存（Σ大梁荷重 (+Σ小梁反力) = w×面積）を満たすよう設計している
-/// （床スラブは全体座標 XY 平面内（Z一定）にあることを仮定する）。
+/// いずれの経路も総和保存（Σ大梁荷重 (+Σ小梁反力・Σ柱集中荷重) = w×面積）を満たすよう
+/// 設計している（床スラブは全体座標 XY 平面内（Z一定）にあることを仮定する）。
+/// 入隅の片持ちスラブはマニュアル自体が非対応と明記しており、本実装でも未対応。
 pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
     let mut loads = Vec::new();
     if slab.boundary.len() < 3 {
@@ -75,13 +85,29 @@ pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
     };
 
     let rect_dims = slab_dimensions(model, slab);
-    let is_cantilever = slab.kind == SlabKind::Cantilever;
 
     for area_load in &slab.loads {
         let w = area_load.value;
-        if is_cantilever {
-            distribute_cantilever(&coords, w, &mut loads);
-            continue;
+        match slab.kind {
+            SlabKind::Corner => {
+                distribute_corner(slab, &coords, w, &mut loads);
+                continue;
+            }
+            SlabKind::Cantilever => {
+                match &slab.edge_supported {
+                    Some(supported) => {
+                        distribute_polygon_supported(&coords, w, &mut loads, supported)
+                    }
+                    None => distribute_cantilever(&coords, w, &mut loads),
+                }
+                continue;
+            }
+            SlabKind::Interior => {
+                if let Some(supported) = &slab.edge_supported {
+                    distribute_polygon_supported(&coords, w, &mut loads, supported);
+                    continue;
+                }
+            }
         }
         match rect_dims {
             Some((lx, ly)) => {
@@ -101,6 +127,34 @@ pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
     }
 
     loads
+}
+
+/// 出隅の片持ちスラブの分配（`SlabKind::Corner`。マニュアル「出隅の片持ちスラブ」）。
+///
+/// 「出隅の片持ちスラブの荷重は、荷重伝達方向および片持ち梁の取付きに関わらず、節点荷重
+/// としてすべて柱に伝達します」との記載どおり、荷重伝達方向（`one_way`）や
+/// `slab.edge_supported`（片持ち梁の有無）を一切参照せず、全荷重
+/// `W = w × 多角形面積`（[`polygon_area`]。マニュアル「出隅の重量は、構造芯から出隅先端
+/// までの長方形について計算します」＝境界そのものの面積）を柱（`boundary[0]` の節点）への
+/// 単一の集中荷重として返す。小梁反力・[`distribute_rect_with_joists`] の柱集中荷重と
+/// 同じ `LoadTarget::Node` + `LoadShape::Point`（`q_i = W`、`q_j = 0`）の機構を再利用する。
+fn distribute_corner(slab: &Slab, coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
+    let area = polygon_area(coords);
+    if area <= 0.0 {
+        return;
+    }
+    let total = w * area;
+    loads.push(BeamLoad {
+        elem: ElemId(u32::MAX),
+        target: LoadTarget::Node(slab.boundary[0]),
+        shape: LoadShape::Point { p: total, x: 0.0 },
+        cmq: Cmq {
+            c_i: 0.0,
+            c_j: 0.0,
+            q_i: total,
+            q_j: 0.0,
+        },
+    });
 }
 
 fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]>> {
@@ -401,9 +455,11 @@ fn point_line_dist(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
 /// 等分布荷重 `w_line = w·d`（先端まで一様なスラブの単純片持ち反力に相当）として
 /// 集約する（`LoadShape::Uniform` + `fem_uniform`）。
 ///
-/// **未対応（残課題）**: 片持ち梁・先端リブ小梁がある場合の分割伝達、
-/// 出隅の片持ちスラブの柱への節点荷重集中、入隅の片持ちスラブ
-/// （マニュアル自体が非対応と明記）。
+/// 片持ち梁・先端リブ小梁がある場合の分割伝達は `slab.edge_supported` を指定することで
+/// [`distribute_polygon_supported`] 経路（[`distribute_slab`] 側で分岐）が担う。
+/// 出隅の片持ちスラブは `SlabKind::Corner`（[`distribute_corner`]）が別途担う。
+///
+/// **未対応（残課題）**: 入隅の片持ちスラブ（マニュアル自体が非対応と明記）。
 fn distribute_cantilever(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
     if coords.len() < 4 {
         return;
@@ -509,15 +565,30 @@ fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
     if n < 3 {
         return;
     }
+    let candidate_edges: Vec<usize> = (0..n).collect();
+    let edge_area = polygon_edge_areas(coords, &candidate_edges);
+    emit_edge_loads(coords, w, &edge_area, loads);
+}
+
+/// 多角形の各辺への負担面積を、格子サンプリングで求める（[`distribute_polygon`] と
+/// [`distribute_polygon_supported`] の共通処理）。各セル中心が多角形内部なら、
+/// `candidate_edges` の中で最も近い辺（線分）へセル面積を加算する。
+/// `candidate_edges` に全辺（`0..n`）を渡せば [`distribute_polygon`] と同じ挙動になり、
+/// 部分集合を渡せば非候補の辺には荷重が帰属しなくなる（[`distribute_polygon_supported`]）。
+fn polygon_edge_areas(coords: &[[f64; 3]], candidate_edges: &[usize]) -> Vec<f64> {
+    let n = coords.len();
+    let mut edge_area = vec![0.0_f64; n];
+    if candidate_edges.is_empty() {
+        return edge_area;
+    }
     let poly2: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
     let (min_x, max_x, min_y, max_y) = bbox2(&poly2);
     let dx = (max_x - min_x) / POLY_GRID_N as f64;
     let dy = (max_y - min_y) / POLY_GRID_N as f64;
     if dx <= 0.0 || dy <= 0.0 {
-        return;
+        return edge_area;
     }
     let cell_area = dx * dy;
-    let mut edge_area = vec![0.0_f64; n];
     for iy in 0..POLY_GRID_N {
         let y = min_y + (iy as f64 + 0.5) * dy;
         for ix in 0..POLY_GRID_N {
@@ -526,9 +597,9 @@ fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
             if !point_in_polygon(p, &poly2) {
                 continue;
             }
-            let mut best_e = 0usize;
+            let mut best_e = candidate_edges[0];
             let mut best_d2 = f64::INFINITY;
-            for e in 0..n {
+            for &e in candidate_edges {
                 let a = poly2[e];
                 let b = poly2[(e + 1) % n];
                 let d2 = point_segment_dist2(p, a, b);
@@ -540,7 +611,12 @@ fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
             edge_area[best_e] += cell_area;
         }
     }
+    edge_area
+}
 
+/// 辺ごとの負担面積 `edge_area`（[`polygon_edge_areas`] の出力）を、等価等分布
+/// `w_line = W_edge / L_edge`（`W_edge = w × edge_area[e]`）の辺荷重として `loads` へ追加する。
+fn emit_edge_loads(coords: &[[f64; 3]], w: f64, edge_area: &[f64], loads: &mut Vec<BeamLoad>) {
     for (e, &a_e) in edge_area.iter().enumerate() {
         if a_e <= 0.0 {
             continue;
@@ -558,6 +634,43 @@ fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
             fem_uniform(w_line, l_e),
         );
     }
+}
+
+/// 支持辺指定付きの最近接辺グリッドサンプリング帰属（レビュー残課題「片持ち梁・先端リブ
+/// 小梁の分割伝達」「一般スラブの部分支持（開口際等）」対応。マニュアル「片持ち梁がある
+/// 場合：…スラブと同様のルールにより分割して荷重伝達されます」）。
+///
+/// [`distribute_polygon`] と同じ格子サンプリング法（[`polygon_edge_areas`]）だが、各サンプル
+/// 点を「支持辺（`supported[i] == true` の辺）のみ」の中から最近接の辺に帰属させる。
+/// 非支持辺（`supported[i] == false`）には荷重が帰属しない。
+///
+/// 呼び出し元（[`distribute_slab`]）の用途は2通り:
+/// - `SlabKind::Cantilever` + `edge_supported`: 取付き大梁（辺0）に加え、片持ち梁・先端
+///   リブ小梁が取り付く辺を支持辺として指定する（例: 辺0・1・3 支持＝両側に片持ち梁、
+///   辺2 も支持に含めれば先端リブ小梁あり）。
+/// - `SlabKind::Interior` + `edge_supported`: 開口際などで一部の辺が大梁・小梁に
+///   取り付かない一般スラブの分配に用いる（非支持辺には荷重を負担させない一般化）。
+///
+/// `supported` の長さが `coords.len()` と一致しない、または支持辺が1つも無い
+/// （全要素 `false`）場合は、指定が無意味なため安全側（総荷重を捨てない）に倒して
+/// 全辺支持へフォールバックする（＝ [`distribute_polygon`] と同じ結果になる）。
+fn distribute_polygon_supported(
+    coords: &[[f64; 3]],
+    w: f64,
+    loads: &mut Vec<BeamLoad>,
+    supported: &[bool],
+) {
+    let n = coords.len();
+    if n < 3 {
+        return;
+    }
+    let candidate_edges: Vec<usize> = if supported.len() == n && supported.iter().any(|&b| b) {
+        (0..n).filter(|&i| supported[i]).collect()
+    } else {
+        (0..n).collect()
+    };
+    let edge_area = polygon_edge_areas(coords, &candidate_edges);
+    emit_edge_loads(coords, w, &edge_area, loads);
 }
 
 fn fem_uniform(w: f64, l: f64) -> Cmq {
@@ -1474,5 +1587,192 @@ mod tests {
             ((ignore.cmq.q_i + ignore.cmq.q_j) - expected_flex_total).abs() / expected_flex_total
                 < 1e-9
         );
+    }
+
+    // ------------------------------------------------------------------
+    // 出隅の片持ちスラブ（SlabKind::Corner）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_corner_slab_all_load_to_column_node() {
+        use squid_n_core::ids::{NodeId, SlabId};
+        use squid_n_core::model::{AreaLoad, SlabKind};
+        let (lx, ly) = (3000.0_f64, 2000.0_f64);
+        let w = 0.004_f64;
+        let nodes = vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, lx, 0.0),
+            mk_node(2, lx, ly),
+            mk_node(3, 0.0, ly),
+        ];
+        let model = Model {
+            nodes,
+            ..Default::default()
+        };
+        let slab = Slab {
+            edge_supported: None,
+            kind: SlabKind::Corner,
+            one_way: None,
+            id: SlabId(0),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: vec![],
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            method: DistributionMethod::TriTrapezoid,
+        };
+        let loads = distribute_slab(&model, &slab);
+        // 全荷重が単一の節点荷重（boundary[0] = NodeId(0)）としてのみ現れる。
+        assert_eq!(loads.len(), 1);
+        let l = &loads[0];
+        assert_eq!(l.target, LoadTarget::Node(NodeId(0)));
+        let expected_total = w * lx * ly;
+        assert!(
+            (total_load(&loads) - expected_total).abs() / expected_total < 1e-9,
+            "総和={} expected={}",
+            total_load(&loads),
+            expected_total
+        );
+        if let LoadShape::Point { p, .. } = l.shape {
+            assert!((p - expected_total).abs() / expected_total < 1e-9);
+        } else {
+            panic!("expected point load");
+        }
+    }
+
+    #[test]
+    fn test_corner_slab_ignores_one_way_and_edge_supported() {
+        // マニュアル: 出隅の片持ちスラブは伝達方向・片持ち梁の取付きに関わらず全て節点荷重。
+        use squid_n_core::ids::{NodeId, SlabId};
+        use squid_n_core::model::{AreaLoad, OneWayDir, SlabKind};
+        let (lx, ly) = (2500.0_f64, 1800.0_f64);
+        let w = 0.0035_f64;
+        let nodes = vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, lx, 0.0),
+            mk_node(2, lx, ly),
+            mk_node(3, 0.0, ly),
+        ];
+        let model = Model {
+            nodes,
+            ..Default::default()
+        };
+        let slab = Slab {
+            edge_supported: Some(vec![true, true, true, true]),
+            kind: SlabKind::Corner,
+            one_way: Some(OneWayDir::X),
+            id: SlabId(0),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: vec![],
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            method: DistributionMethod::OneWay,
+        };
+        let loads = distribute_slab(&model, &slab);
+        assert_eq!(loads.len(), 1);
+        assert_eq!(loads[0].target, LoadTarget::Node(NodeId(0)));
+        let expected_total = w * lx * ly;
+        assert!((total_load(&loads) - expected_total).abs() / expected_total < 1e-9);
+    }
+
+    // ------------------------------------------------------------------
+    // 支持辺指定付き片持ちスラブ（edge_supported、片持ち梁・先端リブ小梁の分割伝達）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_cantilever_edge_supported_three_of_four_conservation() {
+        // 辺0(取付き大梁)・辺1・辺3(片持ち梁)を支持、辺2(先端)は非支持。
+        use squid_n_core::ids::{NodeId, SlabId};
+        use squid_n_core::model::{AreaLoad, SlabKind};
+        let (l_attach, depth) = (4000.0_f64, 1500.0_f64);
+        let w = 0.003_f64;
+        let nodes = vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, l_attach, 0.0),
+            mk_node(2, l_attach, depth),
+            mk_node(3, 0.0, depth),
+        ];
+        let model = Model {
+            nodes,
+            ..Default::default()
+        };
+        let slab = Slab {
+            edge_supported: Some(vec![true, true, false, true]),
+            kind: SlabKind::Cantilever,
+            one_way: None,
+            id: SlabId(0),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: vec![],
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            method: DistributionMethod::TriTrapezoid,
+        };
+        let loads = distribute_slab(&model, &slab);
+        assert!(!loads.is_empty());
+        let expected_total = w * l_attach * depth;
+        assert!(
+            (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
+            "総和={} expected={}",
+            total_load(&loads),
+            expected_total
+        );
+        // 非支持辺(辺2)には荷重が付かない。
+        for l in &loads {
+            assert!(!matches!(l.target, LoadTarget::Edge(2)));
+        }
+        // 支持辺のみ(辺0・1・3)に付く。
+        for l in &loads {
+            match l.target {
+                LoadTarget::Edge(e) => assert!(e == 0 || e == 1 || e == 3),
+                LoadTarget::Node(_) => panic!("edge-supported cantilever should not emit node targets"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_interior_edge_supported_partial_conservation() {
+        // 一般スラブ(Interior)でも edge_supported 指定時は開口際等の非支持辺を除いて分配する。
+        let (lx, ly) = (5000.0_f64, 4000.0_f64);
+        let w = 0.0025_f64;
+        let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::TriTrapezoid, w);
+        // 辺3(開口際等を想定)を非支持とする。
+        slab.edge_supported = Some(vec![true, true, true, false]);
+        let loads = distribute_slab(&model, &slab);
+        assert!(!loads.is_empty());
+        let expected_total = w * lx * ly;
+        assert!(
+            (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
+            "総和={} expected={}",
+            total_load(&loads),
+            expected_total
+        );
+        for l in &loads {
+            assert!(!matches!(l.target, LoadTarget::Edge(3)));
+        }
+    }
+
+    #[test]
+    fn test_edge_supported_no_true_falls_back_to_all_edges() {
+        // 支持辺が1つも無い指定(全false)は全辺支持へフォールバックする。
+        let (lx, ly) = (4000.0_f64, 3000.0_f64);
+        let w = 0.002_f64;
+        let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::TriTrapezoid, w);
+        slab.edge_supported = Some(vec![false, false, false, false]);
+        let loads = distribute_slab(&model, &slab);
+        assert!(!loads.is_empty());
+        let expected_total = w * lx * ly;
+        assert!(
+            (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
+            "総和={} expected={}",
+            total_load(&loads),
+            expected_total
+        );
+        // フォールバックにより4辺全てに荷重が付き得る(少なくとも1辺は非ゼロ)。
+        assert!(loads.iter().all(|l| matches!(l.target, LoadTarget::Edge(_))));
     }
 }
