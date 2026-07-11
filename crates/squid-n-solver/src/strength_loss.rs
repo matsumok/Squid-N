@@ -15,13 +15,21 @@
 //! 耐力喪失変形角は直接指定（開始・終了変形角）のほか、FEMA 356 Table 6-7 相当の
 //! 大梁の非線形特性（塑性回転角）から算定することもできる（[`LossCriterion::Fema`]）。
 //!
-//! ## v1 の制約（せん断降伏判定の簡略化）
-//! 現行の要素実装には独立したせん断ヒンジ（せん断破壊）判定が無く、
-//! `pushover::HingeEvent` は曲げ降伏・終局のみを記録する。本実装では
-//! 「対象部材端が曲げ降伏（`HingeLevel::Yield` 以降）に達した後、
-//! 耐力喪失変形角（終了側）を超えたこと」をもって「せん断降伏後の耐力喪失」と
-//! みなす簡略化を行う（TODO: 独立したせん断ヒンジ判定の実装後、判定条件を
-//! 曲げ降伏ではなくせん断降伏の発生に差し替える）。
+//! ## せん断降伏判定
+//! `pushover::ShearYieldEvent`（部材端せん断力がせん断降伏耐力 Qy を超えたことを
+//! 記録するイベント、`pushover::compute_shear_yield_qy` 参照）により、曲げ降伏
+//! （`HingeLevel::Yield` 以降）とは独立に「せん断降伏」を判定できるようになった。
+//! `detect_strength_loss` は原典の規定どおり、**せん断降伏イベントが発生済みの
+//! 部材が耐力喪失変形角（終了側）を超えたこと**を耐力喪失の条件とする。
+//!
+//! ただし、せん断降伏イベントが解析全体を通じて1件も発生しないモデル
+//! （断面にせん断有効断面積 `as_y`/`as_z` が設定されていない、またはせん断余裕が
+//! 大きく Qy に到達しないモデル）では、せん断耐力情報が実質的に無いに等しく、
+//! せん断降伏の発生を厳密に要求すると耐力喪失解析そのものが機能しなくなる。
+//! そのため、その場合に限り従来どおり「曲げ降伏（`HingeLevel::Yield` 以降）後、
+//! 耐力喪失変形角を超えたこと」をもって代用するフォールバックを維持する
+//! （v1 からの既知の制約。せん断耐力情報を持つモデルではこのフォールバックは
+//! 使用されない）。
 //!
 //! 柱の FEMA 非線形特性（塑性回転角）は未対応（RESP-D 自身も未対応のため本実装も
 //! 大梁のみを対象とする）。
@@ -235,6 +243,7 @@ fn detach_element(model: &mut Model, elem_id: ElemId) {
 fn truncate_result(mut result: PushoverResult, cutoff_step: u32) -> PushoverResult {
     result.capacity_curve.retain(|c| c.step <= cutoff_step);
     result.hinges.retain(|h| h.step <= cutoff_step);
+    result.shear_yields.retain(|s| s.step <= cutoff_step);
     // steps は capacity_curve と同数・同順で積まれる（pushover.rs の実装契約）。
     let n = result.capacity_curve.len();
     result.steps.truncate(n);
@@ -276,15 +285,26 @@ fn detect_strength_loss(
     criterion: &LossCriterion,
     already_removed: &HashSet<ElemId>,
 ) -> Option<(u32, Vec<ElemId>)> {
-    // 部材ごとの最初の曲げ降伏（Yield 以上）到達ステップ。
-    // v1 簡略化: せん断降伏の代わりに曲げ降伏をもって「降伏後」とみなす（モジュール doc 参照）。
+    // 部材ごとの「降伏後」到達ステップ。原典どおりせん断降伏イベントを優先する。
+    // 解析全体を通じてせん断降伏イベントが1件も無いモデル（せん断耐力情報が
+    // 実質的に無い、またはせん断余裕が大きい）に限り、従来どおり曲げ降伏
+    // （`HingeLevel::Yield` 以降）で代用するフォールバックを行う（モジュール doc 参照）。
     let mut first_yield_step: HashMap<ElemId, u32> = HashMap::new();
-    for h in &result.hinges {
-        if matches!(h.level, HingeLevel::Yield | HingeLevel::Ultimate) {
+    if result.shear_yields.is_empty() {
+        for h in &result.hinges {
+            if matches!(h.level, HingeLevel::Yield | HingeLevel::Ultimate) {
+                first_yield_step
+                    .entry(h.elem)
+                    .and_modify(|s| *s = (*s).min(h.step))
+                    .or_insert(h.step);
+            }
+        }
+    } else {
+        for sy in &result.shear_yields {
             first_yield_step
-                .entry(h.elem)
-                .and_modify(|s| *s = (*s).min(h.step))
-                .or_insert(h.step);
+                .entry(sy.elem)
+                .and_modify(|s| *s = (*s).min(sy.step))
+                .or_insert(sy.step);
         }
     }
     if first_yield_step.is_empty() {
@@ -606,6 +626,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(1),
@@ -620,6 +641,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(2),
@@ -634,6 +656,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![sec],
@@ -738,5 +761,164 @@ mod tests {
 
         assert_eq!(result.passes.len(), 1);
         assert!(result.removed.is_empty());
+    }
+
+    // ---- せん断降伏イベントに基づく耐力喪失判定の単体テスト ----
+
+    /// 曲げヒンジが1件も無くても、`PushoverResult::shear_yields` にせん断降伏
+    /// イベントが記録されていれば、それを「降伏後」として耐力喪失判定に用いる
+    /// ことを確認する（原典の「せん断降伏後、耐力喪失変形角に達した部材」判定の検証）。
+    #[test]
+    fn test_detect_strength_loss_uses_shear_yield_when_present() {
+        use crate::pushover::{CapacityPoint, MechanismType, ShearYieldEvent};
+
+        let model = portal_frame_model(235.0, 600_000.0);
+        let dofmap = DofMap::build(&model);
+        let elem0 = model.elements[0].id;
+
+        let n_active = dofmap.n_active();
+        // node1（elem0 の j 端）の水平変位(dof0)を 100mm 与え、elem0 の変形角
+        // ≈100/3000 ≈ 0.0333 rad が耐力喪失変形角(end=0.01)を超えるようにする。
+        let mut disp1 = vec![0.0; n_active];
+        if let Some(a) = dofmap.active(NodeId(1).index() * 6) {
+            disp1[a as usize] = 100.0;
+        }
+
+        let result = PushoverResult {
+            steps: vec![
+                PushoverStep {
+                    load_factor: 0.5,
+                    top_disp: 0.0,
+                    base_shear: 0.0,
+                    story_drifts: vec![0.0],
+                    node_disp: Some(vec![0.0; n_active]),
+                },
+                PushoverStep {
+                    load_factor: 1.0,
+                    top_disp: 100.0,
+                    base_shear: 100.0,
+                    story_drifts: vec![100.0],
+                    node_disp: Some(disp1),
+                },
+            ],
+            capacity_curve: vec![
+                CapacityPoint {
+                    step: 0,
+                    roof_disp: 0.0,
+                    base_shear: 0.0,
+                    story_shear: vec![0.0],
+                    story_drift: vec![0.0],
+                },
+                CapacityPoint {
+                    step: 1,
+                    roof_disp: 100.0,
+                    base_shear: 100.0,
+                    story_shear: vec![100.0],
+                    story_drift: vec![100.0],
+                },
+            ],
+            hinges: vec![], // 曲げ降伏イベントは無し（曲げヒンジ非依存であることの検証）
+            shear_yields: vec![ShearYieldEvent {
+                step: 0,
+                elem: elem0,
+            }],
+            mechanism: MechanismType::Partial,
+            qu: 100.0,
+        };
+
+        let criterion = LossCriterion::DriftRange {
+            start: 0.0,
+            end: 0.01,
+        };
+        let detected =
+            detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
+        assert!(
+            detected.is_some(),
+            "shear-yielded member exceeding the loss drift threshold should be detected"
+        );
+        let (step_no, elems) = detected.unwrap();
+        assert_eq!(step_no, 1);
+        assert!(
+            elems.contains(&elem0),
+            "elem0 (shear-yielded) should be among the removed elements"
+        );
+    }
+
+    /// せん断降伏イベントが1件も無いモデルでは、曲げ降伏（`HingeLevel::Yield`
+    /// 以降）で代用するフォールバックが機能することを確認する。
+    #[test]
+    fn test_detect_strength_loss_falls_back_to_bending_yield_without_shear_events() {
+        use crate::pushover::{CapacityPoint, HingeEvent, MechanismType};
+
+        let model = portal_frame_model(235.0, 600_000.0);
+        let dofmap = DofMap::build(&model);
+        let elem0 = model.elements[0].id;
+
+        let n_active = dofmap.n_active();
+        let mut disp1 = vec![0.0; n_active];
+        if let Some(a) = dofmap.active(NodeId(1).index() * 6) {
+            disp1[a as usize] = 100.0;
+        }
+
+        let result = PushoverResult {
+            steps: vec![
+                PushoverStep {
+                    load_factor: 0.5,
+                    top_disp: 0.0,
+                    base_shear: 0.0,
+                    story_drifts: vec![0.0],
+                    node_disp: Some(vec![0.0; n_active]),
+                },
+                PushoverStep {
+                    load_factor: 1.0,
+                    top_disp: 100.0,
+                    base_shear: 100.0,
+                    story_drifts: vec![100.0],
+                    node_disp: Some(disp1),
+                },
+            ],
+            capacity_curve: vec![
+                CapacityPoint {
+                    step: 0,
+                    roof_disp: 0.0,
+                    base_shear: 0.0,
+                    story_shear: vec![0.0],
+                    story_drift: vec![0.0],
+                },
+                CapacityPoint {
+                    step: 1,
+                    roof_disp: 100.0,
+                    base_shear: 100.0,
+                    story_shear: vec![100.0],
+                    story_drift: vec![100.0],
+                },
+            ],
+            // 曲げ降伏ヒンジのみ記録（せん断降伏イベントは無し）。
+            hinges: vec![HingeEvent {
+                step: 0,
+                elem: elem0,
+                pos: 1.0,
+                level: HingeLevel::Yield,
+                ductility: 1.0,
+            }],
+            shear_yields: vec![],
+            mechanism: MechanismType::Partial,
+            qu: 100.0,
+        };
+
+        let criterion = LossCriterion::DriftRange {
+            start: 0.0,
+            end: 0.01,
+        };
+        let detected =
+            detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
+        assert!(
+            detected.is_some(),
+            "bending-yielded member exceeding the loss drift threshold should be detected \
+             via the fallback path when no shear yield events exist"
+        );
+        let (step_no, elems) = detected.unwrap();
+        assert_eq!(step_no, 1);
+        assert!(elems.contains(&elem0));
     }
 }

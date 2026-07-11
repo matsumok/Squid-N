@@ -3822,6 +3822,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             });
         }
 
@@ -4230,6 +4231,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         Model {
             nodes: vec![
@@ -4798,6 +4800,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             });
         }
         model.load_cases.push(LoadCase {
@@ -4997,6 +5000,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             load_cases: vec![LoadCase {
                 kind: Default::default(),
@@ -5140,6 +5144,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             load_cases: vec![
                 LoadCase {
@@ -5244,6 +5249,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let elements = vec![
             mk_beam(0, 0, 1),
@@ -5346,6 +5352,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let elements = vec![
             mk_beam(0, 0, 1),
@@ -5707,6 +5714,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             });
         };
         push_elem(0, 0, 1);
@@ -5733,6 +5741,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         });
 
         let factors = column_live_load_factors(&model);

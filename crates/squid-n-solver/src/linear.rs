@@ -60,9 +60,12 @@ fn is_axial_disabled_target(
 /// 関連の断面性能は変更しない。対象が無ければ元のモデルをそのまま返す
 /// （既定 `stress_cfg` では常にこちら＝従来どおりの結果に一致する）。
 ///
-/// 既知の制約: SRC/CFT 等、軸剛性用面積が `SectionShape` から再計算される
-/// 合成断面の柱では、断面積の縮小だけでは軸剛性が下がらない（`beam.rs` の
-/// `a_stiff` が `shape` 由来の値を使うため）。無筋・鋼材等の通常断面が対象。
+/// SRC/CFT 等の合成断面では `beam.rs` の軸剛性用面積 `a_stiff` が `shape` 由来の
+/// 値で再計算されるため、複製断面では `shape` を外して数値直入力断面へ落とす。
+/// これにより曲げ・せん断は `to_section()` が格納済みの等価換算値のまま、
+/// 軸剛性のみ `area × AXIAL_DISABLE_FACTOR` が効く（材料由来の複合換算・
+/// スラブ協力幅係数は複製断面では適用されなくなるが、軸力を負担させない
+/// 部材の曲げ剛性の微差であり実用上支障ない）。
 fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> {
     let cfg = &model.stress_cfg;
     if !lc_kind.is_long_term() || (!cfg.no_long_axial_brace && !cfg.no_long_axial_column) {
@@ -90,6 +93,8 @@ fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> 
         };
         let mut reduced = orig.clone();
         reduced.area *= AXIAL_DISABLE_FACTOR;
+        // 合成断面（SRC/CFT）でも軸剛性カットが効くよう shape を外す（関数 doc 参照）。
+        reduced.shape = None;
         reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
         m.elements[i].section = Some(reduced.id);
         m.sections.push(reduced);
@@ -287,6 +292,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -397,6 +403,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -538,6 +545,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -701,6 +709,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -795,6 +804,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -973,6 +983,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(1),
@@ -987,6 +998,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(2),
@@ -1001,6 +1013,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(3),
@@ -1015,6 +1028,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![Section {
@@ -1106,6 +1120,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -1217,6 +1232,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -1342,6 +1358,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 });
                 eid += 1;
             }
@@ -1544,6 +1561,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 // e1: 柱B（鉛直）
                 ElementData {
@@ -1559,6 +1577,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 // e2: 頂部大梁（水平）
                 ElementData {
@@ -1574,6 +1593,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 // e3: 対角ブレース（柱Aの脚部 → 柱Bの頂部）
                 ElementData {
@@ -1591,6 +1611,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![sec],
@@ -1683,6 +1704,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 // e1: 同じ2節点間の鉛直ブレース（並列）。常に軸剛性を保ち、
                 // 柱が負担しなくなった軸力の受け皿になる。
@@ -1701,6 +1723,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![sec],
@@ -1852,6 +1875,65 @@ mod tests {
         assert!(
             brace_short > 1.0,
             "短期ケースは無効化されず通常どおりブレース軸力を負担するはず: {brace_short}"
+        );
+    }
+
+    /// 検証5: SRC 等の合成断面（`Section.shape` あり）の柱でも軸力カットが効く
+    /// （複製断面で `shape` を外すため、`beam.rs` の `a_stiff` が `shape` 由来の
+    /// 値へ再計算されず、縮小した `area` が使われる）。
+    #[test]
+    fn test_axial_cut_applies_to_composite_src_column() {
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let mut model = column_with_parallel_vertical_brace();
+        // 柱断面を SRC（shape あり・コンクリート材料 fc あり）へ差し替える。
+        model.sections[0].shape = Some(SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+            steel_grade: "SN400".into(),
+        });
+        model.materials[0].fc = Some(24.0);
+        model.materials[0].young = 2.27e4; // コンクリートのヤング係数相当
+
+        let base = linear_static_once(&model, LoadCaseId(1)).unwrap();
+        let base_col = axial_force(&base, ElemId(0)).abs();
+        assert!(base_col > 1.0, "SRC柱の基準軸力が有意であること: {base_col}");
+
+        model.stress_cfg.no_long_axial_column = true;
+        let cut = linear_static_once(&model, LoadCaseId(1)).unwrap();
+        let cut_col = axial_force(&cut, ElemId(0)).abs();
+        let cut_brace = axial_force(&cut, ElemId(1)).abs();
+
+        assert!(
+            cut_col <= base_col * 1e-3,
+            "SRC柱でも軸力が無効化されるはず: base={base_col} cut={cut_col}"
+        );
+        assert!(
+            (cut_brace - 1.0e5).abs() / 1.0e5 < 1e-3,
+            "荷重はブレースが全量負担するはず: {cut_brace}"
         );
     }
 }

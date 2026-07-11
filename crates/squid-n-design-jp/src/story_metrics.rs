@@ -198,6 +198,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: RigidZone::default(),
                 plastic_zone: None,
+                spring: None,
             })
             .collect();
         let story = Story {

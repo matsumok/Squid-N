@@ -19,7 +19,10 @@ pub struct StoryMetric {
     pub drift: f64,
     /// 層間変形角 [rad]
     pub drift_angle: f64,
-    /// 1/200 以下か（令82条の2）
+    /// 層間変形角の制限値の分母（令82条の2。原則 200、緩和時 120。
+    /// `Model::stress_cfg.drift_limit_denom`）
+    pub drift_limit_denom: f64,
+    /// 1/drift_limit_denom 以下か（令82条の2）
     pub drift_ok: bool,
     /// 剛性率 Rs
     pub rs: f64,
@@ -152,6 +155,13 @@ pub fn compute_story_metrics_with(
     let cog_drifts = cog_story_drifts(model, disp, d);
     let rs_all = stiffness_ratios(&heights, &cog_drifts);
 
+    // 層間変形角の制限値（令82条の2。原則 1/200、緩和時 1/120）。
+    let denom = if model.stress_cfg.drift_limit_denom > 0.0 {
+        model.stress_cfg.drift_limit_denom
+    } else {
+        200.0
+    };
+
     model
         .stories
         .iter()
@@ -177,7 +187,8 @@ pub fn compute_story_metrics_with(
                 height: heights[i],
                 drift: drifts[i],
                 drift_angle: angle,
-                drift_ok: angle <= 1.0 / 200.0,
+                drift_limit_denom: denom,
+                drift_ok: angle <= 1.0 / denom,
                 rs,
                 rs_ok: rs >= 0.6,
                 re,
@@ -262,9 +273,14 @@ pub fn build_report_csv(app: &App) -> String {
         let metrics =
             compute_story_metrics_with(model, &st.disp, app.analysis_cfg.seismic_dir, &ctx);
         if !metrics.is_empty() {
-            out.push_str(
-                "\n[層指標(二次設計)]\n階,階高[mm],層間変位[mm],層間変形角,1/200判定,剛性率Rs,Rs判定,偏心率Re,Re判定,Fes\n",
-            );
+            let denom = metrics
+                .first()
+                .map(|m| m.drift_limit_denom)
+                .unwrap_or(200.0);
+            out.push_str(&format!(
+                "\n[層指標(二次設計)]\n階,階高[mm],層間変位[mm],層間変形角,1/{:.0}判定,剛性率Rs,Rs判定,偏心率Re,Re判定,Fes\n",
+                denom
+            ));
             for m in &metrics {
                 out.push_str(&format!(
                     "{},{:.0},{:.3},1/{:.0},{},{:.3},{},{:.3},{},{:.3}\n",
@@ -283,6 +299,34 @@ pub fn build_report_csv(app: &App) -> String {
                     if m.re_ok { "OK" } else { "NG" },
                     m.fes
                 ));
+            }
+        }
+    }
+
+    // 主軸の計算（RESP-D 計算編03「応力解析 §主軸の計算」）。
+    // X・Y 加力の弾性解析結果が揃っている場合のみ、水平力のなす仕事が極値をとる
+    // 角度 Θ（tan2Θ = −Pᵗ(uy+vx)/Pᵗ(vy−ux)）を出力する。
+    {
+        let ctx = metrics_ctx_from_results(app.results.as_ref());
+        if let (Some(rx), Some(ry)) = (ctx.seismic_x, ctx.seismic_y) {
+            let cfg = squid_n_solver::analysis::SeismicCfg {
+                dir: SeismicDir::X,
+                mode: app.analysis_cfg.ai_mode,
+                z: app.analysis_cfg.z,
+                soil: app.analysis_cfg.soil,
+                c0: app.analysis_cfg.c0,
+            };
+            if let Ok(analysis) = squid_n_solver::analysis::Analysis::prepare(model) {
+                if let Ok(p) = analysis.seismic_nodal_force_magnitudes(cfg) {
+                    let theta =
+                        squid_n_design_jp::principal_axis::principal_axis_from_results(
+                            model, &p, rx, ry,
+                        );
+                    out.push_str(&format!(
+                        "\n[主軸の計算]\n主軸角Θ[deg],{:.3}\n",
+                        theta.to_degrees()
+                    ));
+                }
             }
         }
     }
@@ -371,6 +415,27 @@ mod tests {
         assert!(csv.contains("[モデル概要]"));
         assert!(csv.contains("[層指標(二次設計)]"));
         assert!(csv.contains("[部材検定]"));
+    }
+
+    #[test]
+    fn test_drift_limit_denom_relaxation() {
+        // 令82条の2 の緩和（1/120）を計算条件で指定すると判定と表示分母が追従する。
+        let mut app = App::default();
+        app.load_model(crate::sample::portal_frame());
+        app.generate_stories_action();
+        app.model.stress_cfg.drift_limit_denom = 120.0;
+        app.run_seismic(SeismicDir::X);
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+        let st = &app.results.as_ref().unwrap().statics.last().unwrap().1;
+        let metrics = compute_story_metrics(&app.model, &st.disp, SeismicDir::X);
+        assert_eq!(metrics[0].drift_limit_denom, 120.0);
+        assert_eq!(
+            metrics[0].drift_ok,
+            metrics[0].drift_angle <= 1.0 / 120.0
+        );
+        let csv = build_report_csv(&app);
+        assert!(csv.contains("1/120判定"), "CSV ヘッダが緩和値に追従する");
     }
 
     #[test]

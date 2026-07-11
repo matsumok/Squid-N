@@ -5,7 +5,7 @@ use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, StoryId};
-use squid_n_core::model::Model;
+use squid_n_core::model::{Material, Model};
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
 use squid_n_element::factory::build_nonlinear_behavior;
 use squid_n_math::solver::{make_solver, SolverBackend};
@@ -42,11 +42,23 @@ pub enum MechanismType {
     Partial,
 }
 
+/// せん断降伏イベント（RESP-D マニュアル計算編03「応力解析」§段階的耐力喪失解析）。
+///
+/// 部材端のせん断力（局所 Vy・Vz の材端最大値）がせん断降伏耐力 Qy
+/// （[`compute_shear_yield_qy`] 参照）を超えたステップを記録する。曲げヒンジ
+/// （[`HingeEvent`]）とは独立に判定され、曲げ降伏の有無に関わらず記録される。
+pub struct ShearYieldEvent {
+    pub step: u32,
+    pub elem: ElemId,
+}
+
 /// プッシュオーバー解析結果（P5 §7.4）
 pub struct PushoverResult {
     pub steps: Vec<PushoverStep>,
     pub capacity_curve: Vec<CapacityPoint>,
     pub hinges: Vec<HingeEvent>,
+    /// せん断降伏イベント履歴（段階的耐力喪失解析の判定に使用、`strength_loss` モジュール参照）。
+    pub shear_yields: Vec<ShearYieldEvent>,
     pub mechanism: MechanismType,
     pub qu: f64,
 }
@@ -329,7 +341,9 @@ pub fn pushover_analysis_recording(
     }
 
     let thresholds = compute_hinge_thresholds(model);
+    let shear_thresholds = compute_shear_yield_thresholds(model);
     let mut hinges = Vec::new();
+    let mut shear_yields = Vec::new();
     let mut capacity_curve = Vec::new();
     let mut steps: Vec<PushoverStep> = Vec::new();
     let mut total_disp = vec![0.0; n_active];
@@ -425,6 +439,13 @@ pub fn pushover_analysis_recording(
                     &thresholds,
                     step as u32,
                     &mut hinges,
+                );
+                track_shear_yield(
+                    model,
+                    &behaviors,
+                    &shear_thresholds,
+                    step as u32,
+                    &mut shear_yields,
                 );
                 step_ok = true;
                 if max_disp > 0.0 && roof >= max_disp {
@@ -542,6 +563,13 @@ pub fn pushover_analysis_recording(
                             node_disp: record_node_disp.then(|| total_disp.clone()),
                         });
                         track_hinges(model, dofmap, &behaviors, &thresholds, cstep, &mut hinges);
+                        track_shear_yield(
+                            model,
+                            &behaviors,
+                            &shear_thresholds,
+                            cstep,
+                            &mut shear_yields,
+                        );
                         step_ok = true;
                         break;
                     } else {
@@ -655,6 +683,7 @@ pub fn pushover_analysis_recording(
         steps,
         capacity_curve,
         hinges,
+        shear_yields,
         mechanism,
         qu,
     })
@@ -733,6 +762,134 @@ fn track_hinges(
             level,
             ductility: if th.my > 0.0 { m_max / th.my } else { 0.0 },
         });
+    }
+}
+
+/// せん断降伏耐力 Qy の判定しきい値（部材ごと、局所 y・z 方向）。
+///
+/// `ElementBehavior::internal_force` は（`FiberBeam` 実装を確認する限り）
+/// 材端節点力をグローバル座標系で返す契約になっており、部材ローカルの
+/// Vy・Vz を直接分離することができない。そのため `track_shear_yield` では
+/// 材軸方向（節点座標から算定）を差し引いた軸直交（せん断）方向の合力を
+/// 1 つの代表値として扱い、`qy_y`・`qy_z` のうち小さい方（せん断に対して
+/// より厳しい側）を判定しきい値として採用する（v1 の簡略化）。
+struct ShearThreshold {
+    qy_y: f64,
+    qy_z: f64,
+}
+
+impl ShearThreshold {
+    /// 判定に用いる代表せん断耐力（qy_y・qy_z の小さい方）。
+    fn qy(&self) -> f64 {
+        self.qy_y.min(self.qy_z)
+    }
+}
+
+/// せん断降伏耐力 Qy [N] を算定する（RESP-D マニュアル計算編03「応力解析」
+/// §段階的耐力喪失解析のせん断降伏判定に使用）。
+///
+/// 採用式（v1）:
+/// - 鋼系部材（材料に `fy` が設定されている）: Qy = as・fy / √3
+///   （純せん断降伏条件 τy = fy/√3（von Mises）に有効せん断断面積を乗じた慣用式）。
+/// - RC 系部材（`fy` が無く `fc` が設定されている）: Qy = as・0.7√fc
+///   （コンクリートのせん断終局強度に対する簡易慣用値。荒川式等の精算は行わない）。
+/// - 有効せん断断面積 `as_area` が 0（未設定）、または材料・強度情報が無い場合は
+///   判定対象外として Qy = +∞ を返す（その方向のせん断では耐力喪失を判定しない）。
+fn compute_shear_yield_qy(as_area: f64, material: Option<&Material>) -> f64 {
+    if as_area <= 0.0 {
+        return f64::INFINITY;
+    }
+    let Some(mat) = material else {
+        return f64::INFINITY;
+    };
+    if let Some(fy) = mat.fy {
+        as_area * fy / 3.0_f64.sqrt()
+    } else if let Some(fc) = mat.fc {
+        as_area * 0.7 * fc.sqrt()
+    } else {
+        f64::INFINITY
+    }
+}
+
+fn compute_shear_yield_thresholds(model: &Model) -> Vec<ShearThreshold> {
+    model
+        .elements
+        .iter()
+        .map(|elem| {
+            let sec = elem
+                .section
+                .and_then(|sid| model.sections.get(sid.index()));
+            let mat = elem
+                .material
+                .and_then(|mid| model.materials.get(mid.index()));
+            let (as_y, as_z) = sec.map(|s| (s.as_y, s.as_z)).unwrap_or((0.0, 0.0));
+            ShearThreshold {
+                qy_y: compute_shear_yield_qy(as_y, mat),
+                qy_z: compute_shear_yield_qy(as_z, mat),
+            }
+        })
+        .collect()
+}
+
+/// 材軸方向単位ベクトル `ex` に対する、材端力ベクトル `f`（3成分）の
+/// 軸直交（せん断）方向成分の大きさを返す。
+/// `f` を軸方向成分（`f・ex`）とそれに直交する残差ベクトルへ分解し、後者の
+/// ノルムをせん断力の大きさとする（材軸に対して垂直な合力）。
+fn transverse_force_magnitude(f: [f64; 3], ex: [f64; 3]) -> f64 {
+    let axial = f[0] * ex[0] + f[1] * ex[1] + f[2] * ex[2];
+    let tx = f[0] - axial * ex[0];
+    let ty = f[1] - axial * ex[1];
+    let tz = f[2] - axial * ex[2];
+    (tx * tx + ty * ty + tz * tz).sqrt()
+}
+
+/// せん断降伏イベントの追跡（`track_hinges` と対をなす、曲げとは独立の判定）。
+///
+/// `ElementBehavior::internal_force` が返す材端節点力はグローバル座標成分
+/// （`f.data[0..3]`＝i端, `f.data[6..9]`＝j端）であるため、節点座標から求めた
+/// 材軸方向 `ex` を用いて軸方向成分を差し引き、軸直交（せん断）方向の合力
+/// （`transverse_force_magnitude`）を材端ごとに求める。その材端最大値が
+/// せん断降伏耐力（[`ShearThreshold::qy`]）を超えた部材を、当該ステップの
+/// せん断降伏イベントとして記録する。
+fn track_shear_yield(
+    model: &Model,
+    behaviors: &[Box<dyn ElementBehavior>],
+    thresholds: &[ShearThreshold],
+    step: u32,
+    events: &mut Vec<ShearYieldEvent>,
+) {
+    let state = ElemState::default();
+    let ctx = Ctx { model };
+    for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
+        if elem.nodes.len() < 2 {
+            continue;
+        }
+        let (Some(pi), Some(pj)) = (
+            model.nodes.get(elem.nodes[0].index()),
+            model.nodes.get(elem.nodes[1].index()),
+        ) else {
+            continue;
+        };
+        let dx = pj.coord[0] - pi.coord[0];
+        let dy = pj.coord[1] - pi.coord[1];
+        let dz = pj.coord[2] - pi.coord[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len <= 0.0 {
+            continue;
+        }
+        let ex = [dx / len, dy / len, dz / len];
+
+        let f = b.internal_force(&state, &ctx);
+        let shear_i = transverse_force_magnitude([f.data[0], f.data[1], f.data[2]], ex);
+        let shear_j = transverse_force_magnitude([f.data[6], f.data[7], f.data[8]], ex);
+        let v_max = shear_i.max(shear_j);
+        let th = &thresholds[i];
+        if v_max >= th.qy() {
+            events.push(ShearYieldEvent {
+                step,
+                elem: elem.id,
+            });
+        }
     }
 }
 
@@ -902,6 +1059,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             sections: vec![Section {
                 id: SectionId(0),
@@ -1116,6 +1274,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(1),
@@ -1130,6 +1289,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![sec],
@@ -1253,6 +1413,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             },
             ElementData {
                 id: ElemId(1),
@@ -1267,6 +1428,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             },
             ElementData {
                 id: ElemId(2),
@@ -1281,6 +1443,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             },
         ];
         let portal = Model {
@@ -1443,6 +1606,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(1),
@@ -1457,6 +1621,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
                 ElementData {
                     id: ElemId(2),
@@ -1471,6 +1636,7 @@ mod tests {
                     force_regime: ForceRegime::Auto,
                     rigid_zone: Default::default(),
                     plastic_zone: None,
+                    spring: None,
                 },
             ],
             sections: vec![Section {
@@ -1631,5 +1797,106 @@ mod tests {
                 std::mem::discriminant(other)
             ),
         }
+    }
+
+    // ---- せん断降伏耐力 Qy の単体テスト ----
+
+    #[test]
+    fn test_compute_shear_yield_qy_steel() {
+        // 鋼系（fy 設定あり）: Qy = as・fy/√3。
+        let mat = Material {
+            id: MaterialId(0),
+            name: "s".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(200.0),
+        };
+        let qy = compute_shear_yield_qy(1000.0, Some(&mat));
+        let expected = 1000.0 * 200.0 / 3.0_f64.sqrt();
+        assert!(
+            (qy - expected).abs() < 1e-6,
+            "qy={qy} should equal as*fy/sqrt(3)={expected}"
+        );
+    }
+
+    #[test]
+    fn test_compute_shear_yield_qy_rc() {
+        // RC系（fy 無し・fc 設定あり）: Qy = as・0.7√fc。
+        let mat = Material {
+            id: MaterialId(0),
+            name: "rc".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 0.0,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let qy = compute_shear_yield_qy(50000.0, Some(&mat));
+        let expected = 50000.0 * 0.7 * 24.0_f64.sqrt();
+        assert!(
+            (qy - expected).abs() < 1e-6,
+            "qy={qy} should equal as*0.7*sqrt(fc)={expected}"
+        );
+    }
+
+    #[test]
+    fn test_compute_shear_yield_qy_zero_as_is_infinite() {
+        // 有効せん断断面積が 0 の断面は判定対象外（Qy=∞扱い）。
+        let mat = Material {
+            id: MaterialId(0),
+            name: "s".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(200.0),
+        };
+        assert_eq!(compute_shear_yield_qy(0.0, Some(&mat)), f64::INFINITY);
+        // 材料未設定でも∞扱い。
+        assert_eq!(compute_shear_yield_qy(1000.0, None), f64::INFINITY);
+    }
+
+    /// as_y/as_z を明示的に与えた片持ち柱モデル（`single_column_model` のせん断有効
+    /// 断面積を差し替えたもの）。せん断降伏耐力 Qy は as_y/as_z と材料強度のみに
+    /// 依存し、実際に生じるせん断力（`track_shear_yield`）は材端力の釣合いから
+    /// 求まるため、せん断バネ剛性（材料のせん断弾性係数）を変更する必要はない。
+    fn single_column_model_with_shear(fy: f64, seismic_weight: f64, as_shear: f64) -> Model {
+        let mut model = single_column_model(fy, seismic_weight);
+        model.sections[0].as_y = as_shear;
+        model.sections[0].as_z = as_shear;
+        model
+    }
+
+    #[test]
+    fn test_pushover_shear_yield_event_recorded() {
+        // せん断有効断面積を小さく設定してせん断降伏耐力 Qy を小さくすることで、
+        // 水平荷重漸増中にせん断降伏イベントが記録されることを確認する
+        // （曲げヒンジ判定 `track_hinges` とは独立の判定経路の検証）。
+        let mut model = single_column_model_with_shear(235.0, 80_000.0, 50.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            20,
+            0.0,
+            false,
+            false,
+            0.0,
+        )
+        .expect("pushover should run end-to-end");
+
+        assert!(
+            !result.shear_yields.is_empty(),
+            "shear yield event should be recorded when Qy is small relative to applied shear"
+        );
     }
 }

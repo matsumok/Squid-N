@@ -28,6 +28,13 @@ pub enum ElementKind {
     Brace {
         tension_only: bool,
     },
+    /// 節点バネ要素（RESP-D マニュアル計算編03「応力解析」§部材の変形と自由度）。
+    ///
+    /// マニュアルの「部材の変形と自由度」表で、節点バネは θX=―（非考慮）、
+    /// θY=○, θZ=○, γY=○, γZ=○, δX=○。すなわちねじり以外の曲げ・せん断・
+    /// 軸方向の変形成分を独立なバネ剛性として持ちうる 2 節点要素。
+    /// 各自由度のバネ定数は `ElementData::spring` に保持する（局所軸 6 成分）。
+    NodalSpring,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -112,6 +119,14 @@ pub struct ElementData {
     /// モデル化（材端剛塑性ばねと適合するファイバーモデル化）に用いる。
     #[serde(default)]
     pub plastic_zone: Option<f64>,
+    /// 節点バネ要素（`ElementKind::NodalSpring`）の局所軸バネ定数
+    /// `[kx, ky, kz, krx, kry, krz]`（軸[N/mm]・せん断[N/mm]・回転[N·mm/rad]）。
+    /// RESP-D マニュアル計算編03「応力解析」§部材の変形と自由度により、節点バネは
+    /// ねじり（θX）を非考慮とするのが既定だが、本実装では全 6 成分を入力可能とし、
+    /// `krx` を明示的に 0 とすることで既定挙動に合わせる（入力で 0 以外も指定できる）。
+    /// `None` は他要素種別、またはバネ定数未指定（剛性ゼロ扱い）。
+    #[serde(default)]
+    pub spring: Option<[f64; 6]>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -527,7 +542,7 @@ pub struct MiscWall {
 ///
 /// 制振間柱（damper-equipped mullion column）は本リポジトリに要素種別が未実装のため、
 /// 対象外（既知の制約）。ブレースと柱（鉛直部材）のみ対応する。
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StressAnalysisCfg {
     /// 長期応力解析でブレース（`ElementKind::Brace`）に軸力を負担させない。
     pub no_long_axial_brace: bool,
@@ -537,6 +552,25 @@ pub struct StressAnalysisCfg {
     /// `Kw' = n·Aw'·ΣKc/ΣAc` の n。入力値）。`None` は雑壁剛性を考慮しない。
     #[serde(default)]
     pub misc_wall_n: Option<f64>,
+    /// 層間変形角の制限値の分母（令82条の2）。原則 200（1/200）。帳壁・仕上げ等に
+    /// 著しい損傷の恐れがない場合は 120（1/120）へ緩和できる。
+    #[serde(default = "default_drift_limit_denom")]
+    pub drift_limit_denom: f64,
+}
+
+fn default_drift_limit_denom() -> f64 {
+    200.0
+}
+
+impl Default for StressAnalysisCfg {
+    fn default() -> Self {
+        StressAnalysisCfg {
+            no_long_axial_brace: false,
+            no_long_axial_column: false,
+            misc_wall_n: None,
+            drift_limit_denom: default_drift_limit_denom(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -836,6 +870,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             }],
             ..Default::default()
         };
