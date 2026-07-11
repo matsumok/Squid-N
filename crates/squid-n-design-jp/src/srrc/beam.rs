@@ -7,7 +7,7 @@
 //! に委譲）。
 
 use super::{ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props, SrcSeismicCtx};
-use crate::material::rebar_sigma_y;
+use crate::material_strength::rebar_sigma_y;
 use crate::rc::{concrete_allowable_shear_class, rebar_allowable_shear, rebar_allowable_tension};
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
 use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};

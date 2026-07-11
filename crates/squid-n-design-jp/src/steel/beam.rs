@@ -4,7 +4,7 @@
 //! 検定比には含まれない参考情報として、大梁の必要横補剛数とたわみ
 //! （長期のみ）も併せて算定する。
 
-use crate::material::{steel_fs, steel_ft};
+use crate::material_strength::{steel_fs, steel_ft};
 use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::{Material, Section};
 

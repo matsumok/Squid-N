@@ -1,7 +1,7 @@
 //! 鉄骨造柱の断面検定（RESP-D マニュアル「04 断面検定」鋼構造部分
 //! 「鉄骨造柱の断面検定」）。
 
-use crate::material::{steel_fc, steel_fs, steel_ft};
+use crate::material_strength::{steel_fc, steel_fs, steel_ft};
 use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::Section;
 

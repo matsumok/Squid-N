@@ -40,10 +40,10 @@ pub mod wall;
 
 pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
 
-// 材料強度・許容応力度は `crate::material`（RESP-D「材料強度・許容応力度」節）へ
+// 材料強度・許容応力度は `crate::material_strength`（RESP-D「材料強度・許容応力度」節）へ
 // 集約した。RC 造の検定で用いるものを再エクスポートし、従来の
 // `crate::rc::concrete_allowable_shear` 等のパスも維持する。
-pub use crate::material::{
+pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
     concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
     high_strength_group, high_strength_pw_cap, high_strength_w_ft, rebar_allowable_shear,
@@ -653,7 +653,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 許容応力度（RC 造検定でのみ使う独自カバレッジ分。他は material.rs 側で検証）
+    // 許容応力度（RC 造検定でのみ使う独自カバレッジ分。他は material_strength.rs 側で検証）
     // ------------------------------------------------------------------
 
     #[test]

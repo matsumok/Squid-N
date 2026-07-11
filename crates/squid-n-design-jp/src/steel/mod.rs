@@ -33,9 +33,9 @@ use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
 // 鋼材の F 値・許容応力度（ft/fs/fc・限界細長比 Λ・板厚区分）は
-// `crate::material`（RESP-D「材料強度・許容応力度」節）へ集約した。鋼構造の
+// `crate::material_strength`（RESP-D「材料強度・許容応力度」節）へ集約した。鋼構造の
 // 検定で用いるものを再エクスポートし、従来のパスも維持する。
-pub use crate::material::{
+pub use crate::material_strength::{
     big_lambda, plate_thickness, steel_f_value, steel_f_value_prefix, steel_fc, steel_fs, steel_ft,
 };
 

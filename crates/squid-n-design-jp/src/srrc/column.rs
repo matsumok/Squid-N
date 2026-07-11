@@ -10,7 +10,7 @@ use super::{
     bar_set_area, ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props,
     SrcAxisProps, SrcSeismicCtx,
 };
-use crate::material::rebar_sigma_y;
+use crate::material_strength::rebar_sigma_y;
 use crate::rc::{
     concrete_allowable_compression_class, concrete_allowable_shear_class, rebar_allowable_shear,
     rebar_allowable_tension, young_ratio_n,

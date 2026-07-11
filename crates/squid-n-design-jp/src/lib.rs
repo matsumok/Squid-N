@@ -2,8 +2,8 @@
 //!
 //! 一次設計（許容応力度検定）は RESP-D マニュアル「計算編 04 断面検定
 //! （許容応力度検定）」に準拠し、マニュアルの節に対応するモジュールへ分割する
-//! （材種ごとに `rc`/`steel`/`cft`/`srrc`、材料強度は `material`、節点単位の
-//! 検定の入力組み立ては `joint_wiring`）。
+//! （材種ごとに `rc`/`steel`/`cft`/`srrc`、材料強度・許容応力度は
+//! `material_strength`、節点単位の検定の入力組み立ては `joint_wiring`）。
 //!
 //! 二次設計（保有水平耐力計算）は `p7` フィーチャ配下の [`secondary`] モジュール
 //! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
@@ -11,8 +11,9 @@ pub mod brb;
 pub mod cft;
 pub mod joint_wiring;
 /// 材料強度・許容応力度（RESP-D「材料強度・許容応力度」節）。材種横断の
-/// 許容応力度・材料定数を集約する。
-pub mod material;
+/// 許容応力度・材料定数を集約する。構成則モデルの `squid-n-material`
+/// クレートとは別物（本モジュールは設計規準の許容応力度）。
+pub mod material_strength;
 pub mod rc;
 pub mod srrc;
 pub mod steel;
@@ -25,7 +26,7 @@ pub mod capacity_spectrum;
 pub mod secondary;
 
 pub use cft::CftDesign;
-pub use material::{steel_f_value, steel_f_value_prefix};
+pub use material_strength::{steel_f_value, steel_f_value_prefix};
 pub use rc::RcDesign;
 pub use srrc::SrcDesign;
 pub use steel::SteelDesign;

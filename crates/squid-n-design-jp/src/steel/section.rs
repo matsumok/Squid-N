@@ -5,7 +5,7 @@
 //! 断面欠損（継手部・スカラップ）を考慮した断面係数 Z'・横座屈長さ lb の
 //! 解決を扱う。
 
-use crate::material::big_lambda;
+use crate::material_strength::big_lambda;
 use crate::{DesignCtx, LoadTerm};
 
 use super::section_modulus;
@@ -201,7 +201,7 @@ pub fn resolve_lb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::material::steel_ft;
+    use crate::material_strength::steel_ft;
 
     // -------------------------------------------------------------
     // fb（横座屈考慮）
