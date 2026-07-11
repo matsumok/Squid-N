@@ -200,12 +200,17 @@ pub const WALL_GIRDER_STIFF_FACTOR: f64 = 100.0;
 /// `model.elements` 中に節点数4以上（四隅を持つ）の `ElementKind::Wall` 要素があり、
 /// その壁の節点集合に自部材の両端節点がともに含まれていれば、その壁の上辺または
 /// 下辺の大梁とみなす（RESP-D 計算編 02「壁エレメントモデルの上下大梁」）。
+///
+/// ただし対象は耐震壁が成立した壁のみ（`misc_wall::wall_is_seismic`）。不成立の
+/// フレーム内雑壁の上下梁は 100 倍せず、代わりに腰壁/垂壁として断面性能へ算入する
+/// （`BeamElement::new` 内の雑壁算入処理）。
 fn is_wall_top_bottom_girder(model: &Model, n0: NodeId, n1: NodeId) -> bool {
     model.elements.iter().any(|e| {
         matches!(e.kind, squid_n_core::model::ElementKind::Wall)
             && e.nodes.len() >= 4
             && e.nodes.contains(&n0)
             && e.nodes.contains(&n1)
+            && crate::misc_wall::wall_is_seismic(e, model)
     })
 }
 
@@ -308,12 +313,167 @@ impl BeamElement {
         } else {
             1.0
         };
-        let a_stiff = a_stiff * wall_girder_factor;
-        let iy = iy * wall_girder_factor;
-        let iz = iz * wall_girder_factor;
+        let mut a_stiff = a_stiff * wall_girder_factor;
+        let mut iy = iy * wall_girder_factor;
+        let mut iz = iz * wall_girder_factor;
         let j = j * wall_girder_factor;
-        let as_y = as_y * wall_girder_factor;
-        let as_z = as_z * wall_girder_factor;
+        let mut as_y = as_y * wall_girder_factor;
+        let mut as_z = as_z * wall_girder_factor;
+
+        // フレーム内雑壁（耐震壁不成立）の周辺部材への断面性能算入
+        // （RESP-D 計算編 02「フレーム内雑壁のモデル化」）。柱（鉛直材）には袖壁を、
+        // 梁（水平材）には腰壁/垂壁を、平行軸の定理で剛性用断面性能へ合成する。
+        // 対象は不成立壁のみ（成立壁は上下大梁100倍で別途考慮済み・排他）。
+        let misc_walls = crate::misc_wall::collect_misc_walls(model);
+        if !misc_walls.is_empty() {
+            // 不変条件の確認: 壁要素と周辺部材（柱・梁）の ElemId は別空間ではなく
+            // モデル全体で一意のはずなので、自部材自身が雑壁として収集される
+            // （壁要素IDと自部材IDの衝突）ことはない。
+            for w in &misc_walls {
+                debug_assert_ne!(
+                    w.elem, data.id,
+                    "壁要素と周辺部材のIDが衝突している（model 不整合）"
+                );
+            }
+            let is_vertical_member = dz.abs() > (dx.abs() + dy.abs()) * 0.5;
+
+            // 自部材の両端節点集合が節点対 b と一致するか（順序不問）
+            let same_pair = |a: [NodeId; 2], b: (NodeId, NodeId)| -> bool {
+                (a[0] == b.0 && a[1] == b.1) || (a[0] == b.1 && a[1] == b.0)
+            };
+            // 平行軸の定理による合成: contrib = (合成断面積 Aw, 部材中心からの
+            // 符号付き距離 e, 合成断面の自身回りの断面2次モーメント)。
+            // 図心 g = Σ(Aw·e)/(Ac+ΣAw) を求めた上で I を再合成する。
+            let compose = |i0: f64, ac: f64, contrib: &[(f64, f64, f64)]| -> f64 {
+                let sum_aw: f64 = contrib.iter().map(|c| c.0).sum();
+                if sum_aw <= 0.0 {
+                    return i0;
+                }
+                let sum_aw_e: f64 = contrib.iter().map(|c| c.0 * c.1).sum();
+                let g = sum_aw_e / (ac + sum_aw);
+                let mut i_new = i0 + ac * g * g;
+                for &(aw, e, self_i) in contrib {
+                    i_new += self_i + aw * (e - g).powi(2);
+                }
+                i_new
+            };
+
+            if is_vertical_member {
+                // 柱（鉛直材）: 袖壁の算入。面内せいは近似として断面の大きい方の
+                // 辺（sec.depth.max(sec.width)）を用いる。
+                let d_col = sec.depth.max(sec.width);
+                let ac = a_stiff;
+                let mut contrib_y: Vec<(f64, f64, f64)> = Vec::new(); // iz・as_y を増強
+                let mut contrib_z: Vec<(f64, f64, f64)> = Vec::new(); // iy・as_z を増強
+                let mut a_add = 0.0;
+
+                for wall in &misc_walls {
+                    for s in 0..2 {
+                        let pair = (wall.bottom_pair[s], wall.top_pair[s]);
+                        if !same_pair([n0, n1], pair) {
+                            continue;
+                        }
+                        let lww = (wall.wing_length(s) - d_col / 2.0).clamp(0.0, wall.lw);
+                        if lww <= 0.0 {
+                            continue;
+                        }
+                        let Some(pa) = model
+                            .nodes
+                            .get(wall.bottom_pair[0].index())
+                            .map(|n| n.coord)
+                        else {
+                            continue;
+                        };
+                        let Some(pb) = model
+                            .nodes
+                            .get(wall.bottom_pair[1].index())
+                            .map(|n| n.coord)
+                        else {
+                            continue;
+                        };
+                        let wdx = pb[0] - pa[0];
+                        let wdy = pb[1] - pa[1];
+                        let wl = (wdx * wdx + wdy * wdy).sqrt();
+                        if wl < 1e-9 {
+                            continue;
+                        }
+                        // 壁下辺方向の水平単位ベクトルと柱の局所 ey・ez との内積で
+                        // 面内たわみ方向（iz↔as_y か iy↔as_z か）を判定する。
+                        let e_wall = [wdx / wl, wdy / wl, 0.0];
+                        let dot_ey = (axis.rot[1][0] * e_wall[0]
+                            + axis.rot[1][1] * e_wall[1]
+                            + axis.rot[1][2] * e_wall[2])
+                            .abs();
+                        let dot_ez = (axis.rot[2][0] * e_wall[0]
+                            + axis.rot[2][1] * e_wall[1]
+                            + axis.rot[2][2] * e_wall[2])
+                            .abs();
+
+                        let aw = wall.t * lww;
+                        let e_i = if s == 0 {
+                            -(d_col / 2.0 + lww / 2.0)
+                        } else {
+                            d_col / 2.0 + lww / 2.0
+                        };
+                        let self_i = wall.t * lww.powi(3) / 12.0;
+                        a_add += aw;
+                        if dot_ey >= dot_ez {
+                            contrib_y.push((aw, e_i, self_i));
+                        } else {
+                            contrib_z.push((aw, e_i, self_i));
+                        }
+                    }
+                }
+
+                if !contrib_y.is_empty() {
+                    iz = compose(iz, ac, &contrib_y);
+                    as_y += contrib_y.iter().map(|c| c.0).sum::<f64>() / 1.2;
+                }
+                if !contrib_z.is_empty() {
+                    iy = compose(iy, ac, &contrib_z);
+                    as_z += contrib_z.iter().map(|c| c.0).sum::<f64>() / 1.2;
+                }
+                a_stiff += a_add;
+            } else if is_horizontal {
+                // 梁（水平材）: 腰壁（下辺の梁に載る壁）・垂壁（上辺の梁から垂れる壁）の
+                // 算入。鉛直曲げ（iy・as_z）へ合成する。
+                let d_beam = sec.depth;
+                let ac = a_stiff;
+                let mut contrib: Vec<(f64, f64, f64)> = Vec::new();
+                let mut a_add = 0.0;
+
+                for wall in &misc_walls {
+                    let bottom = (wall.bottom_pair[0], wall.bottom_pair[1]);
+                    let top = (wall.top_pair[0], wall.top_pair[1]);
+                    // 下辺の梁なら壁は上に載る（腰壁）、上辺の梁なら壁は下に垂れる（垂壁）。
+                    let (matched, hw_raw, sign) = if same_pair([n0, n1], bottom) {
+                        (true, wall.strip_height(false), 1.0)
+                    } else if same_pair([n0, n1], top) {
+                        (true, wall.strip_height(true), -1.0)
+                    } else {
+                        (false, 0.0, 0.0)
+                    };
+                    if !matched {
+                        continue;
+                    }
+                    let hw = (hw_raw - d_beam / 2.0).clamp(0.0, wall.h);
+                    if hw <= 0.0 {
+                        continue;
+                    }
+                    let aw = wall.t * hw;
+                    let e_i = sign * (d_beam / 2.0 + hw / 2.0);
+                    let self_i = wall.t * hw.powi(3) / 12.0;
+                    a_add += aw;
+                    contrib.push((aw, e_i, self_i));
+                }
+
+                if !contrib.is_empty() {
+                    iy = compose(iy, ac, &contrib);
+                    as_z += contrib.iter().map(|c| c.0).sum::<f64>() / 1.2;
+                }
+                a_stiff += a_add;
+            }
+        }
 
         Self {
             id: data.id,
@@ -2545,6 +2705,446 @@ mod tests {
             (column.iy - sec.iy).abs() < 1e-9,
             "鉛直材は水平材ではないため倍率が掛からないはず: iy={}",
             column.iy
+        );
+    }
+
+    /// フレーム内雑壁（耐震壁不成立）の柱への袖壁算入（RESP-D 計算編 02
+    /// 「フレーム内雑壁のモデル化」）。大開口(r0=√(3.6e6/12e6)=0.548>0.4)の壁は
+    /// 耐震壁不成立となり、側柱（左辺=節点0-3）に袖壁として断面性能算入される。
+    /// 面内（iz・as_y）は平行軸の定理による合成値と一致し、面外（iy・as_z）は不変。
+    #[test]
+    fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
+        use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, ForceRegime, LocalAxis, Model, WallAttr, WallOpening,
+        };
+        use squid_n_core::section_shape::SectionShape;
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        let col_sec = Section {
+            id: SectionId(0),
+            name: "col".into(),
+            area: 90_000.0,
+            iy: 3.0e9,
+            iz: 2.0e9,
+            j: 1.0e7,
+            depth: 300.0,
+            width: 300.0,
+            as_y: 50_000.0,
+            as_z: 60_000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let wall_shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "FC24".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+        ];
+        let column_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let wall_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(1)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let mut model = Model {
+            nodes,
+            elements: vec![column_elem.clone(), wall_elem],
+            sections: vec![
+                col_sec.clone(),
+                wall_shape.to_section(SectionId(1), "W150".into()),
+            ],
+            materials: vec![mat],
+            ..Default::default()
+        };
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(1),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![WallOpening {
+                width: 2400.0,
+                height: 1500.0,
+                offset: Some([800.0, 750.0]),
+            }],
+        });
+
+        let column = BeamElement::new(&column_elem, &model);
+
+        // 手計算（misc_wall::tests::test_collect_misc_walls_and_lengths と同じ壁形状）:
+        // wing_length(side=0)=800、lww=800-300/2=650、Aw=150*650=97500。
+        let d_col: f64 = 300.0;
+        let lww = 650.0_f64;
+        let aw = 150.0 * lww;
+        let ac = col_sec.area;
+        let e_i = -(d_col / 2.0 + lww / 2.0);
+        let g = (aw * e_i) / (ac + aw);
+        let self_i = 150.0 * lww.powi(3) / 12.0;
+        let expected_iz = col_sec.iz + ac * g * g + self_i + aw * (e_i - g).powi(2);
+
+        assert!(
+            (column.a - (ac + aw)).abs() < 1e-6,
+            "a={} expected={}",
+            column.a,
+            ac + aw
+        );
+        assert!(
+            (column.iz - expected_iz).abs() / expected_iz < 1e-9,
+            "iz={} expected={}",
+            column.iz,
+            expected_iz
+        );
+        assert!(
+            (column.as_y - (col_sec.as_y + aw / 1.2)).abs() < 1e-6,
+            "as_y={}",
+            column.as_y
+        );
+        // 面外（iy・as_z）は袖壁算入の影響を受けない
+        assert!((column.iy - col_sec.iy).abs() < 1e-6, "iy={}", column.iy);
+        assert!(
+            (column.as_z - col_sec.as_z).abs() < 1e-6,
+            "as_z={}",
+            column.as_z
+        );
+    }
+
+    /// 同じ大開口壁の下辺梁（節点0-1）への腰壁算入。鉛直曲げ（iy・as_z）へ
+    /// 平行軸の定理で合成され、耐震壁不成立のため上下大梁100倍は掛からない。
+    #[test]
+    fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
+        use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, ForceRegime, LocalAxis, Model, WallAttr, WallOpening,
+        };
+        use squid_n_core::section_shape::SectionShape;
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        let beam_sec = Section {
+            id: SectionId(0),
+            name: "beam".into(),
+            area: 200_000.0,
+            iy: 5.0e9,
+            iz: 1.0e9,
+            j: 1.0e7,
+            depth: 600.0,
+            width: 300.0,
+            as_y: 70_000.0,
+            as_z: 70_000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let wall_shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "FC24".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+        ];
+        let beam_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let wall_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(1)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let mut model = Model {
+            nodes,
+            elements: vec![beam_elem.clone(), wall_elem],
+            sections: vec![
+                beam_sec.clone(),
+                wall_shape.to_section(SectionId(1), "W150".into()),
+            ],
+            materials: vec![mat],
+            ..Default::default()
+        };
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(1),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![WallOpening {
+                width: 2400.0,
+                height: 1500.0,
+                offset: Some([800.0, 750.0]),
+            }],
+        });
+
+        let beam = BeamElement::new(&beam_elem, &model);
+
+        // 手計算: strip_height(top=false)=750（lw/2=2000 は開口 x:[800,3200] 内）、
+        // hw=750-600/2=450、Aw=150*450=67500。下辺の梁なので壁は上に載る(+方向)。
+        let d_beam: f64 = 600.0;
+        let hw = 450.0_f64;
+        let aw = 150.0 * hw;
+        let ac = beam_sec.area;
+        let e_i = d_beam / 2.0 + hw / 2.0;
+        let g = (aw * e_i) / (ac + aw);
+        let self_i = 150.0 * hw.powi(3) / 12.0;
+        let expected_iy = beam_sec.iy + ac * g * g + self_i + aw * (e_i - g).powi(2);
+
+        assert!(
+            (beam.a - (ac + aw)).abs() < 1e-6,
+            "a={} expected={}",
+            beam.a,
+            ac + aw
+        );
+        assert!(
+            (beam.iy - expected_iy).abs() / expected_iy < 1e-9,
+            "iy={} expected={}",
+            beam.iy,
+            expected_iy
+        );
+        assert!(
+            (beam.as_z - (beam_sec.as_z + aw / 1.2)).abs() < 1e-6,
+            "as_z={}",
+            beam.as_z
+        );
+        // 耐震壁不成立のため上下大梁100倍は掛からない（合成値は元の iy の高々数倍）
+        assert!(
+            beam.iy < beam_sec.iy * 10.0,
+            "100倍が誤って適用されている可能性: iy={} base={}",
+            beam.iy,
+            beam_sec.iy
+        );
+        // 弱軸（iz・as_y）は腰壁算入の影響を受けない
+        assert!((beam.iz - beam_sec.iz).abs() < 1e-6, "iz={}", beam.iz);
+        assert!(
+            (beam.as_y - beam_sec.as_y).abs() < 1e-6,
+            "as_y={}",
+            beam.as_y
+        );
+    }
+
+    /// 耐震壁が成立する壁（無開口・t=150）の周辺部材: 柱・梁とも雑壁算入されず、
+    /// 上下大梁は従来どおり100倍（`WALL_GIRDER_STIFF_FACTOR`）のままとなる
+    /// （雑壁算入と上下大梁100倍は排他: `collect_misc_walls` は不成立壁のみ返す）。
+    #[test]
+    fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
+        use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+        use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
+        use squid_n_core::section_shape::SectionShape;
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        let col_sec = Section {
+            id: SectionId(0),
+            name: "col".into(),
+            area: 90_000.0,
+            iy: 3.0e9,
+            iz: 2.0e9,
+            j: 1.0e7,
+            depth: 300.0,
+            width: 300.0,
+            as_y: 50_000.0,
+            as_z: 60_000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let beam_sec = Section {
+            id: SectionId(1),
+            name: "beam".into(),
+            area: 200_000.0,
+            iy: 5.0e9,
+            iz: 1.0e9,
+            j: 1.0e7,
+            depth: 600.0,
+            width: 300.0,
+            as_y: 70_000.0,
+            as_z: 70_000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let wall_shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "FC24".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+        ];
+        let column_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let beam_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(1)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let wall_elem = ElementData {
+            id: ElemId(2),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(2)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        // 開口なし（wall_attrs 未設定）・t=150 → 耐震壁成立
+        let model = Model {
+            nodes,
+            elements: vec![column_elem.clone(), beam_elem.clone(), wall_elem],
+            sections: vec![
+                col_sec.clone(),
+                beam_sec.clone(),
+                wall_shape.to_section(SectionId(2), "W150".into()),
+            ],
+            materials: vec![mat],
+            ..Default::default()
+        };
+
+        let column = BeamElement::new(&column_elem, &model);
+        assert!(
+            (column.iz - col_sec.iz).abs() < 1e-6,
+            "耐震壁成立時は柱に袖壁算入されないはず: iz={}",
+            column.iz
+        );
+        assert!((column.a - col_sec.area).abs() < 1e-6, "a={}", column.a);
+        assert!(
+            (column.as_y - col_sec.as_y).abs() < 1e-6,
+            "as_y={}",
+            column.as_y
+        );
+
+        let beam = BeamElement::new(&beam_elem, &model);
+        assert!(
+            (beam.iy / beam_sec.iy - WALL_GIRDER_STIFF_FACTOR).abs() < 1e-9,
+            "耐震壁成立時は従来どおり上下大梁100倍のはず: iy={} base={}",
+            beam.iy,
+            beam_sec.iy
+        );
+        assert!(
+            (beam.a / beam_sec.area - WALL_GIRDER_STIFF_FACTOR).abs() < 1e-9,
+            "a={} base={}",
+            beam.a,
+            beam_sec.area
         );
     }
 }

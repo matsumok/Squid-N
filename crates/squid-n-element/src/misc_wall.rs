@@ -51,7 +51,9 @@ pub(crate) fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
 
 /// 壁板厚 [mm]（RcWall 形状 → Section.thickness → Section.width の順）。
 fn wall_thickness(data: &ElementData, model: &Model) -> Option<f64> {
-    let sec = data.section.and_then(|sid| model.sections.get(sid.index()))?;
+    let sec = data
+        .section
+        .and_then(|sid| model.sections.get(sid.index()))?;
     let t = match &sec.shape {
         Some(SectionShape::RcWall { thickness, .. }) => *thickness,
         _ => sec.thickness.unwrap_or(sec.width),
@@ -179,8 +181,7 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
             continue;
         }
         let ex = [dxy[0] / lw, dxy[1] / lw];
-        let proj =
-            |p: [f64; 3]| -> f64 { (p[0] - pa[0]) * ex[0] + (p[1] - pa[1]) * ex[1] };
+        let proj = |p: [f64; 3]| -> f64 { (p[0] - pa[0]) * ex[0] + (p[1] - pa[1]) * ex[1] };
         let (ta, tb) = if proj(coords[t0]).abs() <= proj(coords[t1]).abs() {
             (t0, t1)
         } else {
@@ -199,12 +200,7 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
                 }
                 rect = Some(match rect {
                     None => [x, z, x + w, z + hh],
-                    Some(r) => [
-                        r[0].min(x),
-                        r[1].min(z),
-                        r[2].max(x + w),
-                        r[3].max(z + hh),
-                    ],
+                    Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + w), r[3].max(z + hh)],
                 });
             }
             rect

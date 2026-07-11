@@ -275,6 +275,12 @@ pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<Rel
         if !is_rc_wall(wall, model) {
             continue;
         }
+        // 耐震壁が不成立（フレーム内雑壁）の場合、柱は側柱としてピン化せず、
+        // 通常の柱として袖壁付きの断面性能算入（`beam.rs`）を受ける
+        // （RESP-D 計算編 02「フレーム内雑壁のモデル化」）。
+        if !crate::misc_wall::wall_is_seismic(wall, model) {
+            continue;
+        }
 
         let ids: Vec<NodeId> = wall.nodes.iter().take(4).copied().collect();
         let Some(coords) = ids
