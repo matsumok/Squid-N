@@ -236,10 +236,12 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         );
     } else if let Some(st) = app.current_static() {
         // 表示対象はナビゲータの結果ケース選択（→最後に実行した結果）に追従する。
-        let metrics = crate::summary::compute_story_metrics(
+        let ctx = crate::summary::metrics_ctx_from_results(app.results.as_ref());
+        let metrics = crate::summary::compute_story_metrics_with(
             &app.model,
             &st.disp,
             app.analysis_cfg.seismic_dir,
+            &ctx,
         );
 
         TableBuilder::new(ui)

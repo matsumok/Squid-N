@@ -776,10 +776,12 @@ impl App {
             "静的解析結果がありません。地震静的(Ai)を実行してください。".to_string()
         })?;
 
-        let metrics = crate::summary::compute_story_metrics(
+        let ctx = crate::summary::metrics_ctx_from_results(self.results.as_ref());
+        let metrics = crate::summary::compute_story_metrics_with(
             &self.model,
             &st.disp,
             self.analysis_cfg.seismic_dir,
+            &ctx,
         );
 
         // 地震重量: 下階→上階順（model.stories は生成時から下階→上階順に格納される）。
