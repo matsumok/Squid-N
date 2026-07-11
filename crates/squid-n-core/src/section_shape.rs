@@ -114,6 +114,67 @@ pub enum SectionShape {
 /// SRC 断面の解析剛性算定に用いる鉄骨の等価ヤング係数比（暫定既定）。
 pub const N_S_EQ: f64 = 15.0;
 
+/// RC 断面のせん断変形用断面積の形状係数 κ（As = A/κ。RESP-D 計算編 02「剛性計算」）。
+pub const KAPPA_RC: f64 = 1.2;
+
+/// 鋼材のヤング係数 [N/mm²]（SRC 内蔵鉄骨・CFT 鋼管の換算用標準値）。
+pub const E_STEEL: f64 = 205000.0;
+
+/// 鋼材のポアソン比（せん断弾性係数比 ngs の算定用）。
+const NU_STEEL: f64 = 0.3;
+
+/// コンクリートのポアソン比（CFT 充填コンクリートの換算用）。
+const NU_CONCRETE: f64 = 0.2;
+
+/// コンクリートの単位体積重量 γ [kN/m³]（普通コンクリートの標準値。
+/// ヤング係数式 Ec=3.35e4·(γ/24)²·(Fc/60)^(1/3) に用いる）。
+const GAMMA_CONCRETE: f64 = 23.0;
+
+/// コンクリート強度 Fc [N/mm²] からヤング係数 Ec [N/mm²] を算定する
+/// （RESP-D 計算編 02 の Ec=3.35·10⁴·(γ/24)²·(Fc/60)^(1/3)、γ=23 固定）。
+pub fn concrete_young_modulus(fc: f64) -> f64 {
+    if fc <= 0.0 {
+        return 0.0;
+    }
+    3.35e4 * (GAMMA_CONCRETE / 24.0).powi(2) * (fc / 60.0).powf(1.0 / 3.0)
+}
+
+/// SRC/CFT の複合換算断面性能（要素剛性用。RESP-D 計算編 02「剛性計算」）。
+///
+/// いずれも要素に割り当てた材料（SRC はコンクリート、CFT は鋼管）を基準とした
+/// 等価値。質量算定用の断面積（`calc_area`）とは区別して用いること。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompositeProps {
+    /// 軸剛性用断面積 [mm²]
+    pub area_ax: f64,
+    pub iy: f64,
+    pub iz: f64,
+    pub j: f64,
+    pub as_y: f64,
+    pub as_z: f64,
+}
+
+/// 矩形断面の St.Venant ねじり定数（RESP-D 計算編 02「剛性計算」の式）。
+///
+/// J = (b³·h/16)·[16/3 − 3.36·(b/h)·(1 − (1/12)(b/h)⁴)]（b: 短辺, h: 長辺）
+///
+/// アスペクト比によらず同一式を適用する（b/h→0 で β→1/3 に漸近）。
+fn rect_torsion_j(b: f64, d: f64) -> f64 {
+    let bs = b.min(d);
+    let h = b.max(d);
+    if bs <= 0.0 || h <= 0.0 {
+        return 0.0;
+    }
+    let c = bs / h;
+    bs.powi(3) * h / 16.0 * (16.0 / 3.0 - 3.36 * c * (1.0 - c.powi(4) / 12.0))
+}
+
+/// H 形（内蔵鉄骨含む）のウェブせん断断面積（ウェブ全せい×ウェブ厚。
+/// 設計検定側 `squid-n-design-jp::steel::shear_area` と同一規約）。
+fn h_web_shear_area(height: f64, web_thick: f64) -> f64 {
+    (height * web_thick).max(0.0)
+}
+
 impl SectionShape {
     /// Compute the cross‑sectional area [mm²].
     pub fn calc_area(&self) -> f64 {
@@ -414,30 +475,11 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 2.0 * (r.powi(4) - ri.powi(4))
             }
-            SectionShape::RcRect { b, d, .. } => {
-                let b_min = b.min(d);
-                let h = b.max(d);
-                let r = h / b_min;
-                let beta = if r < 10.0 {
-                    (1.0 / 3.0) * (1.0 - 0.630 / r + 0.052 / r.powi(5))
-                } else {
-                    1.0 / 3.0
-                };
-                beta * b_min.powi(3) * h
-            }
+            SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
-            SectionShape::SrcRect { b, d, .. } => {
-                // ねじりは RC 矩形と同じ扱い（内蔵鉄骨の寄与は無視）。
-                let b_min = b.min(d);
-                let h = b.max(d);
-                let r = h / b_min;
-                let beta = if r < 10.0 {
-                    (1.0 / 3.0) * (1.0 - 0.630 / r + 0.052 / r.powi(5))
-                } else {
-                    1.0 / 3.0
-                };
-                beta * b_min.powi(3) * h
-            }
+            // ねじりは RC 矩形と同じ扱い（内蔵鉄骨の寄与は無視。
+            // マニュアルの J=(sG/cG)·sJ+cJ 複合換算は Material 依存のため今後の課題）。
+            SectionShape::SrcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::CftBox {
                 height,
                 width,
@@ -456,6 +498,135 @@ impl SectionShape {
         }
     }
 
+    /// 軸剛性（EA）算定用の等価断面積 [mm²]。
+    ///
+    /// SRC はマニュアル（RESP-D 計算編 02「剛性計算」）の
+    /// An = rcAn + sAn·(ns−1) に従い鉄骨の等価換算断面を累加する
+    /// （ns は暫定的に `N_S_EQ`）。質量算定用の断面積（`calc_area` は
+    /// コンクリート全断面）とは区別して用いること。他形状は `calc_area` と同値。
+    pub fn calc_axial_stiffness_area(&self) -> f64 {
+        match *self {
+            SectionShape::SrcRect {
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
+            } => {
+                let s_a = 2.0 * steel_width * steel_flange_thick
+                    + (steel_height - 2.0 * steel_flange_thick) * steel_web_thick;
+                b * d + (N_S_EQ - 1.0) * s_a
+            }
+            _ => self.calc_area(),
+        }
+    }
+
+    /// SRC 断面の等価断面性能を、実際のヤング係数比 ns=Es/Ec から算定する
+    /// （RESP-D 計算編 02: An=rcAn+sAn·(ns−1)、Ie=rcIe+sIe·(ns−1)、
+    /// As=rcAs+sAs·(ngs−1)、J=cJ+(sG/cG)·sJ）。
+    ///
+    /// `ec`/`nu_c`: 要素材料（コンクリート）のヤング係数・ポアソン比。
+    /// 鉄骨は Es=`E_STEEL`・νs=0.3 とする。ngs=ns·(1+νc)/(1+νs)。
+    /// SrcRect 以外、または ec≤0 では None（呼び出し側は `to_section` の
+    /// 既定値=N_S_EQ 固定へフォールバックする）。
+    pub fn src_equivalent_props(&self, ec: f64, nu_c: f64) -> Option<CompositeProps> {
+        let SectionShape::SrcRect {
+            b,
+            d,
+            steel_height: sh,
+            steel_width: sw,
+            steel_web_thick: tw,
+            steel_flange_thick: tf,
+            ..
+        } = *self
+        else {
+            return None;
+        };
+        if ec <= 0.0 {
+            return None;
+        }
+        let ns = E_STEEL / ec;
+        let ngs = ns * (1.0 + nu_c) / (1.0 + NU_STEEL);
+
+        let s_a = 2.0 * sw * tf + (sh - 2.0 * tf) * tw;
+        let hw = sh - 2.0 * tf;
+        let s_iy = (sw * sh.powi(3) - (sw - tw) * hw.powi(3)) / 12.0;
+        let s_iz = (2.0 * tf * sw.powi(3) + hw * tw.powi(3)) / 12.0;
+        let s_j = (2.0 * sw * tf.powi(3) + hw * tw.powi(3)) / 3.0;
+
+        let rc_as = b * d / KAPPA_RC;
+        Some(CompositeProps {
+            area_ax: b * d + (ns - 1.0) * s_a,
+            iy: b * d.powi(3) / 12.0 + (ns - 1.0) * s_iy,
+            iz: d * b.powi(3) / 12.0 + (ns - 1.0) * s_iz,
+            j: rect_torsion_j(b, d) + ngs * s_j,
+            as_y: rc_as + (ngs - 1.0) * 2.0 * sw * tf,
+            as_z: rc_as + (ngs - 1.0) * h_web_shear_area(sh, tw),
+        })
+    }
+
+    /// CFT 断面（CftBox/CftPipe）の等価断面性能を鋼管基準で算定する
+    /// （RESP-D 計算編 02: SRC柱「CFTもこれに準じます」の累加を鋼基準の
+    /// 1/n 換算で適用。J は S柱の J=(sG/cG)·sJ+cJ を鋼基準 J=sJ+cJ/ngs に換算）。
+    ///
+    /// `es`/`nu_s`: 要素材料（鋼管）のヤング係数・ポアソン比、
+    /// `fc`: 充填コンクリート強度（`Material.fc`）。
+    /// Ec は `concrete_young_modulus`（γ=23）・νc=0.2 とする。
+    /// CftBox/CftPipe 以外、または Ec≤0 では None（鋼管のみの既定値へ
+    /// フォールバック）。
+    pub fn cft_equivalent_props(&self, es: f64, nu_s: f64, fc: f64) -> Option<CompositeProps> {
+        let ec = concrete_young_modulus(fc);
+        if ec <= 0.0 || es <= 0.0 {
+            return None;
+        }
+        let n = es / ec;
+        let ngs = n * (1.0 + NU_CONCRETE) / (1.0 + nu_s);
+        match *self {
+            SectionShape::CftBox {
+                height: h,
+                width: w,
+                thick: t,
+            } => {
+                let (bi, hi) = (w - 2.0 * t, h - 2.0 * t);
+                if bi <= 0.0 || hi <= 0.0 {
+                    return None;
+                }
+                let c_a = bi * hi;
+                let s_as_z = 2.0 * t * hi;
+                let s_as_y = 2.0 * t * bi;
+                Some(CompositeProps {
+                    area_ax: self.calc_area() + c_a / n,
+                    iy: self.calc_iy() + bi * hi.powi(3) / 12.0 / n,
+                    iz: self.calc_iz() + hi * bi.powi(3) / 12.0 / n,
+                    j: self.calc_j() + rect_torsion_j(bi, hi) / ngs,
+                    as_y: s_as_y + c_a / KAPPA_RC / ngs,
+                    as_z: s_as_z + c_a / KAPPA_RC / ngs,
+                })
+            }
+            SectionShape::CftPipe { outer_dia, thick } => {
+                let di = outer_dia - 2.0 * thick;
+                if di <= 0.0 {
+                    return None;
+                }
+                let c_a = std::f64::consts::PI * di * di / 4.0;
+                let c_i = std::f64::consts::PI * di.powi(4) / 64.0;
+                let c_j = std::f64::consts::PI * di.powi(4) / 32.0;
+                let s_as = self.calc_area() / 2.0;
+                Some(CompositeProps {
+                    area_ax: self.calc_area() + c_a / n,
+                    iy: self.calc_iy() + c_i / n,
+                    iz: self.calc_iz() + c_i / n,
+                    j: self.calc_j() + c_j / ngs,
+                    as_y: s_as + c_a / KAPPA_RC / ngs,
+                    as_z: s_as + c_a / KAPPA_RC / ngs,
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Build a fully-populated `squid_n_core::Section` from the shape parameters.
     ///
     /// `id` and `name` must be supplied by the caller; all section properties
@@ -465,37 +636,101 @@ impl SectionShape {
         let iy = self.calc_iy();
         let iz = self.calc_iz();
         let j = self.calc_j();
+        // せん断変形用断面積 As（RESP-D 計算編 02「剛性計算」）。
+        // ペアリング規約（P1 §4.1）: as_z ↔ iy（強軸曲げ→z方向せん断）、
+        // as_y ↔ iz（弱軸曲げ→y方向せん断）。
+        // - RC/SRC: As = A/κ（κ=1.2）。SRC は鉄骨分 sAs·(ngs−1) を累加
+        //   （ngs はせん断弾性係数比。暫定的にヤング係数比 N_S_EQ で代用）。
+        // - S: As = Aw/κ（κ=1.0）。強軸側はウェブ、弱軸側はフランジを有効とする。
         let (depth, width, as_y, as_z) = match *self {
-            SectionShape::SteelH { height, width, .. } => (height, width, 0.0, 0.0),
-            SectionShape::SteelBox { height, width, .. } => (height, width, 0.0, 0.0),
-            SectionShape::SteelAngle { leg_a, leg_b, .. } => {
-                (leg_a.max(leg_b), leg_a.min(leg_b), 0.0, 0.0)
+            SectionShape::SteelH {
+                height,
+                width,
+                web_thick,
+                flange_thick,
+            } => (
+                height,
+                width,
+                2.0 * width * flange_thick,
+                h_web_shear_area(height, web_thick),
+            ),
+            SectionShape::SteelBox {
+                height,
+                width,
+                thick,
             }
-            SectionShape::SteelChannel { height, width, .. } => (height, width, 0.0, 0.0),
-            SectionShape::SteelTee { height, width, .. } => (height, width, 0.0, 0.0),
-            SectionShape::SteelPipe { outer_dia, .. } => (outer_dia, outer_dia, 0.0, 0.0),
-            SectionShape::RcRect {
-                b, d, ref rebar, ..
-            } => {
-                let as_y = bar_set_area(&rebar.main_x);
-                let as_z = bar_set_area(&rebar.main_y);
-                (d, b, as_y, as_z)
+            | SectionShape::CftBox {
+                height,
+                width,
+                thick,
+            } => (
+                height,
+                width,
+                2.0 * thick * (width - 2.0 * thick).max(0.0),
+                2.0 * thick * (height - 2.0 * thick).max(0.0),
+            ),
+            SectionShape::SteelAngle {
+                leg_a,
+                leg_b,
+                thick,
+            } => (
+                leg_a.max(leg_b),
+                leg_a.min(leg_b),
+                leg_b * thick,
+                leg_a * thick,
+            ),
+            SectionShape::SteelChannel {
+                height,
+                width,
+                web_thick,
+                flange_thick,
+            } => (
+                height,
+                width,
+                2.0 * width * flange_thick,
+                h_web_shear_area(height, web_thick),
+            ),
+            SectionShape::SteelTee {
+                height,
+                width,
+                web_thick,
+                flange_thick,
+            } => (
+                height,
+                width,
+                width * flange_thick,
+                h_web_shear_area(height, web_thick),
+            ),
+            SectionShape::SteelPipe { outer_dia, .. } | SectionShape::CftPipe { outer_dia, .. } => {
+                (outer_dia, outer_dia, area / 2.0, area / 2.0)
             }
-            SectionShape::RcCircle { d, ref rebar, .. } => {
-                let as_y = bar_set_area(&rebar.main_x);
-                let as_z = bar_set_area(&rebar.main_y);
-                (d, d, as_y, as_z)
-            }
+            SectionShape::RcRect { b, d, .. } => (d, b, b * d / KAPPA_RC, b * d / KAPPA_RC),
+            SectionShape::RcCircle { d, .. } => (d, d, area / KAPPA_RC, area / KAPPA_RC),
             SectionShape::SrcRect {
-                b, d, ref rebar, ..
+                b,
+                d,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                ..
             } => {
-                let as_y = bar_set_area(&rebar.main_x);
-                let as_z = bar_set_area(&rebar.main_y);
-                (d, b, as_y, as_z)
+                let rc_as = b * d / KAPPA_RC;
+                let s_web = h_web_shear_area(steel_height, steel_web_thick);
+                let s_flange = 2.0 * steel_width * steel_flange_thick;
+                (
+                    d,
+                    b,
+                    rc_as + (N_S_EQ - 1.0) * s_flange,
+                    rc_as + (N_S_EQ - 1.0) * s_web,
+                )
             }
-            SectionShape::CftBox { height, width, .. } => (height, width, 0.0, 0.0),
-            SectionShape::CftPipe { outer_dia, .. } => (outer_dia, outer_dia, 0.0, 0.0),
-            SectionShape::RcWall { thickness, .. } => (1000.0, thickness, 0.0, 0.0),
+            SectionShape::RcWall { thickness, .. } => (
+                1000.0,
+                thickness,
+                1000.0 * thickness / KAPPA_RC,
+                1000.0 * thickness / KAPPA_RC,
+            ),
         };
         // 板厚系の形状は Section.thickness にも板厚を反映する（検定・表示用）。
         let thickness = match *self {
@@ -522,7 +757,8 @@ impl SectionShape {
     }
 }
 
-fn bar_set_area(bs: &BarSet) -> f64 {
+/// 主筋セットの総断面積 [mm²]（本数×πr²。配筋検定・ファイバー生成用）。
+pub fn bar_set_area(bs: &BarSet) -> f64 {
     let r = bs.dia / 2.0;
     bs.count as f64 * std::f64::consts::PI * r * r
 }
@@ -765,6 +1001,227 @@ mod tests {
         let iz = shape.calc_iz();
         assert!((iy - 400.0 * 600.0_f64.powi(3) / 12.0).abs() < 1e-6);
         assert!((iz - 600.0 * 400.0_f64.powi(3) / 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rc_rect_shear_area_is_gross_over_kappa() {
+        // RESP-D 計算編 02: RC の As = B·D/κ（κ=1.2）。鉄筋断面積ではない。
+        let shape = SectionShape::RcRect {
+            b: 500.0,
+            d: 500.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 2,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 2,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+        };
+        let sec = shape.to_section(SectionId(0), "RC-500x500".into());
+        let expected = 500.0 * 500.0 / 1.2;
+        assert!((sec.as_y - expected).abs() < 1e-6);
+        assert!((sec.as_z - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_steel_h_shear_area_is_web_and_flange() {
+        // RESP-D 計算編 02: S の As = Aw/κ（κ=1.0）。強軸側(as_z)=ウェブ、弱軸側(as_y)=フランジ。
+        let shape = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 9.0,
+            flange_thick: 12.0,
+        };
+        let sec = shape.to_section(SectionId(0), "H-400x200x9x12".into());
+        assert!((sec.as_z - 400.0 * 9.0).abs() < 1e-9);
+        assert!((sec.as_y - 2.0 * 200.0 * 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rc_rect_torsion_matches_manual_formula() {
+        // J = (b³h/16)[16/3 − 3.36(b/h)(1 − (1/12)(b/h)⁴)]。細長比によらず同一式。
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: None,
+            },
+        };
+        // 正方形 500×500
+        let sq = SectionShape::RcRect {
+            b: 500.0,
+            d: 500.0,
+            rebar: rebar.clone(),
+        };
+        let b: f64 = 500.0;
+        let expected = b.powi(3) * b / 16.0 * (16.0 / 3.0 - 3.36 * (1.0 - 1.0 / 12.0));
+        assert!((sq.calc_j() - expected).abs() / expected < 1e-12);
+        // 細長断面 100×2000（旧実装は r≥10 で β=1/3 に切替え約+6.7%乖離していた）
+        let slender = SectionShape::RcRect {
+            b: 100.0,
+            d: 2000.0,
+            rebar,
+        };
+        let (bs, h) = (100.0_f64, 2000.0_f64);
+        let c = bs / h;
+        let expected2 = bs.powi(3) * h / 16.0 * (16.0 / 3.0 - 3.36 * c * (1.0 - c.powi(4) / 12.0));
+        assert!((slender.calc_j() - expected2).abs() / expected2 < 1e-12);
+    }
+
+    #[test]
+    fn test_src_axial_stiffness_area_accumulates_steel() {
+        // An = rcAn + sAn·(ns−1)。calc_area（質量用）はコンクリート全断面のまま。
+        let shape = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+            steel_grade: "SN400B".into(),
+        };
+        let s_a = 2.0 * 200.0 * 12.0 + (400.0 - 24.0) * 9.0;
+        assert!((shape.calc_area() - 360_000.0).abs() < 1e-9);
+        let expected = 360_000.0 + (N_S_EQ - 1.0) * s_a;
+        assert!((shape.calc_axial_stiffness_area() - expected).abs() < 1e-9);
+        // せん断断面積も RC 部 A/1.2 + 鉄骨等価分が累加される
+        let sec = shape.to_section(SectionId(0), "SRC-600".into());
+        let rc_as = 360_000.0 / 1.2;
+        assert!((sec.as_z - (rc_as + (N_S_EQ - 1.0) * 400.0 * 9.0)).abs() < 1e-9);
+        assert!((sec.as_y - (rc_as + (N_S_EQ - 1.0) * 2.0 * 200.0 * 12.0)).abs() < 1e-9);
+    }
+
+    fn make_src_600() -> SectionShape {
+        SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+            steel_grade: "SN400B".into(),
+        }
+    }
+
+    #[test]
+    fn test_concrete_young_modulus_formula() {
+        // Ec = 3.35e4·(γ/24)²·(Fc/60)^(1/3)、γ=23。Fc=60 で (Fc/60)^(1/3)=1。
+        let expected = 3.35e4 * (23.0_f64 / 24.0).powi(2);
+        assert!((concrete_young_modulus(60.0) - expected).abs() < 1e-9);
+        assert_eq!(concrete_young_modulus(0.0), 0.0);
+    }
+
+    #[test]
+    fn test_src_equivalent_props_uses_material_ns() {
+        // ns = Es/Ec を材料から算定（N_S_EQ=15 固定ではない）。
+        let shape = make_src_600();
+        let ec = 23000.0;
+        let p = shape.src_equivalent_props(ec, 0.2).unwrap();
+        let ns = E_STEEL / ec;
+        let s_a = 2.0 * 200.0 * 12.0 + (400.0 - 24.0) * 9.0;
+        assert!((p.area_ax - (360_000.0 + (ns - 1.0) * s_a)).abs() < 1e-6);
+        // Iy = Ic + (ns−1)·sIy
+        let s_iy = (200.0 * 400.0_f64.powi(3) - (200.0 - 9.0) * 376.0_f64.powi(3)) / 12.0;
+        let expected_iy = 600.0 * 600.0_f64.powi(3) / 12.0 + (ns - 1.0) * s_iy;
+        assert!((p.iy - expected_iy).abs() / expected_iy < 1e-12);
+        // ngs = ns·(1+νc)/(1+νs)
+        let ngs = ns * 1.2 / 1.3;
+        let rc_as = 360_000.0 / 1.2;
+        assert!((p.as_z - (rc_as + (ngs - 1.0) * 400.0 * 9.0)).abs() < 1e-6);
+        // Ec≤0 は None（既定 N_S_EQ へのフォールバック用）
+        assert!(shape.src_equivalent_props(0.0, 0.2).is_none());
+    }
+
+    #[test]
+    fn test_cft_equivalent_props_adds_concrete() {
+        // 鋼管基準の 1/n 換算で充填コンクリートを累加（A・I・J とも鋼管のみより増える）。
+        let shape = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 12.0,
+        };
+        let es = 205000.0;
+        let fc = 36.0;
+        let p = shape.cft_equivalent_props(es, 0.3, fc).unwrap();
+        let n = es / concrete_young_modulus(fc);
+        let (bi, hi) = (400.0 - 24.0, 400.0 - 24.0);
+        assert!((p.area_ax - (shape.calc_area() + bi * hi / n)).abs() < 1e-6);
+        let expected_iy = shape.calc_iy() + bi * hi.powi(3) / 12.0 / n;
+        assert!((p.iy - expected_iy).abs() / expected_iy < 1e-12);
+        assert!(p.j > shape.calc_j());
+        assert!(p.as_z > 2.0 * 12.0 * hi);
+        // 円形も同様
+        let pipe = SectionShape::CftPipe {
+            outer_dia: 400.0,
+            thick: 12.0,
+        };
+        let pp = pipe.cft_equivalent_props(es, 0.3, fc).unwrap();
+        assert!(pp.area_ax > pipe.calc_area());
+        assert!(pp.iy > pipe.calc_iy());
+        // 非CFT形状は None
+        assert!(make_src_600().cft_equivalent_props(es, 0.3, fc).is_none());
     }
 
     #[test]

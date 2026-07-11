@@ -74,6 +74,46 @@ fn is_on_rigid_diaphragm(data: &ElementData, model: &Model) -> bool {
     false
 }
 
+/// 壁要素のせん断剛性に乗じる開口低減率 r = 1 − 1.25·√(開口面積/壁面積)
+/// （RESP-D 計算編 02「剛性計算」耐震壁の開口低減。式の原典実装は
+/// `squid-n-design-jp::wall_opening::opening_reduction_r`。element は design-jp に
+/// 依存できないため、面積比による同値式をここで評価する）。
+///
+/// 壁面積は節点群の包絡寸法（最大水平距離 × 鉛直高さ）で近似する。
+/// `Model::wall_attrs` に該当が無い・開口ゼロ・寸法不定では 1.0（低減なし）。
+fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
+    let Some(attr) = model.wall_attrs.iter().find(|w| w.elem == data.id) else {
+        return 1.0;
+    };
+    if attr.opening_area <= 0.0 {
+        return 1.0;
+    }
+    let coords: Vec<[f64; 3]> = data
+        .nodes
+        .iter()
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .map(|n| n.coord)
+        .collect();
+    if coords.len() < 3 {
+        return 1.0;
+    }
+    let mut l = 0.0_f64;
+    for i in 0..coords.len() {
+        for j in (i + 1)..coords.len() {
+            let dx = coords[i][0] - coords[j][0];
+            let dy = coords[i][1] - coords[j][1];
+            l = l.max((dx * dx + dy * dy).sqrt());
+        }
+    }
+    let zs = coords.iter().map(|c| c[2]);
+    let h = zs.clone().fold(f64::MIN, f64::max) - zs.fold(f64::MAX, f64::min);
+    if l <= 0.0 || h <= 0.0 {
+        return 1.0;
+    }
+    let ratio = (attr.opening_area / (l * h)).clamp(0.0, 1.0);
+    (1.0 - 1.25 * ratio.sqrt()).max(0.0)
+}
+
 pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
         ElementKind::Beam => {
@@ -116,16 +156,25 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
             Box::new(crate::beam::BeamElement::new(data, model)),
             ElemState::default(),
         ),
-        // Wall 要素：将来 TvlemWall が実装されるまでの暫定 BeamElement
-        ElementKind::Wall => (
-            Box::new(crate::beam::BeamElement::new(data, model)),
-            ElemState::default(),
-        ),
-        // Brace 要素：軸材。剛性は当面 BeamElement スタブ（両端条件で軸材化は呼び出し側）
-        ElementKind::Brace => (
-            Box::new(crate::beam::BeamElement::new(data, model)),
-            ElemState::default(),
-        ),
+        // Wall 要素：将来 TvlemWall が実装されるまでの暫定 BeamElement。
+        // 開口が指定された壁（Model::wall_attrs）は、RESP-D 計算編 02「剛性計算」の
+        // 開口低減率 r をせん断剛性に乗じる。
+        ElementKind::Wall => {
+            let mut elem = crate::beam::BeamElement::new(data, model);
+            let r = wall_opening_reduction(data, model);
+            elem.as_y *= r;
+            elem.as_z *= r;
+            (Box::new(elem), ElemState::default())
+        }
+        // 一般ブレース：KB = factor·E·A/L（RESP-D マニュアル計算編02）。
+        // 引張専用ブレースは弾性解析で剛性を1/2にモデル化する（factor=0.5）。
+        ElementKind::Brace { tension_only } => {
+            let factor = if tension_only { 0.5 } else { 1.0 };
+            (
+                Box::new(crate::truss::TrussElement::new(data, model, factor)),
+                ElemState::default(),
+            )
+        }
     }
 }
 
@@ -168,6 +217,13 @@ pub fn build_nonlinear_behavior(
         // MS 要素: 端部バネ断面 + 中央弾性の非線形要素（P5.5 §3）
         ElementKind::Ms => (
             Box::new(crate::ms::MsElement::new(data, model)),
+            ElemState::default(),
+        ),
+        // 一般ブレース：マニュアル「弾塑性解析の場合は初期剛性は1倍とする」に従い、
+        // tension_only の値によらず factor=1.0 で生成する（引張専用の非対称剛性・
+        // 圧縮側座屈等を反映する真の非線形挙動は未実装。将来課題）。
+        ElementKind::Brace { .. } => (
+            Box::new(crate::truss::TrussElement::new(data, model, 1.0)),
             ElemState::default(),
         ),
         // PanelZone / Shell / Wall は現状の挙動（弾性ベース）を踏襲。
@@ -503,5 +559,196 @@ mod tests {
             )>()
             .is_some();
         assert!(is_fiber, "nonlinear Fiber should be FiberBeam");
+    }
+
+    /// ブレース要素の生成モデル用（2 節点・軸方向 4000mm・断面積 2000mm2）。
+    fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [4000.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+            ],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "brace".into(),
+                area: 2000.0,
+                iy: 0.0,
+                iz: 0.0,
+                j: 0.0,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+                shape: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "steel".into(),
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: Some(235.0),
+            }],
+            ..Default::default()
+        };
+        let elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Brace { tension_only },
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        (model, elem)
+    }
+
+    /// 一般ブレース（引張専用でない）: build_behavior は factor=1.0 の TrussElement
+    /// を生成し、軸剛性 K = E·A/L に一致する（RESP-D マニュアル計算編02）。
+    #[test]
+    fn test_build_behavior_brace_normal_full_stiffness() {
+        let (model, elem) = make_brace_model(false);
+        let (behavior, state) = build_behavior(&elem, &model);
+        let ctx = crate::behavior::Ctx { model: &model };
+        let k = behavior.tangent_stiffness(&state, &ctx);
+        let ea_l = 205000.0 * 2000.0 / 4000.0;
+        assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
+    }
+
+    /// 引張専用ブレース: 弾性解析（build_behavior）では剛性を1/2にモデル化する
+    /// （マニュアル「引張と圧縮が対で存在するとみなし、弾性解析では剛性を1/2」）。
+    #[test]
+    fn test_build_behavior_brace_tension_only_half_stiffness() {
+        let (model, elem) = make_brace_model(true);
+        let (behavior, state) = build_behavior(&elem, &model);
+        let ctx = crate::behavior::Ctx { model: &model };
+        let k = behavior.tangent_stiffness(&state, &ctx);
+        let ea_l = 205000.0 * 2000.0 / 4000.0;
+        assert!(
+            (k.get(0, 0) - 0.5 * ea_l).abs() < 1e-6,
+            "k00={}",
+            k.get(0, 0)
+        );
+    }
+
+    /// 引張専用ブレース: 弾塑性解析（build_nonlinear_behavior）では初期剛性を
+    /// 1倍とする（マニュアル「弾塑性解析の場合は初期剛性は1倍とする」）。
+    #[test]
+    fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
+        let (model, elem) = make_brace_model(true);
+        let (behavior, state) = build_nonlinear_behavior(&elem, &model);
+        let ctx = crate::behavior::Ctx { model: &model };
+        let k = behavior.tangent_stiffness(&state, &ctx);
+        let ea_l = 205000.0 * 2000.0 / 4000.0;
+        assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
+    }
+
+    /// 壁要素の開口低減: wall_attrs の開口面積からせん断剛性が低減されること
+    /// （RESP-D 計算編 02「剛性計算」耐震壁の開口低減 r=1−1.25·√(開口面積/壁面積)）。
+    #[test]
+    fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
+        use squid_n_core::model::WallAttr;
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let mut model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 0.0]),
+                make_node(1, [4000.0, 0.0, 0.0]),
+                make_node(2, [4000.0, 0.0, 3000.0]),
+                make_node(3, [0.0, 0.0, 3000.0]),
+            ],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "wall".into(),
+                area: 150.0 * 1000.0,
+                iy: 1.0e9,
+                iz: 1.0e9,
+                j: 1.0e9,
+                depth: 1000.0,
+                width: 150.0,
+                as_y: 125_000.0,
+                as_z: 125_000.0,
+                panel_thickness: None,
+                thickness: Some(150.0),
+                shape: None,
+            }],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "FC24".into(),
+                young: 23000.0,
+                poisson: 0.2,
+                density: 0.0,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            ..Default::default()
+        };
+        let wall = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // 開口なし
+        let (b_no, state) = build_behavior(&wall, &model);
+        let ctx = crate::behavior::Ctx { model: &model };
+        let k_no = b_no.tangent_stiffness(&state, &ctx);
+
+        // 開口 25%（壁 4000×3000=12e6 mm² に対し 3e6 mm²）→ r=1−1.25·0.5=0.375
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 3.0e6,
+            opening_weight: 0.0,
+            three_side_slit: false,
+        });
+        let (b_open, state2) = build_behavior(&wall, &model);
+        let ctx2 = crate::behavior::Ctx { model: &model };
+        let k_open = b_open.tangent_stiffness(&state2, &ctx2);
+
+        // せん断剛性の低減で並進項が小さくなる（軸剛性 EA/L は不変）
+        assert!(
+            k_open.get(2, 2) < k_no.get(2, 2) * 0.999,
+            "k_open={} k_no={}",
+            k_open.get(2, 2),
+            k_no.get(2, 2)
+        );
+        assert!((k_open.get(0, 0) - k_no.get(0, 0)).abs() < 1e-6);
     }
 }

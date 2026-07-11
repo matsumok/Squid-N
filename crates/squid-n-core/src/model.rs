@@ -19,9 +19,15 @@ pub enum ElementKind {
     Ms,
     Wall,
     PanelZone,
-    /// ブレース（軸材）。剛性は当面 Beam 相当のスタブ。
+    /// 一般ブレース（軸材。RESP-D マニュアル計算編02「剛性計算」§一般ブレースの剛性）。
+    /// 剛性は軸剛性のみのトラス要素（KB=E·A/L）で評価する。
     /// K 型ブレースの重量配分規則（`LoadCfg::k_brace_rule`）の適用対象。
-    Brace,
+    /// `tension_only`: 引張専用ブレースか（true の場合、弾性解析では剛性を1/2に
+    /// モデル化する。弾塑性解析では初期剛性は1倍。マニュアル既定の「引張と圧縮が
+    /// 対で存在するとみなす」モデル化）。
+    Brace {
+        tension_only: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -510,6 +516,10 @@ pub struct Model {
     /// 構造節点と区別するために保持し、再生成時に再利用する。
     #[serde(default)]
     pub generated_masters: Vec<NodeId>,
+    /// 剛性計算用の床スラブ厚 [mm]（建物全体で一律。RESP-D 計算編 02「剛性計算」
+    /// 注1 の設定に対応）。0 以下でスラブ協力幅による梁剛性増大を無効化（既定）。
+    #[serde(default)]
+    pub slab_thickness: f64,
     /// 自重算定の付加設定（鉄骨重量割増率・部材付加線重量）。`None` は既定値。
     #[serde(default)]
     pub load_cfg: Option<LoadCfg>,

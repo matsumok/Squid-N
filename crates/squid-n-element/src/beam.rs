@@ -25,7 +25,11 @@ pub struct BeamElement {
     pub id: ElemId,
     pub e: f64,
     pub g: f64,
+    /// 軸剛性（EA）用断面積。SRC では鉄骨の等価換算断面を累加した値になる。
     pub a: f64,
+    /// 質量算定（ρ·A·L）用の幾何断面積。SRC の等価換算で質量が過大に
+    /// ならないよう `a` と区別する（RESP-D 計算編 02 の An はあくまで剛性用）。
+    pub a_mass: f64,
     pub iy: f64,
     pub iz: f64,
     pub j: f64,
@@ -99,6 +103,89 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
     })
 }
 
+/// スラブ協力幅による強軸曲げ剛性の増大率（RESP-D 計算編 02「RC大梁」。
+/// 協力幅は RC 規準 8 条による）。
+///
+/// 対象は水平な RC 矩形梁のみ。梁の両端節点をともに境界節点に含むスラブを
+/// 「梁に取り付く床」とみなし、梁軸から左右のスラブ奥行き a を求めて
+/// ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）で協力幅を算定する。
+/// スラブ（厚さ t=`Model::slab_thickness`、建物一律・上端は梁上端と同面）を
+/// 考慮した中立軸による T 形断面の Ie を元断面 I0=b·D³/12 で除した値を返す。
+/// t≤0・非水平・取り付く床なしでは 1.0（増大なし）。
+/// 連続梁の λ・吹抜け補正・二重スラブ/片持ちスラブの区別は未対応（v1。
+/// docs/v_and_v/剛性計算_RESP-D照合.md 参照）。
+fn slab_stiffness_factor(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+    b: f64,
+    d: f64,
+) -> f64 {
+    let t = model.slab_thickness;
+    if t <= 0.0 || b <= 0.0 || d <= 0.0 || data.nodes.len() < 2 || model.slabs.is_empty() {
+        return 1.0;
+    }
+    let n0 = data.nodes[0];
+    let n1 = data.nodes[data.nodes.len() - 1];
+    let (Some(node0), Some(node1)) = (model.nodes.get(n0.index()), model.nodes.get(n1.index()))
+    else {
+        return 1.0;
+    };
+    let (p0, p1) = (node0.coord, node1.coord);
+    let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+    let lp = (dx * dx + dy * dy).sqrt();
+    // 水平材のみ対象（勾配 5% までは水平とみなす）
+    if lp < 1e-9 || dz.abs() > 0.05 * lp {
+        return 1.0;
+    }
+    let l = (lp * lp + dz * dz).sqrt();
+    let (ex, ey) = (dx / lp, dy / lp);
+
+    // 梁軸の左右それぞれのスラブ奥行き a（複数スラブは大きい方を採用）
+    let mut a_pos: f64 = 0.0;
+    let mut a_neg: f64 = 0.0;
+    for slab in &model.slabs {
+        if !(slab.boundary.contains(&n0) && slab.boundary.contains(&n1)) {
+            continue;
+        }
+        for nid in &slab.boundary {
+            let Some(q) = model.nodes.get(nid.index()) else {
+                continue;
+            };
+            // 平面内で梁軸に直交する符号付き距離
+            let s = -(q.coord[0] - p0[0]) * ey + (q.coord[1] - p0[1]) * ex;
+            a_pos = a_pos.max(s);
+            a_neg = a_neg.max(-s);
+        }
+    }
+
+    // RC 規準 8 条の片側協力幅
+    let ba = |a: f64| -> f64 {
+        if a <= 0.0 {
+            0.0
+        } else if a < 0.5 * l {
+            (0.5 - 0.6 * a / l) * a
+        } else {
+            0.1 * l
+        }
+    };
+    let bf = b + ba(a_pos) + ba(a_neg);
+    if bf <= b {
+        return 1.0;
+    }
+
+    // スラブを考慮した中立軸による T 形断面の Ie
+    let tf = t.min(d);
+    let aw = b * d;
+    let af = (bf - b) * tf;
+    let g = (aw * d / 2.0 + af * (d - tf / 2.0)) / (aw + af);
+    let i0 = b * d.powi(3) / 12.0;
+    let ie = i0
+        + aw * (g - d / 2.0).powi(2)
+        + (bf - b) * tf.powi(3) / 12.0
+        + af * (d - tf / 2.0 - g).powi(2);
+    (ie / i0).max(1.0)
+}
+
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
         let n0 = data.nodes[0];
@@ -148,14 +235,53 @@ impl BeamElement {
             squid_n_core::model::rect_shear_area(sec.area)
         };
 
+        // SRC/CFT の複合換算断面性能（RESP-D 計算編 02「剛性計算」）。
+        // 要素材料からヤング係数比を算定して剛性用の断面性能を上書きする。
+        // - SRC: 材料=コンクリート（fc あり）のとき ns=Es/Ec で累加。
+        // - CFT: 材料=鋼管の young と充填コンクリート強度 fc から 1/n 換算で累加。
+        // 算定不能（fc 無し・Ec≤0 等）なら to_section の既定値
+        // （SRC: N_S_EQ 固定、CFT: 鋼管のみ）のまま。質量用 a_mass は常に幾何断面。
+        use squid_n_core::section_shape::SectionShape;
+        let composite = sec.shape.as_ref().and_then(|shape| match shape {
+            SectionShape::SrcRect { .. } => mat
+                .fc
+                .is_some()
+                .then(|| shape.src_equivalent_props(mat.young, mat.poisson))
+                .flatten(),
+            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => mat
+                .fc
+                .and_then(|fc| shape.cft_equivalent_props(mat.young, mat.poisson, fc)),
+            _ => None,
+        });
+
+        // SRC で材料から算定できない場合も、軸剛性だけは既定 N_S_EQ の累加を維持する。
+        let a_stiff = match (&composite, &sec.shape) {
+            (Some(p), _) => p.area_ax,
+            (None, Some(shape @ SectionShape::SrcRect { .. })) => shape.calc_axial_stiffness_area(),
+            _ => sec.area,
+        };
+        let (iy, iz, j, as_y, as_z) = match &composite {
+            Some(p) => (p.iy, p.iz, p.j, p.as_y, p.as_z),
+            None => (sec.iy, sec.iz, sec.j, as_y, as_z),
+        };
+
+        // スラブ協力幅による強軸剛性増大（RESP-D 計算編 02「RC大梁」）。
+        // RC 矩形梁のみ対象。Model::slab_thickness=0（既定）では 1.0 で無効。
+        let iy = if matches!(&sec.shape, Some(SectionShape::RcRect { .. })) {
+            iy * slab_stiffness_factor(model, data, sec.width, sec.depth)
+        } else {
+            iy
+        };
+
         Self {
             id: data.id,
             e: mat.young,
             g,
-            a: sec.area,
-            iy: sec.iy,
-            iz: sec.iz,
-            j: sec.j,
+            a: a_stiff,
+            a_mass: sec.area,
+            iy,
+            iz,
+            j,
             as_y,
             as_z,
             length: len,
@@ -491,6 +617,55 @@ pub(crate) fn invert_small(a: &[f64], n: usize) -> Vec<f64> {
     inv
 }
 
+/// 部材の構造種別（RESP-D マニュアル「剛域の計算」の RC/SRC 系・S 系区分）。
+/// 剛域長の算定式（後述 `auto_rigid_zones`）を部材種別で切り替えるための分類。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemberKind {
+    /// RC・SRC 系（RC 造柱・梁・耐震壁、SRC 造柱・梁）。
+    RcSrc,
+    /// S・CFT 系（マニュアル「柱がＣＦＴの場合についても同様」よりＣＦＴはＳ扱い）。
+    Steel,
+}
+
+/// 要素の構造種別を判定する。
+///
+/// `Section.shape` があれば形状で判定する（RC/SRC 形状 → RcSrc、鋼材・CFT 形状 → Steel）。
+/// `shape` が無い（カタログ数値直入力等）場合は材料で判定する: `Material.fc`（コンクリート
+/// 設計基準強度）があれば RcSrc、`fy`（降伏応力）のみあれば Steel。どちらも無い場合は
+/// 判定材料が無いため RcSrc 扱い（剛域式を変えない＝従来挙動を維持する既定）。
+fn member_kind(model: &Model, e: &squid_n_core::model::ElementData) -> MemberKind {
+    use squid_n_core::section_shape::SectionShape;
+
+    let sec = e.section.and_then(|sid| model.sections.get(sid.index()));
+    if let Some(shape) = sec.and_then(|s| s.shape.as_ref()) {
+        return match shape {
+            SectionShape::RcRect { .. }
+            | SectionShape::RcCircle { .. }
+            | SectionShape::RcWall { .. }
+            | SectionShape::SrcRect { .. } => MemberKind::RcSrc,
+            SectionShape::SteelH { .. }
+            | SectionShape::SteelBox { .. }
+            | SectionShape::SteelAngle { .. }
+            | SectionShape::SteelChannel { .. }
+            | SectionShape::SteelTee { .. }
+            | SectionShape::SteelPipe { .. }
+            | SectionShape::CftBox { .. }
+            | SectionShape::CftPipe { .. } => MemberKind::Steel,
+        };
+    }
+
+    let mat = e.material.and_then(|mid| model.materials.get(mid.index()));
+    if let Some(mat) = mat {
+        if mat.fc.is_some() {
+            return MemberKind::RcSrc;
+        }
+        if mat.fy.is_some() {
+            return MemberKind::Steel;
+        }
+    }
+    MemberKind::RcSrc
+}
+
 pub fn auto_rigid_zones(
     model: &squid_n_core::model::Model,
     elem_id: squid_n_core::ids::ElemId,
@@ -517,11 +692,13 @@ pub fn auto_rigid_zones(
     let self_sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
     let d_self = self_sec.map(|s| s.depth).unwrap_or(0.0);
 
-    // 節点 → 接続要素のマップ
+    // 節点 → 接続要素のマップ（直交せい探索の対象は柱・梁＝Beam 要素のみ。
+    // 耐震壁・シェル等が混入すると「耐震壁周辺の柱・梁の剛域は考慮しません」
+    // というマニュアル規定に反し、壁の名目せい等が誤って直交材に紛れ込む）。
     let mut node_to_elems: std::collections::HashMap<usize, Vec<usize>> =
         std::collections::HashMap::new();
     for (ei, e) in model.elements.iter().enumerate() {
-        if e.nodes.len() >= 2 {
+        if e.nodes.len() >= 2 && matches!(e.kind, squid_n_core::model::ElementKind::Beam) {
             for n in &e.nodes {
                 node_to_elems.entry(n.index()).or_default().push(ei);
             }
@@ -545,12 +722,17 @@ pub fn auto_rigid_zones(
         }
     }
 
+    // `only_rc_src` を true にすると、RC/SRC 系の直交 Beam 要素だけを対象に最大せいを探す
+    // （剛域長 λ 用。マニュアル「仕口部に接続する柱(梁)がすべてＳの場合、剛域長さは0」
+    // ＝ S 系直交材は無視することで自然に d_max=0 となる）。false なら種別を問わず全直交
+    // Beam 要素が対象（危険断面位置 face 用。§6.2.3 は幾何量であり種別を区別しない）。
     fn max_orth_depth(
         model: &Model,
         node_idx: usize,
         target_axis: [f64; 3],
         target_elem_idx: usize,
         node_to_elems: &std::collections::HashMap<usize, Vec<usize>>,
+        only_rc_src: bool,
     ) -> f64 {
         let mut d_max = 0.0;
         if let Some(elems) = node_to_elems.get(&node_idx) {
@@ -560,6 +742,9 @@ pub fn auto_rigid_zones(
                 }
                 let e = &model.elements[ei];
                 if e.nodes.len() < 2 {
+                    continue;
+                }
+                if only_rc_src && member_kind(model, e) != MemberKind::RcSrc {
                     continue;
                 }
                 let axis = elem_axis(model, e);
@@ -587,27 +772,59 @@ pub fn auto_rigid_zones(
         .position(|e| e.id == elem_id)
         .unwrap_or(0);
 
-    let d_orth_i = max_orth_depth(
+    // face 用: 種別を問わない直交 Beam 要素の最大せい（従来どおりの幾何量）。
+    let d_orth_face_i = max_orth_depth(
         model,
         nodes[0].index(),
         target_axis,
         target_elem_idx,
         &node_to_elems,
+        false,
     );
-    let d_orth_j = max_orth_depth(
+    let d_orth_face_j = max_orth_depth(
         model,
         nodes[nodes.len() - 1].index(),
         target_axis,
         target_elem_idx,
         &node_to_elems,
+        false,
+    );
+    // λ 用: RC/SRC 系の直交 Beam 要素だけの最大せい。
+    let d_orth_rc_i = max_orth_depth(
+        model,
+        nodes[0].index(),
+        target_axis,
+        target_elem_idx,
+        &node_to_elems,
+        true,
+    );
+    let d_orth_rc_j = max_orth_depth(
+        model,
+        nodes[nodes.len() - 1].index(),
+        target_axis,
+        target_elem_idx,
+        &node_to_elems,
+        true,
     );
 
-    let lambda = |d_orth: f64| -> f64 {
-        let v = rule.reduction * (d_orth / 2.0 - d_self / 4.0);
-        if v < 0.0 {
-            0.0
-        } else {
-            v
+    // 剛域長 λ は自部材の構造種別で式を切り替える（マニュアル「剛域の計算」）。
+    // - RC/SRC 造: λ = reduction·(D_orth_rc/2 − D_self/4)（従来式。負は 0 クランプ）。
+    // - Ｓ・ＣＦＴ造: λ = D_orth_rc/2（D_self/4 の控除なし・reduction も掛けない。
+    //   RC/SRC 大梁のうち最大せいの梁フェイスまでの長さ＝仕口部を除いた長さ）。
+    //   直交する RC/SRC 系の梁（柱）が無ければ D_orth_rc=0 なので λ=0
+    //   （マニュアル「Ｓ造の剛域…剛域長さは0とします」）。
+    let self_kind = member_kind(model, elem);
+    let lambda = |d_orth_rc: f64| -> f64 {
+        match self_kind {
+            MemberKind::RcSrc => {
+                let v = rule.reduction * (d_orth_rc / 2.0 - d_self / 4.0);
+                if v < 0.0 {
+                    0.0
+                } else {
+                    v
+                }
+            }
+            MemberKind::Steel => d_orth_rc / 2.0,
         }
     };
     // フェイス距離 = D_orth/2 は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
@@ -616,13 +833,13 @@ pub fn auto_rigid_zones(
     let face = |d_orth: f64| -> f64 { d_orth / 2.0 };
 
     RigidZone {
-        length_i: lambda(d_orth_i),
-        length_j: lambda(d_orth_j),
+        length_i: lambda(d_orth_rc_i),
+        length_j: lambda(d_orth_rc_j),
         source_i: ZoneSource::Auto,
         source_j: ZoneSource::Auto,
         reduction: rule.reduction,
-        face_i: face(d_orth_i),
-        face_j: face(d_orth_j),
+        face_i: face(d_orth_face_i),
+        face_j: face(d_orth_face_j),
     }
 }
 
@@ -758,7 +975,7 @@ impl ElementBehavior for BeamElement {
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        let m = self.density * self.a * self.length;
+        let m = self.density * self.a_mass * self.length;
         let mut mm = LocalMat::zeros(12);
         match opt {
             MassOption::Lumped => {
@@ -837,6 +1054,7 @@ mod tests {
             e: 205000.0,
             g: 78846.15,
             a: 80000.0,
+            a_mass: 80000.0,
             iy: 1.0666667e9,
             iz: 1.0666667e9,
             j: 0.0,
@@ -855,6 +1073,253 @@ mod tests {
             material: None,
             committed_disp: [0.0; 12],
         }
+    }
+
+    /// SRC/CFT の複合換算が要素生成へ配線されていること（RESP-D 計算編 02）。
+    #[test]
+    fn test_beam_new_src_cft_composite_props() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{MaterialId, SectionId};
+        use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Model};
+        use squid_n_core::section_shape::{
+            BarSet, RcRebar, SectionShape, ShearBar, E_STEEL, N_S_EQ,
+        };
+
+        let src_shape = SectionShape::SrcRect {
+            b: 600.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 8,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 50.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 12.0,
+            steel_grade: "SN400B".into(),
+        };
+        let cft_shape = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 12.0,
+        };
+
+        let mut model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                },
+            ],
+            sections: vec![
+                src_shape.to_section(SectionId(0), "SRC-600".into()),
+                cft_shape.to_section(SectionId(1), "CFT-400".into()),
+            ],
+            materials: vec![
+                Material {
+                    id: MaterialId(0),
+                    name: "FC24".into(),
+                    young: 23000.0,
+                    poisson: 0.2,
+                    density: 2.4e-9,
+                    shear: None,
+                    fc: Some(24.0),
+                    fy: None,
+                },
+                Material {
+                    id: MaterialId(1),
+                    name: "BCR295(充填FC36)".into(),
+                    young: 205000.0,
+                    poisson: 0.3,
+                    density: 7.85e-9,
+                    shear: None,
+                    fc: Some(36.0),
+                    fy: Some(295.0),
+                },
+            ],
+            ..Default::default()
+        };
+        let make_elem = |sec: u32, mat: u32| ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(squid_n_core::ids::SectionId(sec)),
+            material: Some(squid_n_core::ids::MaterialId(mat)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // SRC + コンクリート材料: ns=Es/Ec による等価断面性能
+        let src_beam = BeamElement::new(&make_elem(0, 0), &model);
+        let p = src_shape.src_equivalent_props(23000.0, 0.2).unwrap();
+        assert!((src_beam.a - p.area_ax).abs() < 1e-6);
+        assert!((src_beam.iy - p.iy).abs() / p.iy < 1e-12);
+        assert!((src_beam.j - p.j).abs() / p.j < 1e-12);
+        assert!((src_beam.as_z - p.as_z).abs() < 1e-6);
+        // ns=205000/23000≈8.91 は既定 N_S_EQ=15 と異なる値になること
+        let ns = E_STEEL / 23000.0;
+        assert!((ns - N_S_EQ).abs() > 1.0);
+        // 質量用断面積は幾何断面(コンクリート全断面)のまま
+        assert!((src_beam.a_mass - 360_000.0).abs() < 1e-9);
+
+        // CFT + 鋼材料(fc=充填強度): 充填コンクリートの 1/n 換算累加
+        let cft_beam = BeamElement::new(&make_elem(1, 1), &model);
+        let pc = cft_shape.cft_equivalent_props(205000.0, 0.3, 36.0).unwrap();
+        assert!((cft_beam.a - pc.area_ax).abs() < 1e-6);
+        assert!((cft_beam.iy - pc.iy).abs() / pc.iy < 1e-12);
+        assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
+
+        // SRC + fc の無い材料: 既定 N_S_EQ の軸剛性累加へフォールバック
+        model.materials[0].fc = None;
+        let src_fallback = BeamElement::new(&make_elem(0, 0), &model);
+        assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
+        assert!((src_fallback.iy - model.sections[0].iy).abs() < 1e-6);
+    }
+
+    /// スラブ協力幅による強軸剛性増大（RESP-D 計算編 02「RC大梁」・RC規準8条）。
+    #[test]
+    fn test_beam_new_slab_cooperation_width_amplifies_iy() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{MaterialId, SectionId, SlabId};
+        use squid_n_core::model::{
+            DistributionMethod, EndCondition, ForceRegime, LocalAxis, Model, Slab,
+        };
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let shape = SectionShape::RcRect {
+            b: 300.0,
+            d: 600.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+        };
+        let mut model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 3000.0]),
+                make_node(1, [6000.0, 0.0, 3000.0]),
+                make_node(2, [6000.0, 2500.0, 3000.0]),
+                make_node(3, [0.0, 2500.0, 3000.0]),
+            ],
+            sections: vec![shape.to_section(SectionId(0), "RC-300x600".into())],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "FC24".into(),
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            slabs: vec![Slab {
+                id: SlabId(0),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                joists: vec![],
+                loads: vec![],
+                method: DistributionMethod::TriTrapezoid,
+                kind: Default::default(),
+                one_way: None,
+                edge_supported: None,
+            }],
+            slab_thickness: 150.0,
+            ..Default::default()
+        };
+        let elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // 期待値: a=2500 < l/2=3000 → ba=(0.5−0.6·2500/6000)·2500=625(片側のみ)
+        let (b, d, t, l) = (300.0_f64, 600.0_f64, 150.0_f64, 6000.0_f64);
+        let ba = (0.5 - 0.6 * 2500.0 / l) * 2500.0;
+        assert!((ba - 625.0).abs() < 1e-9);
+        let bf = b + ba;
+        let (aw, af) = (b * d, (bf - b) * t);
+        let g = (aw * d / 2.0 + af * (d - t / 2.0)) / (aw + af);
+        let i0 = b * d.powi(3) / 12.0;
+        let ie = i0
+            + aw * (g - d / 2.0).powi(2)
+            + (bf - b) * t.powi(3) / 12.0
+            + af * (d - t / 2.0 - g).powi(2);
+
+        let beam = BeamElement::new(&elem, &model);
+        assert!(
+            (beam.iy - ie).abs() / ie < 1e-12,
+            "iy={} ie={}",
+            beam.iy,
+            ie
+        );
+        assert!(beam.iy / i0 > 1.3, "増大率が小さすぎる: {}", beam.iy / i0);
+        // 弱軸は増大しない
+        assert!((beam.iz - model.sections[0].iz).abs() < 1e-9);
+
+        // 床厚 0(既定)では従来どおり
+        model.slab_thickness = 0.0;
+        let beam0 = BeamElement::new(&elem, &model);
+        assert!((beam0.iy - i0).abs() < 1e-9);
     }
 
     #[test]
@@ -1250,5 +1715,504 @@ mod tests {
         model_zero.elements[0].rigid_zone = RigidZone::default();
         let beam_zero = BeamElement::new(&model_zero.elements[0], &model_zero);
         assert_eq!(beam_zero.eval_sections, vec![0.0, 0.5, 1.0]);
+    }
+
+    /// 剛域算定用の RC 配筋（本数・径は最小限のダミー値。断面性能の絶対値は無関係）。
+    fn simple_rc_rebar() -> squid_n_core::section_shape::RcRebar {
+        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+        RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 16.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 16.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: None,
+            },
+        }
+    }
+
+    /// S造仕口（柱・梁とも鋼材形状）: 直交する RC/SRC 系の柱（梁）が存在しないため、
+    /// マニュアル「仕口部に接続する柱(梁)がすべてＳの場合、剛域長さは0」どおり λ=0 になる。
+    #[test]
+    fn test_auto_rigid_zone_steel_joint_is_zero() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::ElementKind;
+        use squid_n_core::section_shape::SectionShape;
+
+        let col_sec = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 8.0,
+            flange_thick: 13.0,
+        }
+        .to_section(SectionId(0), "col-H400".to_string());
+        let beam_sec = SectionShape::SteelH {
+            height: 500.0,
+            width: 200.0,
+            web_thick: 10.0,
+            flange_thick: 16.0,
+        }
+        .to_section(SectionId(1), "beam-H500".to_string());
+        let mat = Material {
+            id: MaterialId(0),
+            name: "steel".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        };
+
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [4000.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(1)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+            ],
+            sections: vec![col_sec, beam_sec],
+            materials: vec![mat],
+            ..Default::default()
+        };
+
+        let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+        assert_eq!(
+            zone.length_i, 0.0,
+            "S造仕口の剛域長は0のはず: length_i={}",
+            zone.length_i
+        );
+    }
+
+    /// S梁 + RC柱: マニュアル「Ｓ・ＣＦＴ柱の場合…ＲＣ・ＳＲＣ大梁のうち最大せいの梁
+    /// フェイスまでの長さ」どおり、λ = 柱せい/2（D/4控除なし・reductionも掛けない）。
+    #[test]
+    fn test_auto_rigid_zone_steel_beam_rc_column() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::ElementKind;
+        use squid_n_core::section_shape::SectionShape;
+
+        let col_sec = SectionShape::RcRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: simple_rc_rebar(),
+        }
+        .to_section(SectionId(0), "col-RC600".to_string());
+        let beam_sec = SectionShape::SteelH {
+            height: 500.0,
+            width: 200.0,
+            web_thick: 10.0,
+            flange_thick: 16.0,
+        }
+        .to_section(SectionId(1), "beam-H500".to_string());
+        let rc_mat = Material {
+            id: MaterialId(0),
+            name: "concrete".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 0.0,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let s_mat = Material {
+            id: MaterialId(1),
+            name: "steel".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        };
+
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [4000.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(1)),
+                    material: Some(MaterialId(1)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+            ],
+            sections: vec![col_sec, beam_sec],
+            materials: vec![rc_mat, s_mat],
+            ..Default::default()
+        };
+
+        let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+        assert!(
+            (zone.length_i - 300.0).abs() < 1e-9,
+            "S梁+RC柱: λ_i={} (期待値=柱せい/2=300)",
+            zone.length_i
+        );
+    }
+
+    /// RC梁 + S柱のみ: 直交する RC/SRC 系の柱が無いため D_orth_rc=0 となり、
+    /// 従来式 λ=reduction·(0/2−梁せい/4) は負となって 0 にクランプされる。
+    #[test]
+    fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::ElementKind;
+        use squid_n_core::section_shape::SectionShape;
+
+        let col_sec = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 8.0,
+            flange_thick: 13.0,
+        }
+        .to_section(SectionId(0), "col-H400".to_string());
+        let beam_sec = SectionShape::RcRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: simple_rc_rebar(),
+        }
+        .to_section(SectionId(1), "beam-RC600".to_string());
+        let s_mat = Material {
+            id: MaterialId(0),
+            name: "steel".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        };
+        let rc_mat = Material {
+            id: MaterialId(1),
+            name: "concrete".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 0.0,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [4000.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(1)),
+                    material: Some(MaterialId(1)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+            ],
+            sections: vec![col_sec, beam_sec],
+            materials: vec![s_mat, rc_mat],
+            ..Default::default()
+        };
+
+        let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+        assert_eq!(
+            zone.length_i, 0.0,
+            "RC梁+S柱のみ: 剛域長は0のはず（RC/SRC直交材が無い）。length_i={}",
+            zone.length_i
+        );
+    }
+
+    /// 耐震壁要素（ElementKind::Wall）が節点に接続していても、直交せい探索の対象は
+    /// Beam 要素のみなので結果に影響しない（マニュアル「耐震壁周辺の柱・梁の剛域は
+    /// 考慮しません」）。壁を追加しても標準ケース（柱600・梁700 → λ=125）と同じ結果。
+    #[test]
+    fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        let col_sec = Section {
+            id: SectionId(0),
+            name: "col".to_string(),
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth: 600.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let beam_sec = Section {
+            id: SectionId(1),
+            name: "beam".to_string(),
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth: 700.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        // 壁のせい（名目値）を柱・梁より大きくし、混入すれば結果が変わることを検証可能にする。
+        let wall_sec = Section {
+            id: SectionId(2),
+            name: "wall".to_string(),
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth: 1000.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "steel".to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: None,
+        };
+
+        let model = Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [4000.0, 0.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+                Node {
+                    id: NodeId(3),
+                    coord: [0.0, 4000.0, 3000.0],
+                    restraint: Default::default(),
+                    mass: None,
+                    story: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(1)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+                // 節点1に接続する壁要素（節点1-3）。梁と直交するがWall kindなので無視される。
+                ElementData {
+                    id: ElemId(2),
+                    kind: ElementKind::Wall,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(3)],
+                    section: Some(SectionId(2)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: squid_n_core::model::ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                },
+            ],
+            sections: vec![col_sec, beam_sec, wall_sec],
+            materials: vec![mat],
+            ..Default::default()
+        };
+
+        let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+        assert!(
+            (zone.length_i - 125.0).abs() < 1e-9,
+            "壁のせいが紛れ込んでいないはず: λ_i={}",
+            zone.length_i
+        );
+        assert!(
+            (zone.face_i - 300.0).abs() < 1e-9,
+            "壁のせいが紛れ込んでいないはず: face_i={}",
+            zone.face_i
+        );
     }
 }

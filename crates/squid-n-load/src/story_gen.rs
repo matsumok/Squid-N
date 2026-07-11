@@ -302,7 +302,7 @@ pub fn generate_stories_multi(
     // 基準節点＝ Brace 以外の要素が 1 つでも接続する節点。それ以外は「内部節点」。
     let mut is_base_node = vec![false; model.nodes.len()];
     for e in &model.elements {
-        if e.kind != ElementKind::Brace {
+        if !matches!(e.kind, ElementKind::Brace { .. }) {
             for n in &e.nodes {
                 if let Some(slot) = is_base_node.get_mut(n.index()) {
                     *slot = true;
@@ -337,7 +337,9 @@ pub fn generate_stories_multi(
         // 両端節点へ 1/2 ずつ（鉛直配置は上下階へ、水平配置は同一階の両節点へ、が
         // 節点標高から自然に成立する）。`device_weight=0` かつ `support_area>0` の
         // 場合は支持部のみが算入される（マニュアル「自重を考慮しない部材」に対応）。
-        if matches!(elem.kind, ElementKind::Beam | ElementKind::Brace) && elem.nodes.len() >= 2 {
+        if matches!(elem.kind, ElementKind::Beam | ElementKind::Brace { .. })
+            && elem.nodes.len() >= 2
+        {
             if let Some(damper) = load_cfg.dampers.iter().find(|d| d.elem == elem.id) {
                 let ni = elem.nodes[0].index();
                 let nj = elem.nodes[1].index();
@@ -362,7 +364,7 @@ pub fn generate_stories_multi(
         };
 
         match elem.kind {
-            ElementKind::Beam | ElementKind::Brace if elem.nodes.len() >= 2 => {
+            ElementKind::Beam | ElementKind::Brace { .. } if elem.nodes.len() >= 2 => {
                 let ni = elem.nodes[0].index();
                 let nj = elem.nodes[1].index();
                 let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
@@ -383,7 +385,7 @@ pub fn generate_stories_multi(
                     let bottom_z = model.nodes[bottom_id.index()].coord[2];
                     let has_column_below = model.elements.iter().any(|e2| {
                         e2.id != elem.id
-                            && matches!(e2.kind, ElementKind::Beam | ElementKind::Brace)
+                            && matches!(e2.kind, ElementKind::Beam | ElementKind::Brace { .. })
                             && e2.nodes.len() >= 2
                             && e2.nodes.contains(&bottom_id)
                             && {
@@ -448,7 +450,7 @@ pub fn generate_stories_multi(
                     w += wf * phi * eff_len;
                 }
 
-                if elem.kind == ElementKind::Brace
+                if matches!(elem.kind, ElementKind::Brace { .. })
                     && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
                 {
                     // §K型ブレース: 基準節点のみへ配分。両端とも基準節点は 1/2 ずつ、
@@ -2059,7 +2061,9 @@ mod tests {
         });
         model.elements.push(ElementData {
             id: ElemId(2),
-            kind: ElementKind::Brace,
+            kind: ElementKind::Brace {
+                tension_only: false,
+            },
             nodes: [NodeId(2), NodeId(4)].into_iter().collect(),
             section: Some(SectionId(1)),
             material: Some(MaterialId(0)),
@@ -2071,7 +2075,9 @@ mod tests {
         });
         model.elements.push(ElementData {
             id: ElemId(3),
-            kind: ElementKind::Brace,
+            kind: ElementKind::Brace {
+                tension_only: false,
+            },
             nodes: [NodeId(3), NodeId(4)].into_iter().collect(),
             section: Some(SectionId(2)),
             material: Some(MaterialId(0)),
