@@ -454,12 +454,39 @@ impl LoadCfg {
     }
 }
 
-/// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性
-/// （RESP-D マニュアル「壁自重」の開口・三方スリット）。
+/// 壁の個別開口（RESP-D マニュアル計算編 02「剛性計算」複数開口の取り扱い）。
+///
+/// 寸法は壁面内で定義する: `width`=壁長さ方向の開口長さ l0 [mm]、
+/// `height`=壁高さ方向の開口高さ h0 [mm]。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WallOpening {
+    /// 開口長さ l0 [mm]（壁長さ方向）。
+    pub width: f64,
+    /// 開口高さ h0 [mm]（壁高さ方向）。
+    pub height: f64,
+    /// 開口左下の位置 [mm]（壁面内: [壁始端からの水平距離, 壁下端からの高さ]）。
+    /// 包絡開口の作成・開口の位置効果評価（将来対応）用。None は位置不定
+    /// （等価開口による面積評価のみに用いられる）。
+    #[serde(default)]
+    pub offset: Option<[f64; 2]>,
+}
+
+impl WallOpening {
+    /// 開口面積 [mm²]。
+    pub fn area(&self) -> f64 {
+        (self.width * self.height).max(0.0)
+    }
+}
+
+/// 壁要素（`ElementKind::Wall`/`Shell`）の壁属性
+/// （RESP-D マニュアル「壁自重」の開口・三方スリット、および
+/// 計算編 02「剛性計算」の開口低減・耐震壁判定に用いる個別開口寸法）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WallAttr {
     pub elem: ElemId,
     /// 開口面積の合計 [mm²]。壁自重から ρ·t·開口面積·g を控除する。
+    /// `openings`（個別開口）が非空の場合はそちらの面積和を優先し、
+    /// 本フィールドは無視される（`total_opening_area` 参照）。
     #[serde(default)]
     pub opening_area: f64,
     /// 開口部（サッシ等）の重量 [N]。控除後に加算する。
@@ -470,6 +497,42 @@ pub struct WallAttr {
     /// いる場合、壁荷重は全て上部の大梁に伝達され」の節点重量版）。
     #[serde(default)]
     pub three_side_slit: bool,
+    /// 個別開口の寸法リスト。非空の場合、開口の面積評価（自重控除・
+    /// 開口周比 r0・開口低減率 r）と耐震壁検定の開口供給はこのリストを
+    /// 優先する。空の場合は従来どおり `opening_area`（合計面積のみ）で評価する。
+    #[serde(default)]
+    pub openings: Vec<WallOpening>,
+}
+
+impl WallAttr {
+    /// 開口の合計面積 [mm²]。個別開口 `openings` が非空ならその面積和、
+    /// 空なら `opening_area` を返す（全消費側はこのメソッドを経由すること）。
+    pub fn total_opening_area(&self) -> f64 {
+        if self.openings.is_empty() {
+            self.opening_area.max(0.0)
+        } else {
+            self.openings.iter().map(WallOpening::area).sum()
+        }
+    }
+
+    /// 個別開口の (l0, h0) ペア列。個別開口が未入力（面積のみ）なら None。
+    /// 面積ゼロの開口は除外する。
+    pub fn opening_dims(&self) -> Option<Vec<(f64, f64)>> {
+        if self.openings.is_empty() {
+            return None;
+        }
+        let dims: Vec<(f64, f64)> = self
+            .openings
+            .iter()
+            .filter(|o| o.area() > 0.0)
+            .map(|o| (o.width, o.height))
+            .collect();
+        if dims.is_empty() {
+            None
+        } else {
+            Some(dims)
+        }
+    }
 }
 
 /// フレーム外雑壁の荷重伝達タイプ（RESP-D マニュアル「フレーム外雑壁」）。
@@ -836,6 +899,58 @@ mod tests {
         let area = 80000.0;
         let as_ = rect_shear_area(area);
         assert!((as_ - area * 5.0 / 6.0).abs() < 1e-9);
+    }
+
+    /// 個別開口が非空なら面積和を優先し、空なら opening_area にフォールバックする。
+    #[test]
+    fn test_wall_attr_total_opening_area_prefers_openings() {
+        let mut attr = WallAttr {
+            elem: ElemId(0),
+            opening_area: 999.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![
+                WallOpening {
+                    width: 1000.0,
+                    height: 2000.0,
+                    offset: None,
+                },
+                WallOpening {
+                    width: 500.0,
+                    height: 800.0,
+                    offset: Some([3000.0, 500.0]),
+                },
+            ],
+        };
+        assert!((attr.total_opening_area() - (2.0e6 + 4.0e5)).abs() < 1e-9);
+        assert_eq!(
+            attr.opening_dims(),
+            Some(vec![(1000.0, 2000.0), (500.0, 800.0)])
+        );
+
+        attr.openings.clear();
+        assert!((attr.total_opening_area() - 999.0).abs() < 1e-9);
+        assert_eq!(attr.opening_dims(), None);
+
+        // 面積ゼロの開口だけなら寸法列は None(面積のみ扱い)
+        attr.openings.push(WallOpening {
+            width: 0.0,
+            height: 1000.0,
+            offset: None,
+        });
+        assert_eq!(attr.opening_dims(), None);
+        assert_eq!(attr.total_opening_area(), 0.0);
+    }
+
+    /// 旧スキーマ(openings 無し)の WallAttr が読み込めること(serde 後方互換)。
+    #[test]
+    fn test_wall_attr_serde_backward_compat() {
+        let json = r#"{"elem":3,"opening_area":1200.0,"three_side_slit":true}"#;
+        let attr: WallAttr = serde_json::from_str(json).unwrap();
+        assert_eq!(attr.elem, ElemId(3));
+        assert!(attr.openings.is_empty());
+        assert!((attr.total_opening_area() - 1200.0).abs() < 1e-9);
+        assert!(attr.three_side_slit);
     }
 
     #[test]

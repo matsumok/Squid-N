@@ -14,12 +14,25 @@
 //! - S 造パネルの梁段違い形式（せい差 150mm 以上）は判別せず標準形式で計算する。
 //! - 耐震壁は `SectionShape::RcWall` を割り当てた Wall 要素のみ検定する。
 //!   設計用せん断力は等価梁化された壁要素の内力の最大水平せん断成分を用いる
-//!   （暫定）。`Model::wall_attrs` に開口面積合計・三方スリットの有無が
-//!   登録されている場合は以下のとおり配線する。
-//!   - 個別開口の寸法データは無く合計面積のみのため、[`crate::wall_opening::equivalent_opening`]
-//!     で壁と同じ辺長比を持つ単一の等価開口 `(l0′,h0′)` に復元し、
-//!     [`crate::joint::rc_wall_shear_check`] の `RcWallInput.opening` へ
-//!     供給する（RC規準18条のせん断耐力検定用の低減係数 `r=min(γ1,γ2,γ3)`）。
+//!   （暫定）。`Model::wall_attrs` に開口面積合計・個別開口寸法・三方スリット
+//!   の有無が登録されている場合は以下のとおり配線する。
+//!   - `WallAttr::opening_dims()` が `Some` かつ要素数 1（単一開口）の場合は
+//!     開口の実寸法 `(l0,h0)` をそのまま用いる（等価開口への置換はしない）。
+//!     単一開口は実寸法そのものが RC規準18条の `γ1=1−l0/l`・`γ3=1−h0/h` に
+//!     直接効くため、面積が同じでも辺長比が壁と異なれば等価開口に置換した
+//!     場合と検定比が変わる。
+//!   - `opening_dims()` が `Some` かつ複数開口の場合は
+//!     [`crate::wall_opening::equivalent_opening`] で面積総和を保つ単一の
+//!     等価開口 `(l0′,h0′)` に統合する（RESP-D マニュアル計算編02
+//!     「複数開口の取り扱い」）。
+//!   - `opening_dims()` が `None`（個別寸法未入力・合計面積のみ）の場合は
+//!     従来どおり壁と同じ辺長比を持つ擬似ペアから
+//!     [`crate::wall_opening::equivalent_opening`] で等価開口を復元する
+//!     （後方互換）。
+//!   - いずれの経路で得た `(l0′,h0′)` も壁寸法 `(l,h)` を超える場合は
+//!     安全側にクランプしたうえで、[`crate::joint::rc_wall_shear_check`] の
+//!     `RcWallInput.opening` へ供給する（RC規準18条のせん断耐力検定用の
+//!     低減係数 `r=min(γ1,γ2,γ3)`）。
 //!   - 一方、耐震壁として扱ってよいか（スリットの有無・壁厚・開口周比 r0）は
 //!     [`crate::wall_opening::is_seismic_wall`]（RESP-D マニュアル 02 剛性計算）
 //!     で判定し、`false` の壁は本検定自体をスキップする（耐震壁ではない
@@ -212,20 +225,39 @@ pub fn collect_joint_checks(
         let h = coords.iter().map(|c| c[2]).fold(f64::MIN, f64::max)
             - coords.iter().map(|c| c[2]).fold(f64::MAX, f64::min);
 
-        // 壁自重属性（開口面積合計・三方スリット）。未登録の壁は開口ゼロ・
-        // スリット無し（無開口の耐震壁）として扱う。
+        // 壁自重属性（開口面積合計・個別開口寸法・三方スリット）。未登録の壁は
+        // 開口ゼロ・スリット無し（無開口の耐震壁）として扱う。
         let attr = model.wall_attrs.iter().find(|w| w.elem == elem.id);
-        let opening_area = attr.map(|a| a.opening_area).unwrap_or(0.0);
         let has_slit = attr.map(|a| a.three_side_slit).unwrap_or(false);
 
-        // 複数開口の寸法データが無く合計面積のみのため、壁と同じ辺長比を持つ
-        // 単一の等価開口 (l0',h0') に復元する（Σli・hi = opening_area を保存）。
-        // h・l ≤ 0（寸法不定）の場合は復元せず開口ゼロ扱いとする。
-        let (l0p, h0p) = if opening_area > 0.0 && h > 1e-9 && l > 1e-9 {
-            equivalent_opening(&[(opening_area / h, h)], l, h)
+        // 開口寸法 (l0',h0') の評価。h・l ≤ 0（寸法不定）の場合は開口ゼロ扱い
+        // とする。
+        let (mut l0p, mut h0p) = if h > 1e-9 && l > 1e-9 {
+            match attr.and_then(|a| a.opening_dims()) {
+                // 単一開口: 実寸法をそのまま使う（γ1=1-l0/l・γ3=1-h0/h へ実寸法
+                // が直接効くため、等価開口への置換はしない）。
+                Some(dims) if dims.len() == 1 => dims[0],
+                // 複数開口: 面積総和を保つ単一の等価開口に統合する
+                // （RESP-D マニュアル計算編02「複数開口の取り扱い」）。
+                Some(dims) => equivalent_opening(&dims, l, h),
+                // 個別寸法が未入力（合計面積のみ）の場合は従来どおり、壁と
+                // 同じ辺長比を持つ擬似ペアから等価開口を復元する（後方互換）。
+                None => {
+                    let area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
+                    if area > 0.0 {
+                        equivalent_opening(&[(area / h, h)], l, h)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                }
+            }
         } else {
             (0.0, 0.0)
         };
+        // 開口寸法が壁寸法を超える場合のガード（実寸法入力の誤り等に対する
+        // 安全側処理）。
+        l0p = l0p.clamp(0.0, l);
+        h0p = h0p.clamp(0.0, h);
 
         // 耐震壁判定（RESP-D マニュアル 02 剛性計算）。スリットあり・壁厚
         // <120mm・開口周比 r0>0.4 のいずれかに該当する壁は耐震壁として
@@ -286,9 +318,10 @@ pub fn collect_joint_checks(
             ps,
             w_ft: crate::rc::rebar_allowable_shear(&mat.name, term == LoadTerm::Long),
             side_columns,
-            // 等価開口 (l0',h0') を 18条のγ式（r=min(γ1,γ2,γ3)）へ供給する
-            // （冒頭 doc 参照。02章の r0/r とは別式のため流用しない）。
-            opening: if opening_area > 0.0 && h > 1e-9 && l > 1e-9 {
+            // 開口寸法 (l0',h0')（単一開口は実寸法・複数開口は等価開口・
+            // 面積のみは擬似等価開口）を 18条のγ式（r=min(γ1,γ2,γ3)）へ
+            // 供給する（冒頭 doc 参照。02章の r0/r とは別式のため流用しない）。
+            opening: if l0p > 1e-9 && h0p > 1e-9 {
                 Some((l0p, h0p, h, l))
             } else {
                 None
@@ -561,7 +594,7 @@ mod tests {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, EndCondition, ForceRegime, LocalAxis, Material, Node, RigidZone, Section,
-        WallAttr,
+        WallAttr, WallOpening,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -672,6 +705,7 @@ mod tests {
             opening_area: 0.1 * 4000.0 * 3000.0,
             opening_weight: 0.0,
             three_side_slit: false,
+            openings: vec![],
         }));
         let res_opening = wall_check_result(&model_with_opening, &forces)
             .expect("小開口は耐震壁のまま検定される");
@@ -694,6 +728,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             three_side_slit: true,
+            openings: vec![],
         }));
         assert!(wall_check_result(&model, &forces).is_none());
     }
@@ -708,6 +743,7 @@ mod tests {
             opening_area: 0.5 * 4000.0 * 3000.0,
             opening_weight: 0.0,
             three_side_slit: false,
+            openings: vec![],
         }));
         assert!(wall_check_result(&model, &forces).is_none());
     }
@@ -720,5 +756,127 @@ mod tests {
         let model = wall_model(None);
         let res = wall_check_result(&model, &forces).expect("属性なしの壁も検定されるはず");
         assert!(res.ratio > 0.0);
+    }
+
+    /// 単一の個別開口（縦長: l0=750, h0=2000）と、同面積を合計面積のみで
+    /// 与えた場合（壁と同じ辺長比の擬似等価開口に復元される）とで、
+    /// γ支配項が変わるため検定比が一致しないこと。
+    ///
+    /// 面積は共通（750×2000=1,500,000）のため開口周比 r0（耐震壁判定用）は
+    /// 両者で等しいが、実寸法は壁（l=4000,h=3000）と辺長比が異なる縦長形状
+    /// のため γ3=1−h0/h が支配的になり、擬似等価開口（壁と同じ辺長比）を
+    /// 使った場合の γ1=γ2=γ3 とは異なる低減係数 r になる。
+    #[test]
+    fn wall_single_opening_dims_differs_from_area_only_ratio() {
+        let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+
+        let model_single_dims = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![WallOpening {
+                width: 750.0,
+                height: 2000.0,
+                offset: None,
+            }],
+        }));
+        let res_single_dims = wall_check_result(&model_single_dims, &forces)
+            .expect("r0<0.4 の単一開口は耐震壁として検定されるはず");
+
+        let model_area_only = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 750.0 * 2000.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![],
+        }));
+        let res_area_only = wall_check_result(&model_area_only, &forces)
+            .expect("同面積を面積のみで与えた壁も耐震壁として検定されるはず");
+
+        assert!(
+            (res_single_dims.ratio - res_area_only.ratio).abs() > 1e-6,
+            "個別寸法 ratio={} と面積のみ ratio={} が一致してしまっている",
+            res_single_dims.ratio,
+            res_area_only.ratio
+        );
+    }
+
+    /// 複数開口（2個）は [`equivalent_opening`] による等価開口に統合され、
+    /// その等価開口を直接 `RcWallInput` へ供給した場合と同じ検定比になる。
+    #[test]
+    fn wall_multiple_openings_matches_equivalent_opening() {
+        let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+        let dims = [(600.0, 800.0), (500.0, 700.0)];
+
+        let model = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: dims
+                .iter()
+                .map(|&(w, h)| WallOpening {
+                    width: w,
+                    height: h,
+                    offset: None,
+                })
+                .collect(),
+        }));
+        let res =
+            wall_check_result(&model, &forces).expect("2個の開口は耐震壁として検定されるはず");
+
+        // 期待値: equivalent_opening を直接呼んで壁と同じ辺長比の等価開口を
+        // 構築し、同一の RcWallInput（側柱なし・l_clear=l）で検定した結果。
+        let (l, h) = (4000.0_f64, 3000.0_f64);
+        let (l0p, h0p) = equivalent_opening(&dims, l, h);
+        let inp = RcWallInput {
+            t: 180.0,
+            l,
+            l_clear: l,
+            fc: 24.0,
+            ps: 0.006,
+            w_ft: crate::rc::rebar_allowable_shear("SD345", false),
+            side_columns: vec![],
+            opening: Some((l0p, h0p, h, l)),
+            q_design: 500_000.0,
+            long_term: false,
+        };
+        let expected = rc_wall_shear_check(&inp);
+
+        assert!(
+            (res.ratio - expected.ratio).abs() < 1e-9,
+            "複数開口 ratio={} と等価開口直接計算 ratio={} が不一致",
+            res.ratio,
+            expected.ratio
+        );
+    }
+
+    /// 個別開口の面積和で開口周比 r0>0.4 となる壁は耐震壁として扱われず、
+    /// 検定自体が出力されない。
+    #[test]
+    fn wall_multiple_openings_large_ratio_is_not_checked() {
+        let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+        // 開口2個の面積和 = 2,000,000 + 3,000,000 = 5,000,000
+        // → r0 = sqrt(5,000,000 / (4000*3000)) = sqrt(0.41667) ≈ 0.645 > 0.4。
+        let model = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![
+                WallOpening {
+                    width: 2000.0,
+                    height: 1000.0,
+                    offset: None,
+                },
+                WallOpening {
+                    width: 2000.0,
+                    height: 1500.0,
+                    offset: None,
+                },
+            ],
+        }));
+        assert!(wall_check_result(&model, &forces).is_none());
     }
 }

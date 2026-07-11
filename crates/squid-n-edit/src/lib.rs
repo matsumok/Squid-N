@@ -3233,6 +3233,7 @@ mod tests {
             opening_area: 100.0,
             opening_weight: 50.0,
             three_side_slit: false,
+            openings: vec![],
         };
         stack.run(
             &mut model,
@@ -3248,6 +3249,7 @@ mod tests {
             opening_area: 200.0,
             opening_weight: 80.0,
             three_side_slit: true,
+            openings: vec![],
         };
         stack.run(
             &mut model,

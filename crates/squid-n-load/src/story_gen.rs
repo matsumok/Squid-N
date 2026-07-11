@@ -482,7 +482,7 @@ pub fn generate_stories_multi(
 
                 // §壁自重: 開口控除・開口重量。三方スリットは全量を最上位標高の頂点へ。
                 let attr = model.wall_attrs.iter().find(|a| a.elem == elem.id);
-                let opening_area = attr.map(|a| a.opening_area).unwrap_or(0.0);
+                let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
                 let three_side_slit = attr.map(|a| a.three_side_slit).unwrap_or(false);
                 let net_area = (area - opening_area).max(0.0);
@@ -1366,6 +1366,7 @@ mod tests {
             opening_area: 1_000_000.0,
             opening_weight: 5000.0,
             three_side_slit: false,
+            openings: vec![],
         });
         let gen = generate_stories(&model, None).unwrap();
         let area = 4000.0 * 3000.0;
@@ -1388,6 +1389,7 @@ mod tests {
             opening_area: 4000.0 * 3000.0 * 2.0, // 壁面積を超える
             opening_weight: 0.0,
             three_side_slit: false,
+            openings: vec![],
         });
         let gen = generate_stories(&model, None).unwrap();
         assert_eq!(gen.stories[0].seismic_weight, Some(0.0));
@@ -1405,6 +1407,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             three_side_slit: true,
+            openings: vec![],
         });
         let gen = generate_stories(&model, None).unwrap();
         let area = 4000.0 * 3000.0;

@@ -85,7 +85,8 @@ fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     let Some(attr) = model.wall_attrs.iter().find(|w| w.elem == data.id) else {
         return 1.0;
     };
-    if attr.opening_area <= 0.0 {
+    let opening_area = attr.total_opening_area();
+    if opening_area <= 0.0 {
         return 1.0;
     }
     let coords: Vec<[f64; 3]> = data
@@ -110,7 +111,7 @@ fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     if l <= 0.0 || h <= 0.0 {
         return 1.0;
     }
-    let ratio = (attr.opening_area / (l * h)).clamp(0.0, 1.0);
+    let ratio = (opening_area / (l * h)).clamp(0.0, 1.0);
     (1.0 - 1.25 * ratio.sqrt()).max(0.0)
 }
 
@@ -737,10 +738,41 @@ mod tests {
             opening_area: 3.0e6,
             opening_weight: 0.0,
             three_side_slit: false,
+            openings: vec![],
         });
         let (b_open, state2) = build_behavior(&wall, &model);
         let ctx2 = crate::behavior::Ctx { model: &model };
         let k_open = b_open.tangent_stiffness(&state2, &ctx2);
+
+        // 個別開口(合計 3e6 mm²)は面積のみ指定と同じ低減率になる。
+        // また opening_area(古い値)より個別開口が優先される。
+        model.wall_attrs[0] = WallAttr {
+            elem: ElemId(0),
+            opening_area: 1.0, // 無視される(個別開口が優先)
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![
+                squid_n_core::model::WallOpening {
+                    width: 1000.0,
+                    height: 2000.0,
+                    offset: None,
+                },
+                squid_n_core::model::WallOpening {
+                    width: 500.0,
+                    height: 2000.0,
+                    offset: Some([2500.0, 500.0]),
+                },
+            ],
+        };
+        let (b_dims, state3) = build_behavior(&wall, &model);
+        let ctx3 = crate::behavior::Ctx { model: &model };
+        let k_dims = b_dims.tangent_stiffness(&state3, &ctx3);
+        assert!(
+            (k_dims.get(2, 2) - k_open.get(2, 2)).abs() < 1e-6,
+            "個別開口(Σ3e6)と面積のみ(3e6)の低減が一致しない: {} vs {}",
+            k_dims.get(2, 2),
+            k_open.get(2, 2)
+        );
 
         // せん断剛性の低減で並進項が小さくなる（軸剛性 EA/L は不変）
         assert!(
