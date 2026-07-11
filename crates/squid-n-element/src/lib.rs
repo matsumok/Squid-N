@@ -10,6 +10,7 @@ pub mod ms;
 pub mod panel;
 pub mod shear_spring;
 pub mod shell;
+pub mod spring;
 pub mod transform;
 pub mod truss;
 

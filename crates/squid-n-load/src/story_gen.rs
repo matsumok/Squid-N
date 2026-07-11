@@ -772,6 +772,7 @@ mod tests {
                 force_regime: ForceRegime::Auto,
                 rigid_zone: Default::default(),
                 plastic_zone: None,
+                spring: None,
             });
         }
         model.load_cases.push(LoadCase {
@@ -1026,6 +1027,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone,
             plastic_zone: None,
+            spring: None,
         });
         model.load_cfg = load_cfg;
         model
@@ -1118,6 +1120,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.load_cases.push(LoadCase {
             kind: Default::default(),
@@ -1308,6 +1311,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         });
         model
     }
@@ -1444,6 +1448,7 @@ mod tests {
             height: 200.0,
             weight_per_area: 1.0e-3,
             transfer: MiscWallTransfer::Beam,
+            thickness: None,
         });
         let gen = generate_stories(&model, None).unwrap();
         // 領域中心の z は 2900+200/2=3000 で node1 に一致し、x も node1(x=0)に
@@ -1511,6 +1516,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.misc_walls.push(MiscWall {
             start: [-100.0, 0.0, 2900.0],
@@ -1518,6 +1524,7 @@ mod tests {
             height: 200.0,
             weight_per_area: 1.0e-3,
             transfer: MiscWallTransfer::Column,
+            thickness: None,
         });
         let gen = generate_stories(&model, None).unwrap();
         let total = 1.0e-3 * 200.0 * 200.0;
@@ -1678,6 +1685,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         let wf = 0.0015;
         model.load_cfg = Some(LoadCfg {
@@ -1777,6 +1785,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.elements.push(ElementData {
             id: ElemId(1),
@@ -1791,6 +1800,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         let gen = generate_stories(&model, None).unwrap();
         let eff_len = 3000.0 + 600.0; // 柱長さ + 柱脚に取付く梁の最大せい
@@ -1903,6 +1913,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         // 検証対象の柱(node1-node2)。
         model.elements.push(ElementData {
@@ -1918,6 +1929,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         // 1F(node1)に取付く梁(area=0、せい付加の誤検出があれば効いてしまう)。
         model.elements.push(ElementData {
@@ -1933,6 +1945,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         let gen = generate_stories(&model, None).unwrap();
         // story0(1F, node1・node3) には下階柱(area0)/2 + 検証対象柱の下半分 + 梁(area0)/2。
@@ -2046,6 +2059,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.elements.push(ElementData {
             id: ElemId(1),
@@ -2058,6 +2072,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.elements.push(ElementData {
             id: ElemId(2),
@@ -2072,6 +2087,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.elements.push(ElementData {
             id: ElemId(3),
@@ -2086,6 +2102,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: RigidZone::default(),
             plastic_zone: None,
+            spring: None,
         });
         model.load_cfg = Some(LoadCfg {
             k_brace_rule: rule,

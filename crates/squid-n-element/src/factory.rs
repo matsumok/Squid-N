@@ -175,6 +175,12 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
                 ElemState::default(),
             )
         }
+        // 節点バネ：RESP-D マニュアル計算編03「応力解析」§部材の変形と自由度。
+        // 局所軸ごとに独立な弾性バネ（軸・せん断・曲げ回転。ねじりは既定 0）。
+        ElementKind::NodalSpring => (
+            Box::new(crate::spring::NodalSpringElement::new(data, model)),
+            ElemState::default(),
+        ),
     }
 }
 
@@ -226,7 +232,8 @@ pub fn build_nonlinear_behavior(
             Box::new(crate::truss::TrussElement::new(data, model, 1.0)),
             ElemState::default(),
         ),
-        // PanelZone / Shell / Wall は現状の挙動（弾性ベース）を踏襲。
+        // PanelZone / Shell / Wall / NodalSpring は現状の挙動（弾性ベース）を踏襲。
+        // 節点バネは非線形解析でも常に弾性のまま（スケルトン未対応）。
         _ => build_behavior(data, model),
     }
 }
@@ -381,6 +388,7 @@ mod tests {
             force_regime: ForceRegime::UniaxialBendingShear,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         assert!(matches!(
             resolve_force_regime(&elem, &model),
@@ -405,6 +413,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         assert!(matches!(
             resolve_force_regime(&beam, &model),
@@ -425,6 +434,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         assert!(matches!(
             resolve_force_regime(&col, &model),
@@ -448,6 +458,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let (behavior, _state) = build_behavior(&beam, &model);
         // ConcentratedSpringBeam は recover_forces を override していないので None
@@ -488,6 +499,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let (behavior, _state) = build_behavior(&col, &model);
         // Fiber 分岐は暫定 BeamElement（線形解析）→ recover_forces は Some
@@ -514,6 +526,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let (behavior, _state) = build_nonlinear_behavior(&beam, &model);
         let snap = behavior.snapshot_state();
@@ -548,6 +561,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         let (behavior, _state) = build_nonlinear_behavior(&col, &model);
         let snap = behavior.snapshot_state();
@@ -620,6 +634,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
         (model, elem)
     }
@@ -724,6 +739,7 @@ mod tests {
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
             plastic_zone: None,
+            spring: None,
         };
 
         // 開口なし
