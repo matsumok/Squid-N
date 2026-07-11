@@ -15,6 +15,12 @@
 //! 無修正で動作する）。
 
 /// RC 矩形断面の簡易終局耐力算定用の入力一式。
+///
+/// `Clone, Copy` はプッシュオーバー解析（`squid_n_solver::pushover`）が σ0 を
+/// 除く入力一式を保持し、各ステップで σ0 のみ差し替えて `rc_qsu_simple` を
+/// 呼び直す用途（`DirThreshold::RcArakawa`）のために付与する。全フィールドが
+/// f64 のみのため、値のコピーは軽量。
+#[derive(Clone, Copy)]
 pub struct RcCapacityInput {
     /// 断面幅 b \[mm\]
     pub b: f64,

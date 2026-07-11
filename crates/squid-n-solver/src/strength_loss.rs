@@ -17,7 +17,7 @@
 //!
 //! ## せん断降伏判定
 //! `pushover::ShearYieldEvent`（部材端せん断力がせん断降伏耐力 Qy を超えたことを
-//! 記録するイベント、`pushover::compute_shear_yield_qy` 参照）により、曲げ降伏
+//! 記録するイベント、`pushover::track_shear_yield` 参照）により、曲げ降伏
 //! （`HingeLevel::Yield` 以降）とは独立に「せん断降伏」を判定できるようになった。
 //! `detect_strength_loss` は原典の規定どおり、**せん断降伏イベントが発生済みの
 //! 部材が耐力喪失変形角（終了側）を超えたこと**を耐力喪失の条件とする。
@@ -28,8 +28,12 @@
 //! min(qy_y,qy_z) と比較していた v1 の丸めを解消）。また RC 矩形断面
 //! （`SectionShape::RcRect`）で配筋情報が得られる場合、Qy は荒川mean式系の略算式
 //! （`squid_n_core::rc_capacity::rc_qsu_simple`）で算定する（配筋情報が無い場合は
-//! 従来どおり慣用値 `as・0.7√fc` へフォールバック）。詳細は `pushover` モジュールの
-//! `ShearThreshold`・`compute_shear_yield_qy`・`track_shear_yield` を参照。
+//! 従来どおり慣用値 `as・0.7√fc` へフォールバック）。さらに、荒川式のせん断スパン
+//! h0 は剛域長（`rigid_zone.length_i/length_j`）を控除した値を用い、軸力項 0.1・σ0
+//! は各ステップの部材軸力（圧縮のみ、引張は0）から動的に反映する（旧来の
+//! 「h0=節点間長・σ0=0固定」という安全側簡略化は解消済み）。詳細は `pushover`
+//! モジュールの `ShearThreshold`・`DirThreshold`・`build_dir_threshold`・
+//! `effective_clear_span`・`axial_compression`・`track_shear_yield` を参照。
 //!
 //! ただし、せん断降伏イベントが解析全体を通じて1件も発生しないモデル
 //! （断面にせん断有効断面積 `as_y`/`as_z` が設定されていない、またはせん断余裕が
