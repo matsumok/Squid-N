@@ -428,6 +428,7 @@ fn nonzero(z: f64) -> f64 {
 ///
 /// `Z' = (If' + Iw'') / (H/2)`。欠損率が 0 の場合は通常の H形強軸断面係数
 /// `Z = Iy/(H/2)` に一致する。
+#[allow(clippy::too_many_arguments)]
 pub fn steel_h_z_with_loss(
     h: f64,
     b: f64,
@@ -605,10 +606,34 @@ fn check_beam(
 ) -> CheckResult {
     let h = sec.depth;
     let b = sec.width;
-    let z_strong = nonzero(section_modulus(sec.iy, h / 2.0));
+    let (shape, tf, tw) = shape_of(sec);
+
+    // 断面欠損（継手部の欠損率 βf/βw・端部スカラップ αw）を考慮した断面係数。
+    // H 形で SteelDesignAttr が与えられている場合のみ Z' に置き換える
+    // （マニュアル「鉄骨の断面検定における断面性能」）。端部判定は評価位置
+    // pos<=0.25 / >=0.75 を端部とする（検定位置＝柱フェイス・中央の分類と同じ）。
+    let z_strong = match (&ctx.steel_attr, shape) {
+        (Some(attr), ShapeCategory::H)
+            if attr.joint_flange_loss > 0.0
+                || attr.joint_web_loss > 0.0
+                || attr.scallop_web_loss > 0.0 =>
+        {
+            let is_end = !(0.25 < forces.pos && forces.pos < 0.75);
+            nonzero(steel_h_z_with_loss(
+                h,
+                b,
+                tw,
+                tf,
+                attr.joint_flange_loss,
+                attr.joint_web_loss,
+                attr.scallop_web_loss,
+                is_end,
+            ))
+        }
+        _ => nonzero(section_modulus(sec.iy, h / 2.0)),
+    };
     let sigma_b = forces.mz.abs() / z_strong;
 
-    let (shape, tf, tw) = shape_of(sec);
     let ft_val = steel_ft(f, term);
     let fs_val = steel_fs(f, term);
 
@@ -621,7 +646,14 @@ fn check_beam(
         ShapeCategory::H => {
             let af = b * tf;
             let i_t = steel_i_t(b, tf, h, tw);
-            let lb = ctx.lb.unwrap_or(ctx.length);
+            // 横座屈長さ lb の優先順位: ctx.lb 直接指定 > SteelDesignAttr
+            // （直接入力 (始端,中央,終端)／等間隔補剛 L/(n+1)）> 部材長。
+            let lb = ctx.lb.unwrap_or_else(|| {
+                ctx.steel_attr
+                    .as_ref()
+                    .map(|a| resolve_lb(forces.pos, ctx.length, a.lb_direct, a.lateral_brace_count))
+                    .unwrap_or(ctx.length)
+            });
             fb = steel_fb_h(f, term, lb, i_t, h, af, c);
             let sigma_b_prime = sigma_b * (h - 2.0 * tf).max(0.0) / safe_denom(h);
             let von_mises = (sigma_b_prime.powi(2) + 3.0 * tau.powi(2)).sqrt() / safe_denom(ft_val);
@@ -913,6 +945,97 @@ mod tests {
             flange_thick: tf,
         };
         shape.to_section(SectionId(0), format!("H-{}x{}x{}x{}", h, b, tw, tf))
+    }
+
+    // -------------------------------------------------------------
+    // SteelDesignAttr の配線（断面欠損 Z'・横座屈長さ lb）
+    // -------------------------------------------------------------
+
+    #[test]
+    fn test_check_beam_applies_section_loss_attr() {
+        use squid_n_core::ids::ElemId;
+        use squid_n_core::model::SteelDesignAttr;
+        let sec = h_section(400.0, 200.0, 8.0, 13.0);
+        let m = mat("SN400B");
+        // 端部（pos=0.0）で曲げ支配となる内力。
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: 0.0,
+            qy: 10_000.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 1.0e8,
+        };
+        let ctx_base = DesignCtx {
+            kind: MemberKind::Beam,
+            length: 4000.0,
+            ..Default::default()
+        };
+        let base = SteelDesign.check(&forces, &sec, &m, &ctx_base);
+        let ctx_loss = DesignCtx {
+            kind: MemberKind::Beam,
+            length: 4000.0,
+            steel_attr: Some(SteelDesignAttr {
+                elem: ElemId(0),
+                joint_flange_loss: 10.0,
+                joint_web_loss: 0.0,
+                scallop_web_loss: 20.0,
+                lb_direct: None,
+                lateral_brace_count: None,
+            }),
+            ..Default::default()
+        };
+        let with_loss = SteelDesign.check(&forces, &sec, &m, &ctx_loss);
+        // 欠損で Z′ が減り、曲げ応力度・検定比が大きくなる。
+        assert!(
+            with_loss.ratio > base.ratio,
+            "loss ratio={} <= base ratio={}",
+            with_loss.ratio,
+            base.ratio
+        );
+    }
+
+    #[test]
+    fn test_check_beam_lb_from_attr_brace_count() {
+        use squid_n_core::ids::ElemId;
+        use squid_n_core::model::SteelDesignAttr;
+        // 細長い横座屈支配の梁: lb = L/(n+1) の短縮で fb が上がり検定比が下がる。
+        let sec = h_section(600.0, 150.0, 8.0, 10.0);
+        let m = mat("SN400B");
+        let forces = MemberForcesAt {
+            pos: 0.5,
+            n: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 1.0e8,
+        };
+        let ctx_no_brace = DesignCtx {
+            kind: MemberKind::Beam,
+            length: 12_000.0,
+            ..Default::default()
+        };
+        let base = SteelDesign.check(&forces, &sec, &m, &ctx_no_brace);
+        let ctx_braced = DesignCtx {
+            kind: MemberKind::Beam,
+            length: 12_000.0,
+            steel_attr: Some(SteelDesignAttr {
+                elem: ElemId(0),
+                joint_flange_loss: 0.0,
+                joint_web_loss: 0.0,
+                scallop_web_loss: 0.0,
+                lb_direct: None,
+                lateral_brace_count: Some(5),
+            }),
+            ..Default::default()
+        };
+        let braced = SteelDesign.check(&forces, &sec, &m, &ctx_braced);
+        assert!(
+            braced.ratio < base.ratio,
+            "braced ratio={} >= base ratio={}",
+            braced.ratio,
+            base.ratio
+        );
     }
 
     // -------------------------------------------------------------

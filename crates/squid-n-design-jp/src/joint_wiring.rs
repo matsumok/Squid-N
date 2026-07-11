@@ -160,9 +160,29 @@ fn h_zp(h: f64, b: f64, tw: f64, tf: f64) -> f64 {
 /// モデルと部材内力から節点単位の検定を一括実行する。
 ///
 /// 戻り値: `(節点, 種別ラベル, 検定結果)` のリスト。
+///
+/// 冷間成形角形鋼管の存在軸力に `NL + 1.5・NE` の割増を効かせたい場合は
+/// [`collect_joint_checks_with_long`] を使う（本関数は割増なし＝当該ケースの
+/// 軸力そのまま）。
 pub fn collect_joint_checks(
     model: &Model,
     member_forces: &[(ElemId, ForcesAt<'_>)],
+    term: LoadTerm,
+) -> Vec<(NodeId, String, CheckResult)> {
+    collect_joint_checks_with_long(model, member_forces, None, term)
+}
+
+/// [`collect_joint_checks`] の長期内力付き版。
+///
+/// `long_member_forces` に長期（G+P）組合せの部材内力を渡すと、冷間成形
+/// 角形鋼管の柱梁耐力比チェックの存在軸力を `N = NL + 1.5・NE`
+/// （NE = 当該ケースの軸力 − NL。RESP-D マニュアル 04「冷間成形角型鋼管の
+/// 断面検定」の Ds/Co = 1.5 割増）で算定する。None の場合は当該ケースの
+/// 軸力をそのまま用いる（従来動作）。地震時組合せの結果を渡すことを想定する。
+pub fn collect_joint_checks_with_long(
+    model: &Model,
+    member_forces: &[(ElemId, ForcesAt<'_>)],
+    long_member_forces: Option<&[(ElemId, ForcesAt<'_>)]>,
     term: LoadTerm,
 ) -> Vec<(NodeId, String, CheckResult)> {
     let mut out = Vec::new();
@@ -647,6 +667,28 @@ pub fn collect_joint_checks(
             })
             .collect();
         if !cf_cols.is_empty() {
+            // 長期（G+P）の当該部材・当該節点側の軸力 NL [N]（引張正）。
+            // 存在軸力 N = NL + 1.5・NE（NE = 当該ケース軸力 − NL）に用いる。
+            let long_end_n = |c: &MemberInfo, nid: NodeId| -> Option<f64> {
+                let list = long_member_forces?;
+                let (_, forces) = list.iter().find(|(id, _)| *id == c.elem.id)?;
+                let pos = if c.elem.nodes.first() == Some(&nid) {
+                    0.0
+                } else if c.elem.nodes.get(1) == Some(&nid) {
+                    1.0
+                } else {
+                    return None;
+                };
+                forces
+                    .iter()
+                    .min_by(|a, b| {
+                        (a.0 - pos)
+                            .abs()
+                            .partial_cmp(&(b.0 - pos).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(_, f)| f[0])
+            };
             let zp_f_n = |c: &MemberInfo| -> Option<(f64, f64, f64)> {
                 let (h, b, t) = match c.sec.shape {
                     Some(SectionShape::SteelBox {
@@ -664,7 +706,18 @@ pub fn collect_joint_checks(
                 let f = crate::steel::steel_f_value_prefix(&c.mat.name, t).unwrap_or(295.0);
                 let n = c
                     .end_forces(nid)
-                    .map(|fr| (-fr[0]).max(0.0) / (f * c.sec.area.max(1e-9)))
+                    .map(|fr| {
+                        // 圧縮正に変換して存在軸力を求める（RESP-D: N = NL+1.5・NE）。
+                        let n_cur = -fr[0];
+                        let n_exist = match long_end_n(c, nid) {
+                            Some(nl_signed) => {
+                                let nl = -nl_signed;
+                                nl + 1.5 * (n_cur - nl)
+                            }
+                            None => n_cur,
+                        };
+                        n_exist.max(0.0) / (f * c.sec.area.max(1e-9))
+                    })
                     .unwrap_or(0.0);
                 Some((box_zp(h, b, t), f, n))
             };

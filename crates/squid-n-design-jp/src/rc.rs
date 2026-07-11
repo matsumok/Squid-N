@@ -444,6 +444,7 @@ fn shear_capacity_generic(
 /// - スーパーフープ KH685・パワーリング SPR685: `min(1.2%, 1.2%・Fc/27)`。
 /// - UHYフープ SHD685: 1.2%、Fc 非依存。
 /// - 上記以外（判別不能な高強度品）: 安全側に 0.8%。
+///
 /// 長期は全製品 0.6% で共通（`high_strength_pw_cap` 側で分岐）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HighStrengthGroup {
@@ -604,6 +605,85 @@ fn shear_capacity_for(
             fc_raw,
         ),
         None => shear_capacity(props, allow, alpha, term, damage_control, is_column),
+    }
+}
+
+// ============================================================================
+// 4.2 地震時短期の設計用せん断力 QD = min(QD1, QD2)
+// （RESP-D マニュアル 04 断面検定「梁/柱の設計用せん断力」）
+// ============================================================================
+
+/// 主筋の降伏点 σy [N/mm²]（終局曲げ ΣMy 算定用）。
+/// `Material.fy` があればそれを、無ければ材料名（鉄筋グレード名）の数値部
+/// （例 "SD345"→345）を、どちらも無ければ 345（SD345 相当）を用いる。
+fn rebar_sigma_y(mat: &Material) -> f64 {
+    if let Some(fy) = mat.fy {
+        if fy > 0.0 {
+            return fy;
+        }
+    }
+    let digits: String = mat.name.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits
+        .parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0)
+        .unwrap_or(345.0)
+}
+
+/// 地震時短期の設計用せん断力 QD [N]。
+///
+/// - 梁: `QD1 = QL + ΣBMy/l′`、柱: `QD1 = ΣcMy/h′`
+/// - `QD2 = QL + n・QE`（`QE` = 当該組合せのせん断力 − 長期せん断力）
+/// - `QD = min(QD1, QD2)`（[`crate::QdMethod`] により QD1/QD2 単独も選択可）
+///
+/// `ctx.seismic_qd` が None（長期・積雪時・暴風時）、または長期内力に同一
+/// 評価位置が見つからない場合は、解析せん断力 `|q_signed|` をそのまま返す
+/// （積雪時・暴風時の `QD = QL + Qsn／QL + Qw` は組合せの弾性せん断力に一致）。
+///
+/// `q_index`: 長期内力配列 `[N,Qy,Qz,Mx,My,Mz]` のせん断成分位置（qy=1, qz=2）。
+/// `sum_mu`: 部材両端の終局曲げモーメントの絶対値和 ΣMy [N·mm]。0 以下または
+/// `clear_length` が 0 以下の場合、QD1 は無効（QD2 のみ）とする。
+fn seismic_design_shear(
+    ctx: &DesignCtx,
+    pos: f64,
+    q_signed: f64,
+    q_index: usize,
+    sum_mu: f64,
+    is_column: bool,
+) -> f64 {
+    let Some(qd) = &ctx.seismic_qd else {
+        return q_signed.abs();
+    };
+    let Some(ql_signed) = qd
+        .long_at
+        .iter()
+        .find(|(p, _)| (p - pos).abs() < 1e-6)
+        .map(|(_, f)| f[q_index])
+    else {
+        return q_signed.abs();
+    };
+    let ql = ql_signed.abs();
+    let qe = (q_signed - ql_signed).abs();
+    let qd2 = ql + qd.n_factor * qe;
+    let qd1 = if qd.clear_length > 0.0 && sum_mu > 0.0 {
+        if is_column {
+            sum_mu / qd.clear_length
+        } else {
+            ql + sum_mu / qd.clear_length
+        }
+    } else {
+        f64::INFINITY
+    };
+    match qd.method {
+        crate::QdMethod::Qd1 => {
+            if qd1.is_finite() {
+                qd1
+            } else {
+                qd2
+            }
+        }
+        crate::QdMethod::Qd2 => qd2,
+        crate::QdMethod::Min => qd1.min(qd2),
     }
 }
 
@@ -820,6 +900,77 @@ fn interp_ma(points: &[(f64, f64)], n_design: f64) -> f64 {
         }
     }
     points[last].1
+}
+
+// ============================================================================
+// 6.5 RC 梁付着の断面検定（RC 規準 1991 方式、RESP-D マニュアル
+//     「検討方法（鉄筋コンクリート構造計算規準・解説 1991）」）
+// ============================================================================
+
+/// コンクリートの付着許容応力度 fa [N/mm²]（異形鉄筋。RESP-D マニュアル
+/// 「コンクリートの付着許容応力度」表、RC 規準 1991 方式の τa 検定用）。
+///
+/// - 長期・上端筋: `min(Fc/15, 0.9 + 2/75・Fc)`
+/// - 長期・その他: `min(Fc/10, 1.35 + Fc/25)`
+/// - 短期: 長期の 1.5 倍
+///
+/// 丸鋼（4/100・Fc かつ 0.9 以下等）はモデルに丸鋼の区分が無いため未対応
+/// （異形鉄筋のみ）。
+pub fn concrete_allowable_bond(fc: f64, top_bar: bool, long_term: bool) -> f64 {
+    let long = if top_bar {
+        (fc / 15.0).min(0.9 + 2.0 / 75.0 * fc)
+    } else {
+        (fc / 10.0).min(1.35 + fc / 25.0)
+    };
+    if long_term {
+        long
+    } else {
+        long * 1.5
+    }
+}
+
+/// RC 規準 1991 方式の付着検定結果。
+pub struct Bond1991Result {
+    /// 検定比 = τa / fa。
+    pub ratio: f64,
+    /// 設計用付着応力度 τa = Q/(φ・j) [N/mm²]。
+    pub tau: f64,
+    /// 付着許容応力度 fa [N/mm²]。
+    pub fa: f64,
+}
+
+/// RC 梁付着の断面検定（RC 規準 1991 方式）: `τa = Q/(φ・j) ≦ fa`。
+///
+/// - `q_abs`: 設計用せん断力 |Q| [N]、`j`: 応力中心間距離（=7/8・d）[mm]。
+/// - `phi`: 引張鉄筋の周長総和 Σφ [mm]（= 本数・π・径）。
+/// - `top_bar`: 上端筋なら true（fa が低減される）。
+///
+/// カットオフ位置・スパン途中の鉄筋端までの距離の検定
+/// （`ld ≧ σt・a/(0.8fa・φ) + j`）は、モデルにカットオフ筋の情報が無く
+/// 通し筋を仮定するため対象外（検定断面位置の τa 検定のみ）。
+/// 既定の検定経路は RC 規準 1999 方式（[`rc_beam_bond_check`]）であり、
+/// 本関数は 1991 方式を選択したい呼び出し側向けの代替実装。
+pub fn rc_beam_bond_check_1991(
+    q_abs: f64,
+    j: f64,
+    phi: f64,
+    fc_raw: f64,
+    top_bar: bool,
+    long_term: bool,
+) -> Option<Bond1991Result> {
+    if q_abs < 0.0 || j <= 0.0 || phi <= 0.0 || fc_raw <= 0.0 {
+        return None;
+    }
+    let tau = q_abs / (phi * j);
+    let fa = concrete_allowable_bond(fc_raw, top_bar, long_term);
+    if fa <= 0.0 {
+        return None;
+    }
+    Some(Bond1991Result {
+        ratio: tau / fa,
+        tau,
+        fa,
+    })
 }
 
 // ============================================================================
@@ -1069,7 +1220,29 @@ fn beam_check(
         shear_grade,
         fc_raw,
     );
-    let ratio_q = if qa > 0.0 { forces.qy.abs() / qa } else { 0.0 };
+    // 地震時短期は設計用せん断力 QD = min(QL+ΣBMy/l′, QL+n・QE) を用いる
+    // （ctx.seismic_qd が None のときは解析せん断力のまま）。
+    // ΣBMy は両端とも同一断面・対称配筋（at=ac）の仮定で 2・Mu とする。
+    // Mu にスラブ筋は考慮しない（マニュアルの規定どおり）。
+    let q_design = if ctx.seismic_qd.is_some() {
+        let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
+            b: props.b,
+            d: props.d_full,
+            at: props.at,
+            d_eff: props.d,
+            sigma_y: rebar_sigma_y(mat),
+            fc: fc_raw,
+            pw: props.pw,
+            sigma_wy: 0.0,
+            clear_span: 0.0,
+            sigma_0: 0.0,
+        };
+        let sum_mu = 2.0 * squid_n_core::rc_capacity::rc_mu_simple(&mu_inp);
+        seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu, false)
+    } else {
+        forces.qy.abs()
+    };
+    let ratio_q = if qa > 0.0 { q_design / qa } else { 0.0 };
 
     // (B) RC 梁付着の断面検定（RC 規準1999、通し筋・カットオフ無しを仮定）。
     let bond = rc_beam_bond_check(
@@ -1202,11 +1375,31 @@ fn column_check(
             shear_grade,
             fc_raw,
         );
-        let ratio_qy = if qay > 0.0 {
-            forces.qy.abs() / qay
+        // 地震時短期は設計用せん断力 QD = min(ΣcMy/h′, QL+n・QE) を用いる。
+        // 円形柱の ΣcMy は等価幅 b_eq = A/D の矩形として柱 Mu 閉形式で近似する。
+        let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
+            let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
+                b: gross_area / d_full,
+                d: d_full,
+                at: axis.props.at,
+                d_eff: axis.props.d,
+                sigma_y: rebar_sigma_y(mat),
+                fc: fc_raw,
+                pw: axis.props.pw,
+                sigma_wy: 0.0,
+                clear_span: 0.0,
+                sigma_0: 0.0,
+            };
+            let sum_mu =
+                2.0 * squid_n_core::rc_capacity::rc_column_mu_simple(&mu_inp, as_total, n_design);
+            (
+                seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu, true),
+                seismic_design_shear(ctx, forces.pos, forces.qz, 2, sum_mu, true),
+            )
         } else {
-            0.0
+            (forces.qy.abs(), forces.qz.abs())
         };
+        let ratio_qy = if qay > 0.0 { q_design_y / qay } else { 0.0 };
 
         let (m_for_alpha_z, q_for_alpha_z) =
             ctx.shear_span.unwrap_or((forces.my.abs(), forces.qz.abs()));
@@ -1221,11 +1414,7 @@ fn column_check(
             shear_grade,
             fc_raw,
         );
-        let ratio_qz = if qaz > 0.0 {
-            forces.qz.abs() / qaz
-        } else {
-            0.0
-        };
+        let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
         let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
 
@@ -1329,11 +1518,36 @@ fn column_check(
         shear_grade,
         fc_raw,
     );
-    let ratio_qy = if qay > 0.0 {
-        forces.qy.abs() / qay
+    // 地震時短期は設計用せん断力 QD = min(QD1, QD2) を用いる
+    // （QD1 = ΣcMy/h′、QD2 = QL + n・QE。ctx.seismic_qd が None なら解析値）。
+    // ΣcMy は柱頭・柱脚同一断面の仮定で 2・Mu（軸力考慮閉形式）とする。
+    let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
+        let sigma_y = rebar_sigma_y(mat);
+        let mu_of = |b: f64, d_full: f64, props: &AxisProps| {
+            let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
+                b,
+                d: d_full,
+                at: props.at,
+                d_eff: props.d,
+                sigma_y,
+                fc: fc_raw,
+                pw: props.pw,
+                sigma_wy: 0.0,
+                clear_span: 0.0,
+                sigma_0: 0.0,
+            };
+            squid_n_core::rc_capacity::rc_column_mu_simple(&mu_inp, as_total, n_design)
+        };
+        let sum_mu_z = 2.0 * mu_of(sec.width, sec.depth, &axis_z.props);
+        let sum_mu_y = 2.0 * mu_of(sec.depth, sec.width, &axis_y.props);
+        (
+            seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu_z, true),
+            seismic_design_shear(ctx, forces.pos, forces.qz, 2, sum_mu_y, true),
+        )
     } else {
-        0.0
+        (forces.qy.abs(), forces.qz.abs())
     };
+    let ratio_qy = if qay > 0.0 { q_design_y / qay } else { 0.0 };
 
     let (m_for_alpha_z, q_for_alpha_z) =
         ctx.shear_span.unwrap_or((forces.my.abs(), forces.qz.abs()));
@@ -1348,11 +1562,7 @@ fn column_check(
         shear_grade,
         fc_raw,
     );
-    let ratio_qz = if qaz > 0.0 {
-        forces.qz.abs() / qaz
-    } else {
-        0.0
-    };
+    let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
     let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
 
@@ -1494,6 +1704,143 @@ mod tests {
             kind: MemberKind::Column,
             ..Default::default()
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 地震時短期の設計用せん断力 QD = min(QD1, QD2)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_seismic_design_shear_min_of_qd1_qd2() {
+        use crate::{QdMethod, SeismicQd};
+        let mut ctx = DesignCtx {
+            seismic_qd: Some(SeismicQd {
+                long_at: vec![(0.0, [0.0, 50_000.0, 0.0, 0.0, 0.0, 0.0])],
+                n_factor: 1.5,
+                clear_length: 4000.0,
+                method: QdMethod::Min,
+            }),
+            ..Default::default()
+        };
+        // 当該組合せ Q=150kN、QL=50kN → QE=100kN、QD2 = 50+1.5×100 = 200kN。
+        // ΣMy=400kN·m → 梁 QD1 = 50+400e6/4000 = 150kN → min = 150kN。
+        let q_beam = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, false);
+        assert!((q_beam - 150_000.0).abs() < 1e-6, "q_beam={q_beam}");
+        // 柱 QD1 = ΣcMy/h′ = 100kN（QL を加算しない）→ min(100, 200) = 100kN。
+        let q_col = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, true);
+        assert!((q_col - 100_000.0).abs() < 1e-6, "q_col={q_col}");
+        // QD2 単独選択。
+        ctx.seismic_qd.as_mut().unwrap().method = QdMethod::Qd2;
+        let q2 = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, false);
+        assert!((q2 - 200_000.0).abs() < 1e-6, "q2={q2}");
+        // ΣMy<=0（終局曲げ不明）のとき QD1 は無効で QD2 のみ。
+        ctx.seismic_qd.as_mut().unwrap().method = QdMethod::Min;
+        let q_no_mu = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 0.0, false);
+        assert!((q_no_mu - 200_000.0).abs() < 1e-6);
+        // 評価位置が長期内力に無い場合・文脈なしの場合は解析値のまま。
+        let q_missing = seismic_design_shear(&ctx, 0.5, 150_000.0, 1, 400.0e6, false);
+        assert!((q_missing - 150_000.0).abs() < 1e-6);
+        ctx.seismic_qd = None;
+        let q_none = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, false);
+        assert!((q_none - 150_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rebar_sigma_y_sources() {
+        let mut m = make_material(24.0, "SD390");
+        // fy 未設定 → グレード名の数値部。
+        m.fy = None;
+        assert!((rebar_sigma_y(&m) - 390.0).abs() < 1e-9);
+        // fy 設定時はそれを優先。
+        m.fy = Some(400.0);
+        assert!((rebar_sigma_y(&m) - 400.0).abs() < 1e-9);
+        // 数値なし・fy なし → 345。
+        m.fy = None;
+        m.name = "unknown".to_string();
+        assert!((rebar_sigma_y(&m) - 345.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_beam_check_seismic_qd_increases_shear_ratio() {
+        use crate::{QdMethod, SeismicQd};
+        // 短期・地震時: QL=20kN、当該組合せ Q=60kN → QE=40kN、
+        // QD2 = 20+1.5×40 = 80kN（QD1 は ΣMy が大きく効かないよう長スパン）。
+        let mat = make_material(24.0, "SD345");
+        let shape = rc_rect_shape(400.0, 700.0, 6, 22.0, 1, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape.clone());
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: 0.0,
+            qy: 60_000.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 10.0e6,
+        };
+        let ctx_plain = DesignCtx {
+            term: LoadTerm::Short,
+            kind: MemberKind::Beam,
+            length: 6000.0,
+            ..Default::default()
+        };
+        let base = beam_check(&forces, &sec, &mat, &ctx_plain, &shape, 24.0);
+        let ctx_qd = DesignCtx {
+            term: LoadTerm::Short,
+            kind: MemberKind::Beam,
+            length: 6000.0,
+            seismic_qd: Some(SeismicQd {
+                long_at: vec![(0.0, [0.0, 20_000.0, 0.0, 0.0, 0.0, 0.0])],
+                n_factor: 1.5,
+                clear_length: 6000.0,
+                method: QdMethod::Qd2,
+            }),
+            ..Default::default()
+        };
+        let with_qd = beam_check(&forces, &sec, &mat, &ctx_qd, &shape, 24.0);
+        // QD=80kN > 解析値 60kN なのでせん断検定比が 4/3 倍になる
+        // （曲げ・付着が支配しない前提の内力設定）。
+        assert!(
+            with_qd.ratio > base.ratio,
+            "with_qd={} <= base={}",
+            with_qd.ratio,
+            base.ratio
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // RC 規準 1991 方式の付着検定
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_concrete_allowable_bond_table() {
+        // Fc=24 上端筋: min(24/15, 0.9+2/75×24) = min(1.6, 1.54) = 1.54
+        assert!((concrete_allowable_bond(24.0, true, true) - 1.54).abs() < 1e-9);
+        // Fc=24 その他: min(24/10, 1.35+24/25) = min(2.4, 2.31) = 2.31
+        assert!((concrete_allowable_bond(24.0, false, true) - 2.31).abs() < 1e-9);
+        // 短期は 1.5 倍。
+        assert!(
+            (concrete_allowable_bond(24.0, true, false)
+                - concrete_allowable_bond(24.0, true, true) * 1.5)
+                .abs()
+                < 1e-9
+        );
+        // 低強度側の分岐: Fc=15 上端筋 min(1.0, 1.3) = 1.0（Fc/15 側）。
+        assert!((concrete_allowable_bond(15.0, true, true) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rc_beam_bond_check_1991_hand_calc() {
+        // 4-D22（φ=4×π×22）、j=7/8×540、Q=180kN、Fc=24、上端筋・短期。
+        let phi = 4.0 * std::f64::consts::PI * 22.0;
+        let j = 7.0 / 8.0 * 540.0;
+        let res = rc_beam_bond_check_1991(180_000.0, j, phi, 24.0, true, false)
+            .expect("有効入力なら Some");
+        let tau = 180_000.0 / (phi * j);
+        let fa = 1.54 * 1.5;
+        assert!((res.tau - tau).abs() < 1e-9);
+        assert!((res.fa - fa).abs() < 1e-9);
+        assert!((res.ratio - tau / fa).abs() < 1e-9);
+        // 不正入力は None。
+        assert!(rc_beam_bond_check_1991(1.0, 0.0, phi, 24.0, true, true).is_none());
     }
 
     // ------------------------------------------------------------------

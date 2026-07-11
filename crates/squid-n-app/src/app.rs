@@ -1508,6 +1508,37 @@ impl App {
         let Some(results) = &self.results else {
             return;
         };
+        // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(G+P)内力。
+        // 現在の結果が地震時組合せ（名前に K/E を含む）かつ短期のときのみ、
+        // 解析済みの長期組合せ（"G + P" 優先、無ければ長期判定の組合せ）を引く。
+        // 長期が未解析なら None（QD 割増なし＝従来動作）。
+        let is_seismic_combo = match self.last_static {
+            Some(StaticKey::Combo(idx)) => results
+                .combos
+                .get(idx)
+                .map(|(n, _)| {
+                    let u = n.to_uppercase();
+                    u.contains('K') || u.contains('E')
+                })
+                .unwrap_or(false),
+            _ => false,
+        };
+        let long_member_forces: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
+            if is_seismic_combo && self.design_term == LoadTerm::Short {
+                results
+                    .combos
+                    .iter()
+                    .find(|(n, _)| n == "G + P")
+                    .or_else(|| {
+                        results
+                            .combos
+                            .iter()
+                            .find(|(n, _)| !squid_n_load::combo::is_short_term_combo(n))
+                    })
+                    .map(|(_, st)| &st.member_forces)
+            } else {
+                None
+            };
         let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)> = Vec::new();
         for (elem_id, mf) in &results.member_forces {
             let elem = self.model.elements.iter().find(|e| e.id == *elem_id);
@@ -1553,6 +1584,32 @@ impl App {
             } else {
                 None
             };
+            // 地震時短期の設計用せん断力 QD の文脈（長期内力・割増係数 n・内法長）。
+            // 内法長 l′/h′ は剛域（フェイス距離）控除後の長さとする。
+            let seismic_qd = long_member_forces
+                .and_then(|list| list.iter().find(|(id, _)| id == elem_id))
+                .map(|(_, mf_long)| {
+                    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                    let clear_length = if length - face_sum > 0.0 {
+                        length - face_sum
+                    } else {
+                        length
+                    };
+                    squid_n_design_jp::SeismicQd {
+                        long_at: mf_long.at.clone(),
+                        // 割増係数 n（マニュアル: 柱は 1.5 以上）。梁・柱とも 1.5。
+                        n_factor: 1.5,
+                        clear_length,
+                        method: squid_n_design_jp::QdMethod::Min,
+                    }
+                });
+            // S 造部材の断面検定属性（欠損率・横座屈長さ）。
+            let steel_attr = self
+                .model
+                .steel_design_attrs
+                .iter()
+                .find(|a| a.elem == *elem_id)
+                .cloned();
             let ctx = DesignCtx {
                 term: self.design_term,
                 kind,
@@ -1563,6 +1620,8 @@ impl App {
                 rc_damage_control: true,
                 end_moments_z,
                 mid_moment_z: m_at(0.5),
+                seismic_qd,
+                steel_attr,
             };
 
             // 検定器の選択: 複合断面（SRC/CFT）は形状優先、それ以外は材料名で鋼/RC。
@@ -1593,19 +1652,39 @@ impl App {
                     my: forces[4],
                     mz: forces[5],
                 };
-                let cr = checker.check(&mfa, sec, mat, &ctx);
+                // BRB 属性が登録された部材はメーカー許容値による BRB 検定に
+                // 差し替える（RESP-D マニュアル 04 座屈補剛ブレースの断面検定）。
+                let cr = if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id)
+                {
+                    squid_n_design_jp::brb::brb_check(
+                        brb,
+                        mfa.n,
+                        length,
+                        self.design_term == LoadTerm::Long,
+                    )
+                } else {
+                    checker.check(&mfa, sec, mat, &ctx)
+                };
                 checks.push((*elem_id, *pos, cr));
             }
         }
-        // 節点単位の検定（RC 柱梁接合部・S パネルゾーン・冷間成形耐力比・耐震壁）。
+        // 節点単位の検定（RC 柱梁接合部・S/SRC パネルゾーン・冷間成形耐力比・耐震壁）。
+        // 冷間成形の存在軸力 N = NL + 1.5・NE のため、地震時は長期内力も渡す。
         let mf_slices: Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)> = results
             .member_forces
             .iter()
             .map(|(id, mf)| (*id, mf.at.as_slice()))
             .collect();
-        let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks(
+        let long_slices: Option<Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)>> =
+            long_member_forces.map(|list| {
+                list.iter()
+                    .map(|(id, mf)| (*id, mf.at.as_slice()))
+                    .collect()
+            });
+        let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
             &self.model,
             &mf_slices,
+            long_slices.as_deref(),
             self.design_term,
         );
         if let Some(bundle) = self.results.as_mut() {
@@ -4581,11 +4660,15 @@ mod tests {
     }
 
     /// UI-13: `design_rank_auto = true` で鋼部材の幅厚比から部材ランクを自動判定する。
-    /// portal_frame の柱(H-300x300x10x15)・梁(H-400x200x8x13)の幅厚比を手計算し、
-    /// `s_member_rank` の結果と一致することを確認する。
+    /// portal_frame の柱(H-300x300x10x15)・梁(H-400x200x8x13)を、構造規定の
+    /// 幅厚比表（RESP-D マニュアル 04 断面検定、`s_member_rank_by_kihon`）で
+    /// 手計算した結果と一致することを確認する。
+    /// - 柱(SN400B=400級): フランジ 150/15=10.0（>9.5 → FB）、ウェブ 27.0（≦43 → FA）→ FB
+    /// - 梁(400級): フランジ 100/13≈7.69（≦9 → FA）、ウェブ 46.75（≦60 → FA）→ FA
     #[test]
     fn test_holding_capacity_rank_auto_from_width_thickness() {
-        use squid_n_design_jp::ds::{max_width_thickness, s_member_rank, worst_rank, RankCriteria};
+        use squid_n_design_jp::ds::{s_member_rank_by_kihon, worst_rank, SteelMemberUse};
+        use squid_n_design_jp::holding_capacity::MemberRank;
 
         let mut app = App::default();
         app.load_model(crate::sample::portal_frame());
@@ -4609,12 +4692,22 @@ mod tests {
             "鋼部材の幅厚比からランクが算定されているはず"
         );
 
-        // 柱 H-300x300x10x15: flange=300/(2*15)=10.0, web=(300-30)/10=27.0 → max=27.0
-        let col_wt = max_width_thickness(app.model.sections[0].shape.as_ref().unwrap()).unwrap();
-        let col_rank = s_member_rank(col_wt, &RankCriteria::default());
-        // 梁 H-400x200x8x13: flange=200/(2*13)=7.69, web=(400-26)/8=46.75 → max=46.75
-        let beam_wt = max_width_thickness(app.model.sections[1].shape.as_ref().unwrap()).unwrap();
-        let beam_rank = s_member_rank(beam_wt, &RankCriteria::default());
+        // 柱 H-300x300x10x15（SN400B）: フランジ 10.0 → FB が支配。
+        let col_rank = s_member_rank_by_kihon(
+            app.model.sections[0].shape.as_ref().unwrap(),
+            SteelMemberUse::Column,
+            "SN400B",
+        )
+        .unwrap();
+        assert_eq!(col_rank, MemberRank::FB);
+        // 梁 H-400x200x8x13（SN400B）: フランジ・ウェブとも FA。
+        let beam_rank = s_member_rank_by_kihon(
+            app.model.sections[1].shape.as_ref().unwrap(),
+            SteelMemberUse::Beam,
+            "SN400B",
+        )
+        .unwrap();
+        assert_eq!(beam_rank, MemberRank::FA);
 
         for (elem_id, rank) in &result.member_ranks {
             let expected = if elem_id.0 == 2 { beam_rank } else { col_rank };
