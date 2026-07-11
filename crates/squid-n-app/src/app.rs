@@ -1558,6 +1558,9 @@ impl App {
             } else {
                 None
             };
+        // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
+        // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
+        let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
         let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)> = Vec::new();
         for (elem_id, mf) in &results.member_forces {
             let elem = self.model.elements.iter().find(|e| e.id == *elem_id);
@@ -1603,16 +1606,29 @@ impl App {
             } else {
                 None
             };
+            // 一本部材グループに属する梁は、部材長・端部/中央モーメント・せん断
+            // スパン比代表値をグループ合成値に置き換える（RESP-D マニュアル 04
+            // 「採用応力 ■一本部材指定時の採用応力」）。
+            let group = if kind == squid_n_design_jp::MemberKind::Beam {
+                group_overrides.get(elem_id)
+            } else {
+                None
+            };
+            let (length, shear_span, end_moments_z, mid_moment_z) = match group {
+                Some(g) => (g.length, g.shear_span, g.end_moments_z, g.mid_moment_z),
+                None => (length, shear_span, end_moments_z, m_at(0.5)),
+            };
             // 地震時短期の設計用せん断力 QD の文脈（長期内力・割増係数 n・内法長）。
             // 内法長 l′/h′ は剛域（フェイス距離）控除後の長さとする。
             let seismic_qd = long_member_forces
                 .and_then(|list| list.iter().find(|(id, _)| id == elem_id))
                 .map(|(_, mf_long)| {
                     let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
-                    let clear_length = if length - face_sum > 0.0 {
-                        length - face_sum
-                    } else {
-                        length
+                    let clear_length = match group {
+                        // 一本部材は両外端の剛域控除後のグループ内法長。
+                        Some(g) => g.clear_length,
+                        None if length - face_sum > 0.0 => length - face_sum,
+                        None => length,
                     };
                     squid_n_design_jp::SeismicQd {
                         long_at: mf_long.at.clone(),
@@ -1638,7 +1654,7 @@ impl App {
                 shear_span,
                 rc_damage_control: self.analysis_cfg.rc_damage_control,
                 end_moments_z,
-                mid_moment_z: m_at(0.5),
+                mid_moment_z,
                 seismic_qd,
                 steel_attr,
             };
@@ -1706,6 +1722,12 @@ impl App {
             long_slices.as_deref(),
             self.design_term,
         );
+        // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。使用限界・終局限界）。
+        checks.extend(squid_n_design_jp::pca::collect_pca_checks(
+            &self.model,
+            &mf_slices,
+            self.design_term == LoadTerm::Long,
+        ));
         if let Some(bundle) = self.results.as_mut() {
             bundle.checks = checks;
             bundle.joint_checks = joint_checks;
@@ -2256,6 +2278,154 @@ fn elem_geometric_length(
     let dy = p1[1] - p0[1];
     let dz = p1[2] - p0[2];
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// 一本部材グループ 1 本分の検定文脈（RESP-D マニュアル 04 断面検定
+/// 「採用応力 ■一本部材指定時の採用応力」）。
+struct BeamGroupOverride {
+    /// 一本部材の全長 L [mm]（分割部材長の総和）。
+    length: f64,
+    /// 一本部材両端の強軸曲げ (M_i端, M_j端) [N·mm]。
+    end_moments_z: Option<(f64, f64)>,
+    /// 一本部材中央の強軸曲げ Mc [N·mm]。A 式（M0=(Q1+Q2)L/8 による復元値）と
+    /// B 式（中央に位置する分割部材の内力）の大きい方を採用する（マニュアル）。
+    mid_moment_z: Option<f64>,
+    /// グループ内 |Mz| 最大位置の (|M|, |Q|)（せん断スパン比の代表値）。
+    shear_span: Option<(f64, f64)>,
+    /// 一本部材の内法長（両外端の剛域控除後）[mm]。
+    clear_length: f64,
+}
+
+/// `Model.beam_groups` の各グループについて検定文脈の合成値を求め、
+/// 所属要素 ID → 合成値の対応表を返す。
+///
+/// - グループは軸方向に連続する梁要素の ID を**並び順**で持つ前提
+///   （幾何学的な連続性・共線性の検証は行わない。並び順が実際の配置と
+///   異なる場合、端部モーメント等の対応がずれる）。
+/// - 要素または内力が欠けるグループ・要素数 2 未満のグループは無視する。
+/// - 中央モーメントは、A 式 `Mc_A = (|Q1|+|Q2|)・L/8 − (|M1|+|M2|)/2`
+///   （端部せん断と釣り合う等分布荷重の単純梁中央モーメントから端部
+///   モーメントの平均を差し引いた復元値）と、B 式（グループ中央位置を
+///   含む分割部材の、中央位置に最も近い評価行のモーメント）の絶対値の
+///   大きい方（符号は B 式に合わせる）。
+fn beam_group_overrides(
+    model: &squid_n_core::model::Model,
+    member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
+) -> std::collections::HashMap<ElemId, std::rc::Rc<BeamGroupOverride>> {
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    let mut out: HashMap<ElemId, Rc<BeamGroupOverride>> = HashMap::new();
+
+    for group in &model.beam_groups {
+        if group.len() < 2 {
+            continue;
+        }
+        // 各分割部材の (要素, 内力, 長さ) を並び順に収集。欠けがあればスキップ。
+        let mut parts: Vec<(
+            &squid_n_core::model::ElementData,
+            &squid_n_element::beam::MemberForces,
+            f64,
+        )> = Vec::with_capacity(group.len());
+        let mut ok = true;
+        for id in group {
+            let elem = model.elements.iter().find(|e| e.id == *id);
+            let mf = member_forces
+                .iter()
+                .find(|(mid, _)| mid == id)
+                .map(|(_, m)| m);
+            match (elem, mf) {
+                (Some(e), Some(m)) if !m.at.is_empty() => {
+                    let l = elem_geometric_length(e, model);
+                    if l <= 1e-9 {
+                        ok = false;
+                        break;
+                    }
+                    parts.push((e, m, l));
+                }
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok || parts.len() < 2 {
+            continue;
+        }
+
+        let total: f64 = parts.iter().map(|p| p.2).sum();
+        let row_at = |m: &squid_n_element::beam::MemberForces, target: f64| -> Option<[f64; 6]> {
+            m.at.iter()
+                .find(|(p, _)| (p - target).abs() < 1e-9)
+                .map(|(_, f)| *f)
+        };
+        let first = parts[0].1;
+        let last = parts[parts.len() - 1].1;
+        let end_i = row_at(first, 0.0);
+        let end_j = row_at(last, 1.0);
+        let end_moments_z = match (end_i, end_j) {
+            (Some(a), Some(b)) => Some((a[5], b[5])),
+            _ => None,
+        };
+
+        // A 式: M0 = (Q1+Q2)・L/8（端部せん断と釣り合う等分布仮定）。
+        let q1 = end_i.map(|f| f[1].abs()).unwrap_or(0.0);
+        let q2 = end_j.map(|f| f[1].abs()).unwrap_or(0.0);
+        let m0_a = (q1 + q2) * total / 8.0;
+        let m_ends_avg = end_moments_z
+            .map(|(a, b)| (a.abs() + b.abs()) / 2.0)
+            .unwrap_or(0.0);
+        let mc_a = m0_a - m_ends_avg;
+
+        // B 式: グループ中央位置を含む分割部材の、中央位置に最も近い評価行。
+        let target_s = total / 2.0;
+        let mut acc = 0.0;
+        let mut mc_b: Option<f64> = None;
+        for (_, m, l) in &parts {
+            if target_s <= acc + l + 1e-9 {
+                let xi = ((target_s - acc) / l).clamp(0.0, 1.0);
+                mc_b =
+                    m.at.iter()
+                        .min_by(|a, b| {
+                            (a.0 - xi)
+                                .abs()
+                                .partial_cmp(&(b.0 - xi).abs())
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(_, f)| f[5]);
+                break;
+            }
+            acc += l;
+        }
+        let mid_moment_z = mc_b.map(|b| {
+            let sign = if b >= 0.0 { 1.0 } else { -1.0 };
+            sign * b.abs().max(mc_a)
+        });
+
+        let shear_span = parts
+            .iter()
+            .flat_map(|(_, m, _)| m.at.iter())
+            .map(|(_, f)| (f[5].abs(), f[1].abs()))
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let face_sum = parts[0].0.rigid_zone.face_i + parts[parts.len() - 1].0.rigid_zone.face_j;
+        let clear_length = if total - face_sum > 0.0 {
+            total - face_sum
+        } else {
+            total
+        };
+
+        let ov = Rc::new(BeamGroupOverride {
+            length: total,
+            end_moments_z,
+            mid_moment_z,
+            shear_span,
+            clear_length,
+        });
+        for (e, _, _) in &parts {
+            out.insert(e.id, ov.clone());
+        }
+    }
+    out
 }
 
 /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
@@ -3844,6 +4014,101 @@ mod tests {
         let mut app = App::default();
         app.run_design_check();
         assert!(app.results.is_none() || app.results.as_ref().unwrap().checks.is_empty());
+    }
+
+    /// 一本部材指定（beam_groups）: 2 分割梁のグループ合成値
+    /// （全長・端部/中央モーメント・せん断スパン代表値）の手計算照合。
+    #[test]
+    fn test_beam_group_overrides_combines_members() {
+        use smallvec::SmallVec;
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node, RigidZone,
+        };
+        use squid_n_element::beam::MemberForces;
+
+        let node = |id: u32, x: f64| Node {
+            id: NodeId(id),
+            coord: [x, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let beam = |id: u32, n0: u32, n1: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: {
+                let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+                v.push(NodeId(n0));
+                v.push(NodeId(n1));
+                v
+            },
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let model = Model {
+            nodes: vec![node(0, 0.0), node(1, 3000.0), node(2, 6000.0)],
+            elements: vec![beam(0, 0, 1), beam(1, 1, 2)],
+            beam_groups: vec![vec![ElemId(0), ElemId(1)]],
+            ..Default::default()
+        };
+        let mf = |rows: Vec<(f64, f64, f64)>| MemberForces {
+            at: rows
+                .into_iter()
+                .map(|(p, q, m)| (p, [0.0, q, 0.0, 0.0, 0.0, m]))
+                .collect(),
+        };
+        let member_forces = vec![
+            (
+                ElemId(0),
+                mf(vec![
+                    (0.0, 50_000.0, -200.0e6),
+                    (0.5, 30_000.0, 20.0e6),
+                    (1.0, 10_000.0, 100.0e6),
+                ]),
+            ),
+            (
+                ElemId(1),
+                mf(vec![
+                    (0.0, -10_000.0, 100.0e6),
+                    (0.5, -30_000.0, 20.0e6),
+                    (1.0, -50_000.0, -200.0e6),
+                ]),
+            ),
+        ];
+
+        let overrides = beam_group_overrides(&model, &member_forces);
+        let ov = overrides.get(&ElemId(0)).expect("グループ所属");
+        // 両要素が同じ合成値を共有する。
+        assert!(std::rc::Rc::ptr_eq(ov, overrides.get(&ElemId(1)).unwrap()));
+        // 全長 = 3000+3000。
+        assert!((ov.length - 6000.0).abs() < 1e-9);
+        // 端部モーメントは外端（要素0の pos0、要素1の pos1）。
+        assert_eq!(ov.end_moments_z, Some((-200.0e6, -200.0e6)));
+        // A式: M0 = (50k+50k)・6000/8 = 75e6、Mc_A = 75e6 − 200e6 < 0。
+        // B式: グループ中央(3000mm)＝要素0の pos=1.0 の行 → +100e6。
+        // 中央モーメント = max(|B|, Mc_A) に B の符号 → +100e6。
+        assert!((ov.mid_moment_z.unwrap() - 100.0e6).abs() < 1e-3);
+        // せん断スパン代表値: |M| 最大 200e6 の行の (200e6, 50e3)。
+        let (m_rep, q_rep) = ov.shear_span.unwrap();
+        assert!((m_rep - 200.0e6).abs() < 1e-3);
+        assert!((q_rep - 50_000.0).abs() < 1e-6);
+        // 剛域なし → 内法長 = 全長。
+        assert!((ov.clear_length - 6000.0).abs() < 1e-9);
+
+        // グループ未指定なら空。
+        let mut model2 = model;
+        model2.beam_groups.clear();
+        assert!(beam_group_overrides(&model2, &member_forces).is_empty());
     }
 
     /// 剛域自動算定・危険断面フィルタのテスト用モデル。

@@ -1497,6 +1497,16 @@ fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<Job
         .iter()
         .map(|(id, mf)| (*id, mf.at.as_slice()))
         .collect();
+    // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。単一ケース＝長期扱い）。
+    for (_, _, cr) in squid_n_design_jp::pca::collect_pca_checks(model, &mf_slices, true) {
+        n_checks += 1;
+        if !cr.ok {
+            n_ng += 1;
+        }
+        if cr.ratio > max_ratio {
+            max_ratio = cr.ratio;
+        }
+    }
     let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks(
         model,
         &mf_slices,

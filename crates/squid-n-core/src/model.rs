@@ -873,6 +873,13 @@ pub struct Model {
     /// PCa（プレキャスト）梁の水平接合面検定用属性（RESP-D マニュアル 04 断面検定）。
     #[serde(default)]
     pub pca_attrs: Vec<PcaBeamAttr>,
+    /// 一本部材の指定（RESP-D マニュアル 04 断面検定「採用応力 ■一本部材指定時の
+    /// 採用応力」）。各エントリは**軸方向に連続する梁要素の ID を並び順**で持ち、
+    /// 断面検定の採用応力（端部・中央モーメント、部材長、内法長、せん断スパン比
+    /// 代表値）をグループ 1 本の部材として評価する。要素の解析（剛性・内力）は
+    /// 分割部材のまま行い、検定の文脈だけを合成する。
+    #[serde(default)]
+    pub beam_groups: Vec<Vec<ElemId>>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -1052,6 +1059,7 @@ impl Model {
             && self.steel_design_attrs == other.steel_design_attrs
             && self.brb_attrs == other.brb_attrs
             && self.pca_attrs == other.pca_attrs
+            && self.beam_groups == other.beam_groups
     }
 }
 

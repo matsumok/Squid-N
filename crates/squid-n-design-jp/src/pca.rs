@@ -170,10 +170,7 @@ fn rebar_sigma_y(mat: &squid_n_core::model::Material) -> f64 {
 }
 
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
-fn closest_forces(
-    forces: crate::joint_wiring::ForcesAt<'_>,
-    pos: f64,
-) -> Option<&(f64, [f64; 6])> {
+fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
     forces.iter().min_by(|a, b| {
         (a.0 - pos)
             .abs()
@@ -323,6 +320,14 @@ fn finish(state: &str, tau_xy: f64, tau_u: f64) -> CheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallvec::SmallVec;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{MaterialId, NodeId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node,
+        PcaBeamAttr, RigidZone,
+    };
+    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
     #[test]
     fn moment_zero_distance_symmetric_beam() {
@@ -389,5 +394,181 @@ mod tests {
         let res = pca_horizontal_joint_ultimate(1000.0, 100.0, 10.0, 0.6, 0.0, 345.0);
         assert!(!res.ok);
         assert!(res.ratio.is_infinite());
+    }
+
+    // ------------------------------------------------------------------
+    // collect_pca_checks（自動配線）
+    // ------------------------------------------------------------------
+
+    /// 矩形 RC 梁 1 本（b=400, D=700, L=6000mm, X 軸方向）のモデル。
+    /// `pca_attr` を指定すると `model.pca_attrs` に登録する。
+    fn pca_beam_model(shape: SectionShape, pca_attr: Option<PcaBeamAttr>) -> Model {
+        let nodes = vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [6000.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+        ];
+        let sections = vec![shape.to_section(SectionId(0), "beam".to_string())];
+        let materials = vec![Material {
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "SD345".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        }];
+        let elements = vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: {
+                let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+                v.push(NodeId(0));
+                v.push(NodeId(1));
+                v
+            },
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        }];
+        Model {
+            nodes,
+            elements,
+            sections,
+            materials,
+            pca_attrs: pca_attr.into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
+    fn rc_rect_shape() -> SectionShape {
+        SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 6,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 4,
+                    dia: 19.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 150.0,
+                    legs: 2,
+                    grade: None,
+                },
+            },
+        }
+    }
+
+    fn default_pca_attr() -> PcaBeamAttr {
+        PcaBeamAttr {
+            elem: ElemId(0),
+            mu: 0.6,
+            pw_joint: 0.008,
+            sigma_y_joint: 345.0,
+            joint_depth_from_top: 150.0,
+        }
+    }
+
+    /// 属性が登録された RcRect 梁は 2 端部 × (使用限界・終局限界) = 4 行返し、
+    /// 使用限界の τxy は手計算（Q・Sy/(b・I)）と一致する。
+    #[test]
+    fn collect_pca_checks_returns_four_rows_and_service_matches_hand_calc() {
+        let model = pca_beam_model(rc_rect_shape(), Some(default_pca_attr()));
+        let forces: Vec<(f64, [f64; 6])> = vec![
+            (0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, -100.0e6]),
+            (0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 50.0e6]),
+            (1.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 80.0e6]),
+        ];
+        let member_forces = vec![(ElemId(0), forces.as_slice())];
+
+        let results = collect_pca_checks(&model, &member_forces, false);
+        assert_eq!(results.len(), 4, "2端部×(使用限界・終局限界)=4行のはず");
+
+        let service_rows: Vec<&(ElemId, f64, CheckResult)> = results
+            .iter()
+            .filter(|(_, _, cr)| cr.basis.contains("使用限界"))
+            .collect();
+        assert_eq!(service_rows.len(), 2);
+
+        // 手計算（pca_service_hand_calc と同一の断面・接合面位置・Q）:
+        // Sy = 400×150×(700-150)/2 = 16.5e6 mm³、I = 400×700³/12。
+        let s_y = 400.0 * 150.0 * (700.0 - 150.0) / 2.0;
+        let i = 400.0 * 700.0_f64.powi(3) / 12.0;
+        let expected_tau_xy = 200_000.0 * s_y / (400.0 * i);
+        let expected_tau_u = 0.5 * 0.6 * 0.008 * 345.0;
+        let expected_ratio = expected_tau_xy / expected_tau_u;
+        for (_, _, cr) in &service_rows {
+            assert!(
+                (cr.ratio - expected_ratio).abs() < 1e-6,
+                "ratio={} expected={}",
+                cr.ratio,
+                expected_ratio
+            );
+        }
+
+        let ultimate_rows: Vec<&(ElemId, f64, CheckResult)> = results
+            .iter()
+            .filter(|(_, _, cr)| cr.basis.contains("終局限界"))
+            .collect();
+        assert_eq!(ultimate_rows.len(), 2);
+    }
+
+    /// PCa 属性が未登録のモデルは空を返す。
+    #[test]
+    fn collect_pca_checks_empty_without_attrs() {
+        let model = pca_beam_model(rc_rect_shape(), None);
+        let forces: Vec<(f64, [f64; 6])> = vec![(0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 0.0])];
+        let member_forces = vec![(ElemId(0), forces.as_slice())];
+        assert!(collect_pca_checks(&model, &member_forces, false).is_empty());
+    }
+
+    /// RcRect 以外の断面形状（例: SteelH）は属性が登録されていてもスキップする。
+    #[test]
+    fn collect_pca_checks_skips_non_rc_rect_shape() {
+        let steel_shape = SectionShape::SteelH {
+            height: 700.0,
+            width: 300.0,
+            web_thick: 13.0,
+            flange_thick: 24.0,
+        };
+        let mut model = pca_beam_model(steel_shape, Some(default_pca_attr()));
+        // 鋼材扱いにするため fc=None（steel_h では材料の fc は使わない想定だが、
+        // RcRect 判定でスキップされることが本テストの主眼）。
+        model.materials[0].fc = None;
+        let forces: Vec<(f64, [f64; 6])> = vec![
+            (0.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, -100.0e6]),
+            (0.5, [0.0, 0.0, 0.0, 0.0, 0.0, 50.0e6]),
+            (1.0, [0.0, 200_000.0, 0.0, 0.0, 0.0, 80.0e6]),
+        ];
+        let member_forces = vec![(ElemId(0), forces.as_slice())];
+        assert!(collect_pca_checks(&model, &member_forces, false).is_empty());
     }
 }
