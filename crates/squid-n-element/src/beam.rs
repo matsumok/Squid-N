@@ -186,6 +186,29 @@ fn slab_stiffness_factor(
     (ie / i0).max(1.0)
 }
 
+/// 壁エレメントモデルの上下大梁の剛性倍率（RESP-D 計算編 02「壁エレメントモデル
+/// (壁エレメントモデル)の剛性」上下大梁の断面性能）。
+///
+/// 「上下大梁の断面性能: 通常の大梁に対し、倍率を乗じた剛性を採用します。倍率は
+/// 剛性計算条件で設定できます。既定値は100倍となります。」
+/// 壁エレメントモデルの上下大梁は、壁の剛性を四隅の節点へ正しく伝えるため剛体に
+/// 近い扱いとする。剛性計算条件 UI からの倍率変更は将来対応（現状は既定値固定）。
+pub const WALL_GIRDER_STIFF_FACTOR: f64 = 100.0;
+
+/// 自部材（両端節点 n0, n1）が壁エレメントモデルの上辺・下辺大梁かどうかを判定する。
+///
+/// `model.elements` 中に節点数4以上（四隅を持つ）の `ElementKind::Wall` 要素があり、
+/// その壁の節点集合に自部材の両端節点がともに含まれていれば、その壁の上辺または
+/// 下辺の大梁とみなす（RESP-D 計算編 02「壁エレメントモデルの上下大梁」）。
+fn is_wall_top_bottom_girder(model: &Model, n0: NodeId, n1: NodeId) -> bool {
+    model.elements.iter().any(|e| {
+        matches!(e.kind, squid_n_core::model::ElementKind::Wall)
+            && e.nodes.len() >= 4
+            && e.nodes.contains(&n0)
+            && e.nodes.contains(&n1)
+    })
+}
+
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
         let n0 = data.nodes[0];
@@ -272,6 +295,25 @@ impl BeamElement {
         } else {
             iy
         };
+
+        // 壁エレメントモデルの上下大梁の剛性倍率（RESP-D 計算編 02「上下大梁の断面性能」）。
+        // 対象は水平材（協力幅判定と同様、勾配 5% までは水平とみなす）かつ、両端節点が
+        // 四隅を持つ Wall 要素の節点集合に含まれる（=壁の上辺・下辺の大梁）場合のみ。
+        // 倍率は剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
+        // 幾何断面のまま変更しない。
+        let lp = (dx * dx + dy * dy).sqrt();
+        let is_horizontal = lp > 1e-9 && dz.abs() <= 0.05 * lp;
+        let wall_girder_factor = if is_horizontal && is_wall_top_bottom_girder(model, n0, n1) {
+            WALL_GIRDER_STIFF_FACTOR
+        } else {
+            1.0
+        };
+        let a_stiff = a_stiff * wall_girder_factor;
+        let iy = iy * wall_girder_factor;
+        let iz = iz * wall_girder_factor;
+        let j = j * wall_girder_factor;
+        let as_y = as_y * wall_girder_factor;
+        let as_z = as_z * wall_girder_factor;
 
         Self {
             id: data.id,
@@ -2213,6 +2255,296 @@ mod tests {
             (zone.face_i - 300.0).abs() < 1e-9,
             "壁のせいが紛れ込んでいないはず: face_i={}",
             zone.face_i
+        );
+    }
+
+    /// 壁エレメントモデルの上下大梁の剛性倍率（RESP-D 計算編 02「上下大梁の断面性能」）。
+    /// 4節点 Wall 要素の下辺2節点を結ぶ水平梁は iy/a が既定倍率（100倍）になる。
+    #[test]
+    fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
+
+        let sec = Section {
+            id: SectionId(0),
+            name: "beam".to_string(),
+            area: 60000.0,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e7,
+            depth: 600.0,
+            width: 300.0,
+            as_y: 50000.0,
+            as_z: 50000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "conc".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+        };
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+        ];
+        let beam_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+
+        // 壁なしモデル（基準）
+        let model_no_wall = Model {
+            nodes: nodes.clone(),
+            elements: vec![beam_elem.clone()],
+            sections: vec![sec.clone()],
+            materials: vec![mat.clone()],
+            ..Default::default()
+        };
+        let beam_no_wall = BeamElement::new(&beam_elem, &model_no_wall);
+
+        // 壁ありモデル: 節点0-1が下辺、2-3が上辺の4節点壁
+        let wall_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let model_with_wall = Model {
+            nodes,
+            elements: vec![beam_elem.clone(), wall_elem],
+            sections: vec![sec],
+            materials: vec![mat],
+            ..Default::default()
+        };
+        let beam_with_wall = BeamElement::new(&beam_elem, &model_with_wall);
+
+        assert!(
+            (beam_with_wall.iy / beam_no_wall.iy - WALL_GIRDER_STIFF_FACTOR).abs() < 1e-9,
+            "iy倍率が既定100倍でない: with={} without={}",
+            beam_with_wall.iy,
+            beam_no_wall.iy
+        );
+        assert!(
+            (beam_with_wall.a / beam_no_wall.a - WALL_GIRDER_STIFF_FACTOR).abs() < 1e-9,
+            "a倍率が既定100倍でない: with={} without={}",
+            beam_with_wall.a,
+            beam_no_wall.a
+        );
+        // 質量用断面積（a_mass）は倍率の対象外
+        assert!(
+            (beam_with_wall.a_mass - beam_no_wall.a_mass).abs() < 1e-9,
+            "a_massは変更されないはず"
+        );
+    }
+
+    /// 壁の節点を1つしか共有しない梁（壁の上辺・下辺ではない）には倍率が掛からない。
+    #[test]
+    fn test_beam_new_wall_girder_requires_both_nodes_shared() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
+
+        let sec = Section {
+            id: SectionId(0),
+            name: "beam".to_string(),
+            area: 60000.0,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e7,
+            depth: 600.0,
+            width: 300.0,
+            as_y: 50000.0,
+            as_z: 50000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "conc".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+        };
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        // 節点1は壁の隅、節点4は壁に属さない別節点（梁は壁の外へ伸びる）
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+            make_node(4, [8000.0, 0.0, 0.0]),
+        ];
+        let beam_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(1), NodeId(4)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let wall_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let model = Model {
+            nodes,
+            elements: vec![beam_elem.clone(), wall_elem],
+            sections: vec![sec.clone()],
+            materials: vec![mat],
+            ..Default::default()
+        };
+        let beam = BeamElement::new(&beam_elem, &model);
+        assert!(
+            (beam.iy - sec.iy).abs() < 1e-9,
+            "壁節点を1つしか共有しない梁には倍率が掛からないはず: iy={}",
+            beam.iy
+        );
+    }
+
+    /// 鉛直材（柱）は壁節点を2つ共有していても水平材ではないため倍率は掛からない。
+    #[test]
+    fn test_beam_new_wall_girder_vertical_member_not_scaled() {
+        use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+        use squid_n_core::model::{ElementData, ElementKind, ForceRegime, LocalAxis, Model};
+
+        let sec = Section {
+            id: SectionId(0),
+            name: "column".to_string(),
+            area: 60000.0,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e7,
+            depth: 600.0,
+            width: 300.0,
+            as_y: 50000.0,
+            as_z: 50000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let mat = Material {
+            id: MaterialId(0),
+            name: "conc".to_string(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+        };
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+        };
+        let nodes = vec![
+            make_node(0, [0.0, 0.0, 0.0]),
+            make_node(1, [4000.0, 0.0, 0.0]),
+            make_node(2, [4000.0, 0.0, 3000.0]),
+            make_node(3, [0.0, 0.0, 3000.0]),
+        ];
+        // 左辺（節点0-3）を結ぶ鉛直材。両端とも壁の節点だが鉛直材なので対象外。
+        let column_elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let wall_elem = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+        };
+        let model = Model {
+            nodes,
+            elements: vec![column_elem.clone(), wall_elem],
+            sections: vec![sec.clone()],
+            materials: vec![mat],
+            ..Default::default()
+        };
+        let column = BeamElement::new(&column_elem, &model);
+        assert!(
+            (column.iy - sec.iy).abs() < 1e-9,
+            "鉛直材は水平材ではないため倍率が掛からないはず: iy={}",
+            column.iy
         );
     }
 }
