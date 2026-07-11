@@ -16,23 +16,37 @@
 //!   設計用せん断力は等価梁化された壁要素の内力の最大水平せん断成分を用いる
 //!   （暫定）。`Model::wall_attrs` に開口面積合計・個別開口寸法・三方スリット
 //!   の有無が登録されている場合は以下のとおり配線する。
-//!   - `WallAttr::opening_dims()` が `Some` かつ要素数 1（単一開口）の場合は
-//!     開口の実寸法 `(l0,h0)` をそのまま用いる（等価開口への置換はしない）。
-//!     単一開口は実寸法そのものが RC規準18条の `γ1=1−l0/l`・`γ3=1−h0/h` に
-//!     直接効くため、面積が同じでも辺長比が壁と異なれば等価開口に置換した
-//!     場合と検定比が変わる。
-//!   - `opening_dims()` が `Some` かつ複数開口の場合は
+//!   - まず `Model::multi_opening_mode`（建物一律。既定は `Equivalent`）に
+//!     応じて `WallAttr::opening_dims_for(mode)` でモード適用後の個別開口
+//!     `(l0,h0)` 列を得る（RESP-D マニュアル計算編02「複数開口の取り扱い」）。
+//!     - `Equivalent`: 個別開口をそのまま返す（従来どおり）。
+//!     - `Envelope`: 位置（`offset`）を持つ開口全体の包絡矩形 1 つに置換
+//!       する。位置不明の開口は包絡できないため個別のまま残る。
+//!     - `Auto`: 包絡可能な開口対が無くなるまで繰り返し包絡開口を作成し、
+//!       残った開口列を返す。
+//!   - モード適用後のリストが要素数 1（単一開口）の場合は開口の実寸法
+//!     `(l0,h0)` をそのまま用いる（等価開口への置換はしない）。単一開口は
+//!     実寸法そのものが RC規準18条の `γ1=1−l0/l`・`γ3=1−h0/h` に直接効く
+//!     ため、面積が同じでも辺長比が壁と異なれば等価開口に置換した場合と
+//!     検定比が変わる。
+//!   - モード適用後のリストが複数残る場合（`Equivalent` で複数開口のまま、
+//!     `Auto` で包絡しきれない対が残る、`Envelope` で位置不明の開口が残る、
+//!     のいずれか）は、マニュアル「包絡できなくなった時点の開口状況で
+//!     『等価開口とする』と同様の判定を行います」に従い、
 //!     [`crate::wall_opening::equivalent_opening`] で面積総和を保つ単一の
-//!     等価開口 `(l0′,h0′)` に統合する（RESP-D マニュアル計算編02
-//!     「複数開口の取り扱い」）。
-//!   - `opening_dims()` が `None`（個別寸法未入力・合計面積のみ）の場合は
-//!     従来どおり壁と同じ辺長比を持つ擬似ペアから
+//!     等価開口 `(l0′,h0′)` に統合する。
+//!   - `opening_dims_for(mode)` が `None`（個別寸法未入力・合計面積のみ）の
+//!     場合は従来どおり壁と同じ辺長比を持つ擬似ペア（面積は
+//!     `WallAttr::total_opening_area_for(mode)` で評価。個別開口が無い
+//!     ためモードによらず合計面積と同値）から
 //!     [`crate::wall_opening::equivalent_opening`] で等価開口を復元する
 //!     （後方互換）。
 //!   - いずれの経路で得た `(l0′,h0′)` も壁寸法 `(l,h)` を超える場合は
 //!     安全側にクランプしたうえで、[`crate::joint::rc_wall_shear_check`] の
 //!     `RcWallInput.opening` へ供給する（RC規準18条のせん断耐力検定用の
-//!     低減係数 `r=min(γ1,γ2,γ3)`）。
+//!     低減係数 `r=min(γ1,γ2,γ3)`）。開口周比 r0（耐震壁判定用、下記）も
+//!     このモード適用後の `(l0′,h0′)` から算定するため、判定・検定の双方が
+//!     選択したモードに整合する。
 //!   - 一方、耐震壁として扱ってよいか（スリットの有無・壁厚・開口周比 r0）は
 //!     [`crate::wall_opening::is_seismic_wall`]（RESP-D マニュアル 02 剛性計算）
 //!     で判定し、`false` の壁は本検定自体をスキップする（耐震壁ではない
@@ -233,17 +247,22 @@ pub fn collect_joint_checks(
         // 開口寸法 (l0',h0') の評価。h・l ≤ 0（寸法不定）の場合は開口ゼロ扱い
         // とする。
         let (mut l0p, mut h0p) = if h > 1e-9 && l > 1e-9 {
-            match attr.and_then(|a| a.opening_dims()) {
-                // 単一開口: 実寸法をそのまま使う（γ1=1-l0/l・γ3=1-h0/h へ実寸法
-                // が直接効くため、等価開口への置換はしない）。
+            match attr.and_then(|a| a.opening_dims_for(model.multi_opening_mode)) {
+                // モード適用後の開口が単一（複数開口の包絡・統合の結果 1 個に
+                // なった場合を含む）: 実寸法をそのまま使う（γ1=1-l0/l・
+                // γ3=1-h0/h へ実寸法が直接効くため、等価開口への置換はしない）。
                 Some(dims) if dims.len() == 1 => dims[0],
-                // 複数開口: 面積総和を保つ単一の等価開口に統合する
+                // モード適用後も複数開口が残る場合（Auto で包絡しきれない対
+                // が残る・Envelope で位置不明の開口が残る・Equivalent で
+                // 複数開口のまま）は、面積総和を保つ単一の等価開口に統合する
                 // （RESP-D マニュアル計算編02「複数開口の取り扱い」）。
                 Some(dims) => equivalent_opening(&dims, l, h),
                 // 個別寸法が未入力（合計面積のみ）の場合は従来どおり、壁と
                 // 同じ辺長比を持つ擬似ペアから等価開口を復元する（後方互換）。
                 None => {
-                    let area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
+                    let area = attr
+                        .map(|a| a.total_opening_area_for(model.multi_opening_mode))
+                        .unwrap_or(0.0);
                     if area > 0.0 {
                         equivalent_opening(&[(area / h, h)], l, h)
                     } else {
@@ -593,21 +612,23 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
-        ElementData, EndCondition, ForceRegime, LocalAxis, Material, Node, RigidZone, Section,
-        WallAttr, WallOpening,
+        ElementData, EndCondition, ForceRegime, LocalAxis, Material, MultiOpeningMode, Node,
+        RigidZone, Section, WallAttr, WallOpening,
     };
     use squid_n_core::section_shape::SectionShape;
 
     /// 矩形壁（4000×3000, t=180）1 枚のみのモデル。側柱なし。
     /// `wall_attr` を指定すると `model.wall_attrs` に登録する。
     fn wall_model(wall_attr: Option<WallAttr>) -> Model {
+        wall_model_sized(4000.0, 3000.0, 180.0, wall_attr)
+    }
+
+    /// 矩形壁（`l`×`h`, 厚さ `thickness`）1 枚のみのモデル。側柱なし。
+    /// `wall_model` の寸法可変版（近接開口・包絡開口のテストで、開口周比 r0
+    /// を任意の壁面積に対して調整するために用いる）。
+    fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>) -> Model {
         let mut nodes: Vec<Node> = Vec::new();
-        let coords = [
-            [0.0, 0.0, 0.0],
-            [4000.0, 0.0, 0.0],
-            [4000.0, 0.0, 3000.0],
-            [0.0, 0.0, 3000.0],
-        ];
+        let coords = [[0.0, 0.0, 0.0], [l, 0.0, 0.0], [l, 0.0, h], [0.0, 0.0, h]];
         for (i, c) in coords.iter().enumerate() {
             nodes.push(Node {
                 id: NodeId(i as u32),
@@ -633,9 +654,9 @@ mod tests {
             as_y: 0.0,
             as_z: 0.0,
             panel_thickness: None,
-            thickness: Some(180.0),
+            thickness: Some(thickness),
             shape: Some(SectionShape::RcWall {
-                thickness: 180.0,
+                thickness,
                 ps: 0.006,
             }),
         }];
@@ -878,5 +899,146 @@ mod tests {
             ],
         }));
         assert!(wall_check_result(&model, &forces).is_none());
+    }
+
+    /// 近接する2開口（水平純間隔200mm、高さ位置が一致）は、`Auto` モードでは
+    /// 包絡可能条件（純間隔が両開口の当該方向寸法の小さい方以下）を満たすため
+    /// 幅2000×高2000の単一の包絡開口に統合され、実寸法経路（単一開口）として
+    /// 検定される。既定の `Equivalent` モードでは個別開口のまま
+    /// `equivalent_opening` で等価開口に統合されるため、両モードで検定比が
+    /// 異なる（r0 の判定を通すため、壁は 8000×4000 とやや大きめに取る）。
+    #[test]
+    fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
+        let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+        let openings = vec![
+            WallOpening {
+                width: 1000.0,
+                height: 2000.0,
+                offset: Some([0.0, 0.0]),
+            },
+            WallOpening {
+                width: 800.0,
+                height: 2000.0,
+                offset: Some([1200.0, 0.0]),
+            },
+        ];
+
+        // 既定（Equivalent）モード: 個別開口のまま equivalent_opening で統合。
+        let model_equiv = wall_model_sized(
+            8000.0,
+            4000.0,
+            180.0,
+            Some(WallAttr {
+                elem: ElemId(0),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                three_side_slit: false,
+                openings: openings.clone(),
+            }),
+        );
+        let res_equiv = wall_check_result(&model_equiv, &forces)
+            .expect("Equivalent モードは耐震壁として検定されるはず");
+
+        // Auto モード: 純間隔(200)が両開口の幅(800,1000)以下・高さ方向の
+        // 純間隔が 0（重なり）のため包絡可能 → 幅2000×高2000の単一開口
+        // （実寸法経路）に統合される。
+        let mut model_auto = wall_model_sized(
+            8000.0,
+            4000.0,
+            180.0,
+            Some(WallAttr {
+                elem: ElemId(0),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                three_side_slit: false,
+                openings,
+            }),
+        );
+        model_auto.multi_opening_mode = MultiOpeningMode::Auto;
+        let res_auto = wall_check_result(&model_auto, &forces)
+            .expect("Auto モードで包絡後も耐震壁として検定されるはず");
+
+        // 期待値: 幅2000×高2000の単一開口を実寸法経路で直接検定した結果。
+        let model_single = wall_model_sized(
+            8000.0,
+            4000.0,
+            180.0,
+            Some(WallAttr {
+                elem: ElemId(0),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                three_side_slit: false,
+                openings: vec![WallOpening {
+                    width: 2000.0,
+                    height: 2000.0,
+                    offset: None,
+                }],
+            }),
+        );
+        let res_single = wall_check_result(&model_single, &forces)
+            .expect("包絡開口相当の単一開口も耐震壁として検定されるはず");
+
+        assert!(
+            (res_auto.ratio - res_single.ratio).abs() < 1e-9,
+            "Auto ratio={} と包絡開口(実寸法)直接計算 ratio={} が不一致",
+            res_auto.ratio,
+            res_single.ratio
+        );
+        assert!(
+            (res_auto.ratio - res_equiv.ratio).abs() > 1e-6,
+            "Auto ratio={} と Equivalent ratio={} が一致してしまっている",
+            res_auto.ratio,
+            res_equiv.ratio
+        );
+    }
+
+    /// 遠く離れた小開口2つは、既定（Equivalent）モードでは面積和が小さく
+    /// 耐震壁として検定されるが、`Envelope` モードでは全開口を包絡した巨大な
+    /// 矩形の面積で開口周比 r0 を評価するため r0>0.4 となり、耐震壁として
+    /// 扱われず検定自体が出力されない。
+    #[test]
+    fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
+        let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
+        let openings = vec![
+            WallOpening {
+                width: 200.0,
+                height: 200.0,
+                offset: Some([0.0, 0.0]),
+            },
+            WallOpening {
+                width: 200.0,
+                height: 200.0,
+                offset: Some([3500.0, 2500.0]),
+            },
+        ];
+
+        // 既定（Equivalent）モード: 面積和 = 200*200*2 = 80,000
+        // → r0 = sqrt(80,000 / (4000*3000)) ≈ 0.0816 ≤ 0.4 で耐震壁として検定。
+        let model_equiv = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: openings.clone(),
+        }));
+        assert!(
+            wall_check_result(&model_equiv, &forces).is_some(),
+            "Equivalent モードでは小開口のため耐震壁として検定されるはず"
+        );
+
+        // Envelope モード: 包絡矩形は幅3700×高2700 = 9,990,000
+        // → r0 = sqrt(9,990,000 / (4000*3000)) ≈ 0.912 > 0.4 で耐震壁から除外。
+        let mut model_envelope = wall_model(Some(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings,
+        }));
+        model_envelope.multi_opening_mode = MultiOpeningMode::Envelope;
+        assert!(
+            wall_check_result(&model_envelope, &forces).is_none(),
+            "Envelope モードでは包絡矩形が大きく耐震壁から除外されるはず"
+        );
     }
 }

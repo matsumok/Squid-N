@@ -1657,6 +1657,25 @@ impl EditCommand for SetLoadCfg {
     }
 }
 
+/// 複数開口の取り扱い（`Model::multi_opening_mode`）を建物一律に変更する。
+/// 逆操作は変更前のモードへの [`SetMultiOpeningMode`] 再実行（[`SetLoadCfg`]
+/// と同様の対称パターン）。値が変化しない場合も同じ型を返す（Noop 相当。
+/// 既存の値置換系コマンドの慣習どおり、同値判定による分岐は行わない）。
+pub struct SetMultiOpeningMode {
+    pub mode: squid_n_core::model::MultiOpeningMode,
+}
+
+impl EditCommand for SetMultiOpeningMode {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let old = std::mem::replace(&mut model.multi_opening_mode, self.mode);
+        Box::new(SetMultiOpeningMode { mode: old })
+    }
+
+    fn label(&self) -> &str {
+        "複数開口の取り扱い変更"
+    }
+}
+
 /// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性（`WallAttr`）を
 /// 追加/更新する。`attr.elem` に一致する既存エントリがあれば置換し、
 /// 無ければ末尾に追加する。逆操作は変更前の状態への復元
@@ -3456,5 +3475,59 @@ mod tests {
         assert_eq!(model.slabs[0].one_way, Some(OneWayDir::X));
         stack.undo(&mut model);
         assert_eq!(model.slabs[0].one_way, None);
+    }
+
+    #[test]
+    fn test_set_multi_opening_mode_roundtrip() {
+        use squid_n_core::model::MultiOpeningMode;
+        let mut model = empty_model();
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(SetMultiOpeningMode {
+                mode: MultiOpeningMode::Envelope,
+            }),
+        );
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+
+        stack.run(
+            &mut model,
+            Box::new(SetMultiOpeningMode {
+                mode: MultiOpeningMode::Auto,
+            }),
+        );
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Auto);
+
+        stack.undo(&mut model);
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+        stack.undo(&mut model);
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
+
+        stack.redo(&mut model);
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Envelope);
+        stack.redo(&mut model);
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Auto);
+    }
+
+    /// 同じモードへの再設定でも既存の値置換系コマンドと同様に処理される
+    /// （同値判定による分岐なし。undo すれば必ず変更前の値へ戻る）。
+    #[test]
+    fn test_set_multi_opening_mode_same_value_is_symmetric() {
+        use squid_n_core::model::MultiOpeningMode;
+        let mut model = empty_model();
+        let mut stack = UndoStack::new();
+
+        stack.run(
+            &mut model,
+            Box::new(SetMultiOpeningMode {
+                mode: MultiOpeningMode::Equivalent,
+            }),
+        );
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
+
+        stack.undo(&mut model);
+        assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
     }
 }

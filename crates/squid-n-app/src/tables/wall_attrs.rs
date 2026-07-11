@@ -1,11 +1,29 @@
 //! 壁属性（`Model.wall_attrs` = `WallAttr`: 開口面積・開口部重量・三方スリット）
 //! の編集 UI。対象は `ElementKind::Wall`/`Shell` の部材のみ。
 //! 編集は `squid_n_edit::{SetWallAttr, RemoveWallAttr}` 経由（undo 対応）。
+//! 併せて、建物一律の複数開口の取り扱い（`Model.multi_opening_mode`）を
+//! `squid_n_edit::SetMultiOpeningMode` 経由で編集する（undo 対応）。
 
 use crate::app::App;
 use squid_n_core::ids::ElemId;
-use squid_n_core::model::{ElementKind, WallAttr, WallOpening};
-use squid_n_edit::{RemoveWallAttr, SetWallAttr};
+use squid_n_core::model::{ElementKind, MultiOpeningMode, WallAttr, WallOpening};
+use squid_n_edit::{RemoveWallAttr, SetMultiOpeningMode, SetWallAttr};
+
+/// 複数開口の取り扱い（`MultiOpeningMode`）の選択肢一覧（UI 表示順）。
+const MULTI_OPENING_MODES: [MultiOpeningMode; 3] = [
+    MultiOpeningMode::Equivalent,
+    MultiOpeningMode::Envelope,
+    MultiOpeningMode::Auto,
+];
+
+/// `MultiOpeningMode` の表示ラベル（RESP-D マニュアル計算編 02「剛性計算」の用語）。
+fn multi_opening_mode_label(mode: MultiOpeningMode) -> &'static str {
+    match mode {
+        MultiOpeningMode::Equivalent => "等価開口とする",
+        MultiOpeningMode::Envelope => "包絡する",
+        MultiOpeningMode::Auto => "包絡開口・等価開口自動判定",
+    }
+}
 
 /// 壁属性フォームのドラフト状態（GUI 専用）。
 /// 対象壁を選択すると `synced_for` の壁の現在値でバッファを初期化し、
@@ -122,6 +140,35 @@ pub fn format_openings(openings: &[WallOpening]) -> String {
 }
 
 pub fn wall_attrs_table(ui: &mut egui::Ui, app: &mut App) {
+    // ── 複数開口の取り扱い（建物一律） ─────────────────────────
+    ui.horizontal(|ui| {
+        ui.label("複数開口の取り扱い(建物一律):");
+        let current = app.model.multi_opening_mode;
+        let combo = egui::ComboBox::from_id_salt("multi_opening_mode")
+            .selected_text(multi_opening_mode_label(current))
+            .show_ui(ui, |ui| {
+                for mode in MULTI_OPENING_MODES {
+                    if ui
+                        .selectable_label(current == mode, multi_opening_mode_label(mode))
+                        .clicked()
+                        && current != mode
+                    {
+                        app.undo
+                            .run(&mut app.model, Box::new(SetMultiOpeningMode { mode }));
+                        app.staleness.mark_edited();
+                    }
+                }
+            });
+        combo
+            .response
+            .on_hover_text("包絡開口・等価開口自動判定の包絡可能条件は暫定基準です(要原典照合)。");
+    });
+    ui.label(
+        "このモードは剛性の開口低減・耐震壁判定・検定の開口評価に適用されます\
+         （自重控除は常に実開口面積を用います）。",
+    );
+    ui.separator();
+
     ui.label(
         "壁要素(Wall/Shell)の自重算定属性（開口控除・開口部重量・三方スリット）を設定します。",
     );

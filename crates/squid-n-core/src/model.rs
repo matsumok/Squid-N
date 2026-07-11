@@ -1131,7 +1131,10 @@ mod tests {
         assert!((out[0].width - 2000.0).abs() < 1e-9);
         assert!((out[1].width - 900.0).abs() < 1e-9);
         // 等価モードは元のまま
-        assert_eq!(attr.openings_for_mode(MultiOpeningMode::Equivalent).len(), 3);
+        assert_eq!(
+            attr.openings_for_mode(MultiOpeningMode::Equivalent).len(),
+            3
+        );
     }
 
     /// 自動判定の包絡可能条件(暫定): 純間隔が min(寸法) を超えると包絡しない。
