@@ -81,7 +81,9 @@ impl WallPanelElement {
         let lw = 0.5 * (lw_bot + lw_top);
 
         // 壁板厚: RcWall 形状 → Section.thickness → Section.width の順で採用
-        let sec = data.section.and_then(|sid| model.sections.get(sid.index()))?;
+        let sec = data
+            .section
+            .and_then(|sid| model.sections.get(sid.index()))?;
         let t = match &sec.shape {
             Some(SectionShape::RcWall { thickness, .. }) => *thickness,
             _ => sec.thickness.unwrap_or(sec.width),
@@ -312,9 +314,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
-    use squid_n_core::model::{
-        ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node,
-    };
+    use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node};
     use squid_n_core::section_shape::SectionShape;
 
     /// 4000×3000×t150 の壁（X-Z 面内）を持つモデル。
@@ -390,7 +390,10 @@ mod tests {
             }
             for i in 0..24 {
                 let f: f64 = (0..24).map(|j| k.get(i, j) * u[j]).sum();
-                assert!(f.abs() < 1e-6, "剛体移動で内力が生じた: dir={dir} i={i} f={f}");
+                assert!(
+                    f.abs() < 1e-6,
+                    "剛体移動で内力が生じた: dir={dir} i={i} f={f}"
+                );
             }
         }
     }

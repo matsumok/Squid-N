@@ -232,10 +232,16 @@ pub fn build_nonlinear_behavior(
         // 一般ブレース：マニュアル「弾塑性解析の場合は初期剛性は1倍とする」に従い、
         // tension_only の値によらず factor=1.0 で生成する（引張専用の非対称剛性・
         // 圧縮側座屈等を反映する真の非線形挙動は未実装。将来課題）。
-        ElementKind::Brace { .. } => (
-            Box::new(crate::truss::TrussElement::new(data, model, 1.0)),
-            ElemState::default(),
-        ),
+        // 一般ブレース(弾塑性): 初期剛性1倍(RESP-D計算編02)。引張専用は
+        // 圧縮側の剛性・軸力を実質ゼロとするスラック挙動でモデル化する。
+        ElementKind::Brace { tension_only } => {
+            let truss = if tension_only {
+                crate::truss::TrussElement::new_tension_only_nonlinear(data, model)
+            } else {
+                crate::truss::TrussElement::new(data, model, 1.0)
+            };
+            (Box::new(truss), ElemState::default())
+        }
         // PanelZone / Shell / Wall は現状の挙動（弾性ベース）を踏襲。
         _ => build_behavior(data, model),
     }

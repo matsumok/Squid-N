@@ -4,6 +4,11 @@ use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementData, Material, Model, Section};
+use std::any::Any;
+
+/// 引張専用非線形モードにおける圧縮側（スラック）の剛性倍率。
+/// ゼロにすると特異になり得るため、数値安定用に EA/L の 1e-6 倍を残す。
+const NONLINEAR_COMPRESSION_FACTOR: f64 = 1e-6;
 
 /// 一般ブレース要素（RESP-D マニュアル計算編02「剛性計算」§一般ブレースの剛性）。
 ///
@@ -27,8 +32,14 @@ pub struct TrussElement {
     pub density: f64,
     pub nodes: [NodeId; 2],
     pub axis: LocalFrame,
-    /// 確定変位（線形要素の内力計算用。グローバル座標系で蓄積）。
+    /// 確定変位（線形モードの内力計算用。グローバル座標系で蓄積）。
     pub committed_disp: [f64; 12],
+    /// 引張専用非線形モードフラグ（true: 弾塑性解析用。圧縮側は剛性を実質ゼロとする）。
+    pub nonlinear: bool,
+    /// 非線形モードの確定軸伸び（部材軸方向、引張正、mm）。
+    committed_elongation: f64,
+    /// 非線形モードの試行軸伸び（未確定、mm）。
+    trial_elongation: f64,
 }
 
 fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Section {
@@ -121,22 +132,52 @@ impl TrussElement {
             nodes: [n0, n1],
             axis,
             committed_disp: [0.0; 12],
+            nonlinear: false,
+            committed_elongation: 0.0,
+            trial_elongation: 0.0,
         }
+    }
+
+    /// 引張専用ブレースの弾塑性解析用コンストラクタ（RESP-D マニュアル計算編02
+    /// 「一般ブレースの剛性」）。弾塑性解析では初期剛性を1倍（factor=1.0）とし、
+    /// 圧縮側では軸力を負担しない非線形挙動（真のスラック挙動）を持たせる。
+    pub fn new_tension_only_nonlinear(data: &ElementData, model: &Model) -> Self {
+        let mut elem = Self::new(data, model, 1.0);
+        elem.nonlinear = true;
+        elem
     }
 
     /// 局所座標系での 12×12 剛性行列。軸方向（ux, ux_j）成分のみ非ゼロ。
     /// k = factor·E·A/L（RESP-D マニュアル計算編02「一般ブレースの剛性」KB = E·A/L）。
     pub fn local_stiffness(&self) -> LocalMat {
+        self.local_stiffness_with_factor(self.factor)
+    }
+
+    /// 剛性倍率を明示指定した局所剛性行列（非線形モードの現在剛性計算用）。
+    fn local_stiffness_with_factor(&self, factor: f64) -> LocalMat {
         let mut k = LocalMat::zeros(12);
         if self.length < 1e-12 {
             return k;
         }
-        let ka = self.factor * self.e * self.a / self.length;
+        let ka = factor * self.e * self.a / self.length;
         k.set(0, 0, ka);
         k.set(6, 6, ka);
         k.set(0, 6, -ka);
         k.set(6, 0, -ka);
         k
+    }
+
+    /// 非線形モードにおける現在剛性倍率。伸び（引張正）がゼロ以上（初期状態
+    /// 含む）なら EA/L（factor=1.0）、負（圧縮・スラック）なら数値安定用の
+    /// 微小剛性とする。
+    fn nonlinear_stiffness_factor(elongation: f64) -> f64 {
+        // 伸びゼロ(初期状態)は初期剛性1倍(マニュアル「弾塑性解析の場合は
+        // 初期剛性は1倍としてモデル化されます」)。圧縮に入った時点でスラック。
+        if elongation >= 0.0 {
+            1.0
+        } else {
+            NONLINEAR_COMPRESSION_FACTOR
+        }
     }
 }
 
@@ -165,26 +206,60 @@ impl ElementBehavior for TrussElement {
         // ElementBehavior::tangent_stiffness は全体系を返す契約（beam.rs 参照）。
         // 部材軸方向ベクトル t による K = k·(t·tᵀ) 展開は、ローカル軸剛性を
         // 回転行列で全体系へ回すことと等価（t = axis.rot[0]）。
-        self.axis.to_global(&self.local_stiffness())
+        if self.nonlinear {
+            let factor = Self::nonlinear_stiffness_factor(self.trial_elongation);
+            self.axis
+                .to_global(&self.local_stiffness_with_factor(factor))
+        } else {
+            self.axis.to_global(&self.local_stiffness())
+        }
     }
 
     fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
-        let k = self.axis.to_global(&self.local_stiffness());
-        let mut f = LocalVec {
-            data: SmallVec::from_elem(0.0, 12),
-        };
-        for i in 0..12 {
-            let mut s = 0.0;
-            for j in 0..12 {
-                s += k.get(i, j) * self.committed_disp[j];
+        if self.nonlinear {
+            let mut f = LocalVec {
+                data: SmallVec::from_elem(0.0, 12),
+            };
+            // 圧縮（伸び<=0、スラック）では軸力を負担しない。
+            if self.trial_elongation > 0.0 && self.length >= 1e-12 {
+                let n = self.e * self.a / self.length * self.trial_elongation;
+                let t = self.axis.rot[0];
+                for k in 0..3 {
+                    f.data[k] = -n * t[k];
+                    f.data[6 + k] = n * t[k];
+                }
             }
-            f.data[i] = s;
+            f
+        } else {
+            let k = self.axis.to_global(&self.local_stiffness());
+            let mut f = LocalVec {
+                data: SmallVec::from_elem(0.0, 12),
+            };
+            for i in 0..12 {
+                let mut s = 0.0;
+                for j in 0..12 {
+                    s += k.get(i, j) * self.committed_disp[j];
+                }
+                f.data[i] = s;
+            }
+            f
         }
-        f
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        if commit {
+        if self.nonlinear {
+            // 全体系 du を部材軸方向へ射影して軸伸びの増分を取り出す
+            // （concentrated.rs の committed/trial パターンに準拠）。
+            let du_global: [f64; 12] = std::array::from_fn(|i| du.data[i]);
+            let du_local = self.axis.rotate_to_local(&du_global);
+            let delong = du_local[6] - du_local[0];
+            if commit {
+                self.committed_elongation += delong;
+                self.trial_elongation = self.committed_elongation;
+            } else {
+                self.trial_elongation = self.committed_elongation + delong;
+            }
+        } else if commit {
             for i in 0..12 {
                 self.committed_disp[i] += du.data[i];
             }
@@ -240,6 +315,56 @@ impl ElementBehavior for TrussElement {
                 (1.0, [n, 0.0, 0.0, 0.0, 0.0, 0.0]),
             ],
         })
+    }
+
+    /// 非線形モードの軸伸び（確定・試行）をスナップショット
+    /// （concentrated.rs の committed/trial パターンに準拠）。
+    fn snapshot_state(&self) -> Box<dyn Any> {
+        Box::new((self.committed_elongation, self.trial_elongation))
+    }
+
+    fn restore_state(&mut self, state: &dyn Any) {
+        if let Some(&(committed, trial)) = state.downcast_ref::<(f64, f64)>() {
+            self.committed_elongation = committed;
+            self.trial_elongation = trial;
+        }
+    }
+
+    fn commit_state(&mut self) {
+        if self.nonlinear {
+            self.committed_elongation = self.trial_elongation;
+        }
+    }
+
+    fn revert_state(&mut self) {
+        if self.nonlinear {
+            self.trial_elongation = self.committed_elongation;
+        }
+    }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct TrussCheckpoint {
+            committed_elongation: f64,
+            trial_elongation: f64,
+        }
+        let cp = TrussCheckpoint {
+            committed_elongation: self.committed_elongation,
+            trial_elongation: self.trial_elongation,
+        };
+        bincode::serialize(&cp).expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(&mut self, data: &[u8]) {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct TrussCheckpoint {
+            committed_elongation: f64,
+            trial_elongation: f64,
+        }
+        if let Ok(cp) = bincode::deserialize::<TrussCheckpoint>(data) {
+            self.committed_elongation = cp.committed_elongation;
+            self.trial_elongation = cp.trial_elongation;
+        }
     }
 }
 
@@ -408,5 +533,148 @@ mod tests {
         for i in 0..12 {
             assert!(f.data[i].abs() < 1e-6, "f[{i}]={}", f.data[i]);
         }
+    }
+
+    /// j端の軸方向変位を与える du ベクトル（他自由度はゼロ）。
+    fn axial_du(dj: f64) -> LocalVec {
+        LocalVec {
+            data: SmallVec::from_vec(vec![
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, dj, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]),
+        }
+    }
+
+    /// 引張専用非線形モード: 引張側（伸び>0）では内力が EA/L×伸び に一致し、
+    /// 接線剛性が EA/L に一致すること。
+    #[test]
+    fn test_tension_only_nonlinear_tension_side_matches_linear() {
+        let (model, data) = make_model([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let mut truss = TrussElement::new_tension_only_nonlinear(&data, &model);
+        let ctx = Ctx { model: &model };
+        let ea_l = truss.e * truss.a / truss.length;
+
+        let du = axial_du(1.0);
+        truss.update_state(&du, true, &ctx);
+
+        let k = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
+        assert!((k.get(6, 6) - ea_l).abs() < 1e-6, "k66={}", k.get(6, 6));
+
+        let f = truss.internal_force(&ElemState::default(), &ctx);
+        let n = ea_l * 1.0;
+        assert!((f.data[6] - n).abs() < 1e-6, "f[6]={}", f.data[6]);
+        assert!((f.data[0] + n).abs() < 1e-6, "f[0]={}", f.data[0]);
+    }
+
+    /// 引張専用非線形モード: 圧縮側（伸び<=0、スラック）では内力がほぼゼロ、
+    /// 接線剛性が数値安定用の微小値（EA/L×1e-6）まで低下すること。
+    #[test]
+    fn test_tension_only_nonlinear_compression_side_is_slack() {
+        let (model, data) = make_model([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let mut truss = TrussElement::new_tension_only_nonlinear(&data, &model);
+        let ctx = Ctx { model: &model };
+        let ea_l = truss.e * truss.a / truss.length;
+
+        let du = axial_du(-1.0);
+        truss.update_state(&du, true, &ctx);
+
+        let k = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!(
+            (k.get(0, 0) - ea_l * NONLINEAR_COMPRESSION_FACTOR).abs() < 1e-9,
+            "k00={}",
+            k.get(0, 0)
+        );
+
+        let f = truss.internal_force(&ElemState::default(), &ctx);
+        for i in 0..12 {
+            assert!(f.data[i].abs() < 1e-9, "f[{i}]={}", f.data[i]);
+        }
+    }
+
+    /// 引張→圧縮→引張のサイクルで commit/revert・snapshot/restore が正しく働くこと。
+    #[test]
+    fn test_tension_only_nonlinear_cycle_commit_revert_snapshot() {
+        let (model, data) = make_model([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let mut truss = TrussElement::new_tension_only_nonlinear(&data, &model);
+        let ctx = Ctx { model: &model };
+        let ea_l = truss.e * truss.a / truss.length;
+
+        // 1. 引張側で確定（伸び +2.0）
+        truss.update_state(&axial_du(2.0), true, &ctx);
+        assert!((truss.committed_elongation - 2.0).abs() < 1e-12);
+        let f = truss.internal_force(&ElemState::default(), &ctx);
+        assert!((f.data[6] - ea_l * 2.0).abs() < 1e-6);
+
+        // 2. 確定基準から -5.0 の試行変位 → 伸び -3.0（圧縮）。まだ未確定。
+        truss.update_state(&axial_du(-5.0), false, &ctx);
+        assert!((truss.trial_elongation - (-3.0)).abs() < 1e-12);
+        let k_compress = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!((k_compress.get(0, 0) - ea_l * NONLINEAR_COMPRESSION_FACTOR).abs() < 1e-9);
+        let f_compress = truss.internal_force(&ElemState::default(), &ctx);
+        for i in 0..12 {
+            assert!(f_compress.data[i].abs() < 1e-9);
+        }
+
+        // 3. スナップショット（確定=2.0引張／試行=-3.0圧縮）を保存
+        let snap = truss.snapshot_state();
+
+        // 4. revert すると試行が確定値（引張2.0）へ戻る
+        truss.revert_state();
+        assert!((truss.trial_elongation - 2.0).abs() < 1e-12);
+        assert!((truss.committed_elongation - 2.0).abs() < 1e-12);
+        let k_reverted = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!((k_reverted.get(0, 0) - ea_l).abs() < 1e-6);
+
+        // 5. restore で圧縮の試行状態を復元できる（往復確認）
+        truss.restore_state(&*snap);
+        assert!((truss.committed_elongation - 2.0).abs() < 1e-12);
+        assert!((truss.trial_elongation - (-3.0)).abs() < 1e-12);
+
+        // 6. その圧縮試行を確定する
+        truss.commit_state();
+        assert!((truss.committed_elongation - (-3.0)).abs() < 1e-12);
+
+        // 7. 圧縮確定状態から再び引張へ（+10.0 で伸び +7.0 に確定）
+        truss.update_state(&axial_du(10.0), true, &ctx);
+        assert!((truss.committed_elongation - 7.0).abs() < 1e-12);
+        let k_final = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!((k_final.get(0, 0) - ea_l).abs() < 1e-6);
+        let f_final = truss.internal_force(&ElemState::default(), &ctx);
+        assert!((f_final.data[6] - ea_l * 7.0).abs() < 1e-6);
+    }
+
+    /// 非線形モードのチェックポイント直列化/復元の往復確認。
+    #[test]
+    fn test_tension_only_nonlinear_checkpoint_roundtrip() {
+        let (model, data) = make_model([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let mut truss = TrussElement::new_tension_only_nonlinear(&data, &model);
+        let ctx = Ctx { model: &model };
+
+        truss.update_state(&axial_du(2.0), true, &ctx);
+        truss.update_state(&axial_du(-5.0), false, &ctx);
+        let checkpoint = truss.serialize_checkpoint();
+
+        let mut restored = TrussElement::new_tension_only_nonlinear(&data, &model);
+        restored.deserialize_checkpoint(&checkpoint);
+        assert!((restored.committed_elongation - 2.0).abs() < 1e-12);
+        assert!((restored.trial_elongation - (-3.0)).abs() < 1e-12);
+    }
+
+    /// 線形モード（factor 指定）は非線形フィールドの影響を受けず、
+    /// 既存挙動（factor·EA/L の一定剛性）のまま変わらないこと。
+    #[test]
+    fn test_linear_mode_unaffected_by_nonlinear_fields() {
+        let (model, data) = make_model([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
+        let mut truss = TrussElement::new(&data, &model, 1.0);
+        assert!(!truss.nonlinear);
+        let ctx = Ctx { model: &model };
+        let ea_l = truss.e * truss.a / truss.length;
+
+        // 圧縮方向の変位を与えても線形モードでは剛性は変化しない
+        truss.update_state(&axial_du(-1.0), true, &ctx);
+        let k = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        assert!((k.get(0, 0) - ea_l).abs() < 1e-6);
+        let f = truss.internal_force(&ElemState::default(), &ctx);
+        assert!((f.data[6] + ea_l).abs() < 1e-6);
     }
 }
