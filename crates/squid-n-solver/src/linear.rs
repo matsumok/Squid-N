@@ -1920,7 +1920,10 @@ mod tests {
 
         let base = linear_static_once(&model, LoadCaseId(1)).unwrap();
         let base_col = axial_force(&base, ElemId(0)).abs();
-        assert!(base_col > 1.0, "SRC柱の基準軸力が有意であること: {base_col}");
+        assert!(
+            base_col > 1.0,
+            "SRC柱の基準軸力が有意であること: {base_col}"
+        );
 
         model.stress_cfg.no_long_axial_column = true;
         let cut = linear_static_once(&model, LoadCaseId(1)).unwrap();

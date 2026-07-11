@@ -856,8 +856,7 @@ fn rc_rect_capacity_input(
     clear_span: f64,
 ) -> Option<RcCapacityInput> {
     let fc = mat.fc?;
-    let bar_area =
-        |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
+    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     // 上下対称配筋を仮定し、引張側主筋量は総断面積の半分。
     let at = bar_area(main) / 2.0;
     let d_eff = d - rebar.cover - main.dia / 2.0;
@@ -992,9 +991,7 @@ fn compute_shear_yield_thresholds(model: &Model) -> Vec<ShearThreshold> {
         .elements
         .iter()
         .map(|elem| {
-            let sec = elem
-                .section
-                .and_then(|sid| model.sections.get(sid.index()));
+            let sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
             let mat = elem
                 .material
                 .and_then(|mid| model.materials.get(mid.index()));
@@ -2145,7 +2142,8 @@ mod tests {
             clear_span,
             sigma_0: 0.0,
         });
-        let qy_z = compute_shear_yield_qy(sec.as_z, Some(&mat), Some(&sec), ShearDir::Z, clear_span);
+        let qy_z =
+            compute_shear_yield_qy(sec.as_z, Some(&mat), Some(&sec), ShearDir::Z, clear_span);
         assert!(
             (qy_z - qsu_z_handcalc).abs() < 1e-6,
             "qy_z={qy_z} should equal rc_qsu_simple handcalc={qsu_z_handcalc}"
@@ -2164,7 +2162,8 @@ mod tests {
             clear_span,
             sigma_0: 0.0,
         });
-        let qy_y = compute_shear_yield_qy(sec.as_y, Some(&mat), Some(&sec), ShearDir::Y, clear_span);
+        let qy_y =
+            compute_shear_yield_qy(sec.as_y, Some(&mat), Some(&sec), ShearDir::Y, clear_span);
         assert!(
             (qy_y - qsu_y_handcalc).abs() < 1e-6,
             "qy_y={qy_y} should equal rc_qsu_simple handcalc={qsu_y_handcalc}"
@@ -2549,7 +2548,11 @@ mod tests {
         fn global_dofs(&self, _dof: &DofMap) -> SmallVec<[usize; 24]> {
             SmallVec::new()
         }
-        fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> squid_n_element::behavior::LocalMat {
+        fn tangent_stiffness(
+            &self,
+            _state: &ElemState,
+            _ctx: &Ctx,
+        ) -> squid_n_element::behavior::LocalMat {
             squid_n_element::behavior::LocalMat::zeros(12)
         }
         fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
@@ -2557,7 +2560,10 @@ mod tests {
                 data: self.f.data.clone(),
             }
         }
-        fn mass_matrix(&self, _opt: squid_n_element::behavior::MassOption) -> squid_n_element::behavior::LocalMat {
+        fn mass_matrix(
+            &self,
+            _opt: squid_n_element::behavior::MassOption,
+        ) -> squid_n_element::behavior::LocalMat {
             squid_n_element::behavior::LocalMat::zeros(12)
         }
     }
@@ -2595,7 +2601,17 @@ mod tests {
         // ケースA: 軸圧縮あり（N_compress = sigma_0*gross_area）→ 判定を免れるはず。
         let f_comp = LocalVec {
             data: SmallVec::from_slice(&[
-                0.0, vz_demand, n_compress, 0.0, 0.0, 0.0, 0.0, -vz_demand, -n_compress, 0.0, 0.0,
+                0.0,
+                vz_demand,
+                n_compress,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -vz_demand,
+                -n_compress,
+                0.0,
+                0.0,
                 0.0,
             ]),
         };

@@ -359,7 +359,11 @@ use squid_n_solver::linear::StaticOnce;
 fn for_each_story_column(
     model: &Model,
     story: StoryId,
-    mut f: impl FnMut(&squid_n_core::model::ElementData, &squid_n_core::model::Node, &squid_n_core::model::Node),
+    mut f: impl FnMut(
+        &squid_n_core::model::ElementData,
+        &squid_n_core::model::Node,
+        &squid_n_core::model::Node,
+    ),
 ) {
     for elem in &model.elements {
         if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
@@ -429,27 +433,29 @@ pub fn column_stiffnesses_from_analysis(
     for_each_story_column(model, story, |elem, top, bot| {
         let p0 = model.nodes[elem.nodes[0].index()].coord;
         let p1 = model.nodes[elem.nodes[1].index()].coord;
-        let k_of = |res: &StaticOnce,
-                    forces: &HashMap<squid_n_core::ids::ElemId, &squid_n_element::beam::MemberForces>,
-                    dir: usize|
-         -> f64 {
-            let (Some(ut), Some(ub)) = (res.disp.get(top.id.index()), res.disp.get(bot.id.index()))
-            else {
-                return 0.0;
+        let k_of =
+            |res: &StaticOnce,
+             forces: &HashMap<squid_n_core::ids::ElemId, &squid_n_element::beam::MemberForces>,
+             dir: usize|
+             -> f64 {
+                let (Some(ut), Some(ub)) =
+                    (res.disp.get(top.id.index()), res.disp.get(bot.id.index()))
+                else {
+                    return 0.0;
+                };
+                let delta = (ut[dir] - ub[dir]).abs();
+                if delta < 1e-9 {
+                    return 0.0;
+                }
+                let Some(mf) = forces.get(&elem.id) else {
+                    return 0.0;
+                };
+                let Some(&(_, local)) = mf.at.first() else {
+                    return 0.0;
+                };
+                let g = station_force_global(p0, p1, elem.local_axis.ref_vector, local);
+                g[dir].abs() / delta
             };
-            let delta = (ut[dir] - ub[dir]).abs();
-            if delta < 1e-9 {
-                return 0.0;
-            }
-            let Some(mf) = forces.get(&elem.id) else {
-                return 0.0;
-            };
-            let Some(&(_, local)) = mf.at.first() else {
-                return 0.0;
-            };
-            let g = station_force_global(p0, p1, elem.local_axis.ref_vector, local);
-            g[dir].abs() / delta
-        };
         out.push(ColumnStiffness {
             pos: [top.coord[0], top.coord[1]],
             dx: k_of(res_x, &fx, 0),
@@ -603,10 +609,7 @@ pub fn append_misc_wall_stiffnesses(
         let aw = len * t;
         let (cx, cy) = (dxw / len, dyw / len);
         cols.push(ColumnStiffness {
-            pos: [
-                (w.start[0] + w.end[0]) * 0.5,
-                (w.start[1] + w.end[1]) * 0.5,
-            ],
+            pos: [(w.start[0] + w.end[0]) * 0.5, (w.start[1] + w.end[1]) * 0.5],
             dx: misc_wall_stiffness(n, aw, sum_kx, sum_ac) * cx * cx,
             dy: misc_wall_stiffness(n, aw, sum_ky, sum_ac) * cy * cy,
         });
@@ -1048,10 +1051,7 @@ mod tests {
     /// [n, qy, qz] を持つ member_forces と頂部一様変位 disp を合成する。
     /// 柱の ref_vector=[0,1,0] より ex=[0,0,1], ey=[0,1,0], ez=[1,0,0]。
     /// → 全体 X 方向せん断 = qz、全体 Y 方向せん断 = qy。
-    fn fabricate_static(
-        top_disp: [f64; 2],
-        col_local_forces: [[f64; 3]; 4],
-    ) -> StaticOnce {
+    fn fabricate_static(top_disp: [f64; 2], col_local_forces: [[f64; 3]; 4]) -> StaticOnce {
         let mut disp = vec![[0.0; 6]; 8];
         for d in disp.iter_mut().skip(4) {
             d[0] = top_disp[0];

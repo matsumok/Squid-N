@@ -103,10 +103,7 @@ mod tests {
         let th = principal_axis_angle(&p, &[f11], &[f12], &[f12], &[f22]);
         // tan2Θ = −2·f12/(f22−f11)。f12, f22−f11 の符号から Θ = −φ 側の解
         // （柔性行列の主軸＝剛性行列の主軸なので |Θ| = φ を確認）。
-        assert!(
-            (th.abs() - phi).abs() < 1e-12,
-            "Θ={th}, expected ±{phi}"
-        );
+        assert!((th.abs() - phi).abs() < 1e-12, "Θ={th}, expected ±{phi}");
     }
 
     #[test]

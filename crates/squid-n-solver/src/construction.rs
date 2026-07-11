@@ -104,11 +104,7 @@ pub fn construction_stage_analysis(
         found.unwrap_or(0)
     };
 
-    let node_stage: Vec<usize> = model
-        .nodes
-        .iter()
-        .map(|n| stage_of_z(n.coord[2]))
-        .collect();
+    let node_stage: Vec<usize> = model.nodes.iter().map(|n| stage_of_z(n.coord[2])).collect();
     let elem_stage: HashMap<ElemId, usize> = model
         .elements
         .iter()

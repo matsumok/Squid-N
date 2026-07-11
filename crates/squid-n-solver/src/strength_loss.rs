@@ -66,7 +66,9 @@ pub enum LossCriterion {
     /// 部材ごとの `FemaBeamParams` から塑性回転角 a [rad] を算定し、
     /// 部材変形角が a に達した梁を耐力喪失部材として除去する
     /// （開始・終了の区別は無く、a 到達時点で即座に除去）。
-    Fema { params: Vec<(ElemId, FemaBeamParams)> },
+    Fema {
+        params: Vec<(ElemId, FemaBeamParams)>,
+    },
 }
 
 /// FEMA 356 Table 6-7 相当の RC 大梁パラメータ（塑性回転角 a の算定に必要な諸元）。
@@ -154,13 +156,12 @@ impl LossCriterion {
     fn thresholds(&self, elem: ElemId) -> Option<(f64, f64)> {
         match self {
             LossCriterion::DriftRange { start, end } => Some((*start, *end)),
-            LossCriterion::Fema { params } => params
-                .iter()
-                .find(|(id, _)| *id == elem)
-                .map(|(_, p)| {
+            LossCriterion::Fema { params } => {
+                params.iter().find(|(id, _)| *id == elem).map(|(_, p)| {
                     let a = fema_plastic_rotation(p);
                     (a, a)
-                }),
+                })
+            }
         }
     }
 }
@@ -843,8 +844,7 @@ mod tests {
             start: 0.0,
             end: 0.01,
         };
-        let detected =
-            detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
+        let detected = detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
         assert!(
             detected.is_some(),
             "shear-yielded member exceeding the loss drift threshold should be detected"
@@ -923,8 +923,7 @@ mod tests {
             start: 0.0,
             end: 0.01,
         };
-        let detected =
-            detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
+        let detected = detect_strength_loss(&model, &dofmap, &result, &criterion, &HashSet::new());
         assert!(
             detected.is_some(),
             "bending-yielded member exceeding the loss drift threshold should be detected \

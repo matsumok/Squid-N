@@ -318,10 +318,9 @@ pub fn build_report_csv(app: &App) -> String {
             };
             if let Ok(analysis) = squid_n_solver::analysis::Analysis::prepare(model) {
                 if let Ok(p) = analysis.seismic_nodal_force_magnitudes(cfg) {
-                    let theta =
-                        squid_n_design_jp::principal_axis::principal_axis_from_results(
-                            model, &p, rx, ry,
-                        );
+                    let theta = squid_n_design_jp::principal_axis::principal_axis_from_results(
+                        model, &p, rx, ry,
+                    );
                     out.push_str(&format!(
                         "\n[主軸の計算]\n主軸角Θ[deg],{:.3}\n",
                         theta.to_degrees()
@@ -430,10 +429,7 @@ mod tests {
         let st = &app.results.as_ref().unwrap().statics.last().unwrap().1;
         let metrics = compute_story_metrics(&app.model, &st.disp, SeismicDir::X);
         assert_eq!(metrics[0].drift_limit_denom, 120.0);
-        assert_eq!(
-            metrics[0].drift_ok,
-            metrics[0].drift_angle <= 1.0 / 120.0
-        );
+        assert_eq!(metrics[0].drift_ok, metrics[0].drift_angle <= 1.0 / 120.0);
         let csv = build_report_csv(&app);
         assert!(csv.contains("1/120判定"), "CSV ヘッダが緩和値に追従する");
     }

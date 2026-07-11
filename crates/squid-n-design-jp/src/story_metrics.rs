@@ -64,12 +64,16 @@ fn for_each_story_column(model: &Model, story: StoryId, mut f: impl FnMut(ElemId
 /// （柱頭・柱脚の平面位置が `INCLINED_PLAN_TOL` を超えてずれる柱）。
 ///
 /// `disp` は節点変位（`model.nodes` と同順）、`dir` は加力方向（0=X, 1=Y）。
-pub fn column_drifts(model: &Model, disp: &[[f64; 6]], dir: usize, story: StoryId) -> Vec<ColumnDrift> {
+pub fn column_drifts(
+    model: &Model,
+    disp: &[[f64; 6]],
+    dir: usize,
+    story: StoryId,
+) -> Vec<ColumnDrift> {
     let mut out = Vec::new();
     for_each_story_column(model, story, |eid, top, bot| {
-        let plan_off = ((top.coord[0] - bot.coord[0]).powi(2)
-            + (top.coord[1] - bot.coord[1]).powi(2))
-        .sqrt();
+        let plan_off =
+            ((top.coord[0] - bot.coord[0]).powi(2) + (top.coord[1] - bot.coord[1]).powi(2)).sqrt();
         if plan_off > INCLINED_PLAN_TOL {
             return; // 斜め柱は除外
         }

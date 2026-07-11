@@ -151,10 +151,8 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
             }
             app.misc_wall_draft.height = format!("{:.0}", w.height);
             app.misc_wall_draft.weight_kn_m2 = format!("{:.3}", w.weight_per_area * 1e3);
-            app.misc_wall_draft.thickness = w
-                .thickness
-                .map(|t| format!("{t:.0}"))
-                .unwrap_or_default();
+            app.misc_wall_draft.thickness =
+                w.thickness.map(|t| format!("{t:.0}")).unwrap_or_default();
             app.misc_wall_draft.transfer = w.transfer;
             app.misc_wall_draft.editing = Some(i);
         }
@@ -204,13 +202,11 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.horizontal(|ui| {
         ui.label("壁厚[mm]:");
-        ui.add(
-            egui::TextEdit::singleline(&mut app.misc_wall_draft.thickness).desired_width(70.0),
-        )
-        .on_hover_text(
-            "n倍法（Kw'=n·Aw'·ΣKc/ΣAc）の断面積 Aw'=壁長×壁厚 に用いる。\
+        ui.add(egui::TextEdit::singleline(&mut app.misc_wall_draft.thickness).desired_width(70.0))
+            .on_hover_text(
+                "n倍法（Kw'=n·Aw'·ΣKc/ΣAc）の断面積 Aw'=壁長×壁厚 に用いる。\
              空欄の場合はこの雑壁を剛性評価の対象外とする（重量のみ考慮）",
-        );
+            );
     });
 
     // 入力のパース（全て数値になったら追加/更新可能）
