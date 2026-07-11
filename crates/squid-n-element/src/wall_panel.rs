@@ -44,6 +44,18 @@ impl WallPanelElement {
     /// 生成。4 節点未満・寸法/断面が不定の場合は None
     /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
     pub fn try_new(data: &ElementData, model: &Model) -> Option<Self> {
+        Self::try_new_scaled(data, model, 1.0)
+    }
+
+    /// 剛性スケール付き生成。耐震壁不成立（フレーム内雑壁）の壁は剛性を
+    /// 周辺部材へ算入するため、壁要素自体は `stiffness_scale`（微小値）で
+    /// 実質無剛性とし、質量のみを保持する（RESP-D 計算編 02
+    /// 「フレーム内雑壁のモデル化」）。
+    pub(crate) fn try_new_scaled(
+        data: &ElementData,
+        model: &Model,
+        stiffness_scale: f64,
+    ) -> Option<Self> {
         if data.nodes.len() < 4 {
             return None;
         }
@@ -150,8 +162,8 @@ impl WallPanelElement {
         let as_gross = area + col_area_sum;
         let column = BeamElement {
             id: data.id,
-            e: mat.young,
-            g: mat.shear_modulus(),
+            e: mat.young * stiffness_scale,
+            g: mat.shear_modulus() * stiffness_scale,
             a: area * rebar_factor,
             a_mass: area,
             // 面内曲げ（局所 z 軸まわり）= t·lw³/12、面外 = lw·t³/12

@@ -6,6 +6,7 @@ pub mod concentrated;
 pub mod factory;
 pub mod fiber_elem;
 pub mod member_load;
+pub mod misc_wall;
 pub mod ms;
 pub mod panel;
 pub mod shear_spring;

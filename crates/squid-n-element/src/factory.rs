@@ -171,21 +171,35 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
         ),
         // Wall 要素：壁エレメントモデル（RESP-D 計算編 02。壁柱＋両端ピン剛梁の
         // 4 節点 24 自由度要素）。開口低減率 r は要素内部で考慮される。
+        // 耐震壁不成立（フレーム内雑壁）の壁は剛性を周辺の柱・梁の断面性能へ
+        // 算入する（beam.rs）ため、壁要素自体は質量のみ保持し剛性は実質ゼロ。
         // 4 節点未満・断面/材料未設定などで構築できない場合は従来の
         // 暫定等価梁にフォールバックする（開口低減 r はせん断剛性に乗じる）。
-        ElementKind::Wall => match crate::wall_panel::WallPanelElement::try_new(data, model) {
-            Some(panel) => (Box::new(panel), ElemState::default()),
-            None => {
-                let mut elem = crate::beam::BeamElement::new(data, model);
-                // r=0（開口が壁の 64% 以上）でせん断断面積が 0 になると
-                // ティモシェンコの φ 項が ∞×0 で NaN になるため、微小値を下限とする
-                // （このような壁は本来 RC 耐震壁判定でも不成立となる）。
-                let r = wall_opening_reduction(data, model).max(1e-6);
-                elem.as_y *= r;
-                elem.as_z *= r;
-                (Box::new(elem), ElemState::default())
+        ElementKind::Wall => {
+            let stiffness_scale = if crate::misc_wall::wall_is_seismic(data, model) {
+                1.0
+            } else {
+                1e-9
+            };
+            match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
+            {
+                Some(panel) => (Box::new(panel), ElemState::default()),
+                None => {
+                    let mut elem = crate::beam::BeamElement::new(data, model);
+                    // r=0（開口が壁の 64% 以上）でせん断断面積が 0 になると
+                    // ティモシェンコの φ 項が ∞×0 で NaN になるため、微小値を下限とする
+                    // （このような壁は本来 RC 耐震壁判定でも不成立となる）。
+                    let r = wall_opening_reduction(data, model).max(1e-6);
+                    elem.as_y *= r;
+                    elem.as_z *= r;
+                    elem.a *= stiffness_scale;
+                    elem.iy *= stiffness_scale;
+                    elem.iz *= stiffness_scale;
+                    elem.j *= stiffness_scale;
+                    (Box::new(elem), ElemState::default())
+                }
             }
-        },
+        }
         // 一般ブレース：KB = factor·E·A/L（RESP-D マニュアル計算編02）。
         // 引張専用ブレースは弾性解析で剛性を1/2にモデル化する（factor=0.5）。
         ElementKind::Brace { tension_only } => {
@@ -785,10 +799,11 @@ mod tests {
         let ctx = crate::behavior::Ctx { model: &model };
         let k_no = b_no.tangent_stiffness(&state, &ctx);
 
-        // 開口 25%（壁 4000×3000=12e6 mm² に対し 3e6 mm²）→ r=1−1.25·0.5=0.375
+        // 開口 10%（壁 4000×3000=12e6 mm² に対し 1.2e6 mm²）→ r0=0.316(耐震壁
+        // 成立のまま)、r=1−1.25·0.316=0.605
         model.wall_attrs.push(WallAttr {
             elem: ElemId(0),
-            opening_area: 3.0e6,
+            opening_area: 1.2e6,
             opening_weight: 0.0,
             three_side_slit: false,
             openings: vec![],
@@ -797,7 +812,7 @@ mod tests {
         let ctx2 = crate::behavior::Ctx { model: &model };
         let k_open = b_open.tangent_stiffness(&state2, &ctx2);
 
-        // 個別開口(合計 3e6 mm²)は面積のみ指定と同じ低減率になる。
+        // 個別開口(合計 1.2e6 mm²)は面積のみ指定と同じ低減率になる。
         // また opening_area(古い値)より個別開口が優先される。
         model.wall_attrs[0] = WallAttr {
             elem: ElemId(0),
@@ -807,13 +822,13 @@ mod tests {
             openings: vec![
                 squid_n_core::model::WallOpening {
                     width: 1000.0,
-                    height: 2000.0,
+                    height: 800.0,
                     offset: Some([0.0, 500.0]),
                 },
                 squid_n_core::model::WallOpening {
                     width: 500.0,
-                    height: 2000.0,
-                    offset: Some([3500.0, 500.0]),
+                    height: 800.0,
+                    offset: Some([1800.0, 500.0]),
                 },
             ],
         };
@@ -822,12 +837,13 @@ mod tests {
         let k_dims = b_dims.tangent_stiffness(&state3, &ctx3);
         assert!(
             (shear_pattern(&k_dims) - shear_pattern(&k_open)).abs() < 1e-6,
-            "個別開口(Σ3e6)と面積のみ(3e6)の低減が一致しない: {} vs {}",
+            "個別開口(Σ1.2e6)と面積のみ(1.2e6)の低減が一致しない: {} vs {}",
             shear_pattern(&k_dims),
             shear_pattern(&k_open)
         );
 
-        // 包絡モード: 離れた2開口の包絡矩形(面積増)により低減がさらに大きくなる
+        // 包絡モード: 離れた2開口の包絡矩形(2300×800=1.84e6、r0=0.39≦0.4 で
+        // 耐震壁成立のまま)により低減がさらに大きくなる
         model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Envelope;
         let (b_env, state4) = build_behavior(&wall, &model);
         let ctx4 = crate::behavior::Ctx { model: &model };
