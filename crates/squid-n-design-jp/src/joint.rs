@@ -567,12 +567,14 @@ pub struct SrcPanelInput {
     pub j_tw: f64,
     /// 柱鉄骨のフランジ重心間距離 sCd [mm]。
     pub s_cd: f64,
-    /// 梁が S 造かどうか（`cVe` の係数切替。`true` なら `m_bd` に sBd が渡って
-    /// いる前提）。
+    /// 梁が S 造かどうか（`m_bd` に mBd〔SRC/RC〕か sBd〔S〕のどちらが
+    /// 渡っているかを示す情報。cV = Cb・m_bd・mCd は両者共通で beam_width は
+    /// 使わないため、現在の検定計算では参照しない）。
     pub beam_is_steel: bool,
     /// ヤング係数比 n（[`crate::rc::young_ratio_n`]）。
     pub n_ratio: f64,
-    /// 階高/内法階高比 h/h′（不明なら 1.0）。
+    /// 内法階高/階高比 h′/h（不明なら 1.0）。原典図（2026-07-11 照合）の
+    /// 右辺係数は `h′/h`。
     pub h_ratio: f64,
     /// 接合部に取り付く大梁端モーメントの絶対値和 BM1+BM2 [N・mm]。
     pub sum_beam_moments: f64,
@@ -581,35 +583,27 @@ pub struct SrcPanelInput {
 /// SRC 造柱梁接合部（パネルゾーン）のせん断検定（SRC 規準）。
 ///
 /// ## 検定式
-/// `cVe・jδ・fs・(1+β) ≧ (h/h′)・(BM1+BM2)`
+/// `cV・jδ・fs・(1+β) ≧ (h′/h)・(BM1+BM2)`
 ///
 /// 左辺が許容値 `Ma`、右辺が設計値 `Md`。検定比 = `Md/Ma`（1.0 以下で OK）。
 /// - `fs`: コンクリートの許容せん断応力度（長期/短期、
 ///   [`crate::rc::concrete_allowable_shear`]）。
-/// - `jδ`: 接合部形状係数。十字形=3、T字形・ト字形=2、L字形=1
-///   （[`JointShape`] を流用）。
+/// - `jδ`: 接合部形状係数。十字形=3、T字形・ト字形=2、L字形=1。
 ///
-/// **注記（式の解釈について・重要）**: マニュアル原文は `cVe・3fs・(1+β)` と
-/// 読める記載になっている。この「3」を [`rc_joint_shear_check`] の κA
-/// （RC 規準 15 条、十字形=10/T字形=7/ト字形=5/L字形=3）と同様に接合部形状に
-/// 応じた割増係数と解釈し、「3」は十字形の場合の値（jδ=3）とみなして
-/// `jδ・fs` の形に一般化した。他形状（T字形・ト字形=2、L字形=1）は、
-/// κA の相対比（10:7:5:3）ほど細分化する根拠がマニュアル抽出テキストからは
-/// 読み取れなかったため、より単純な整数比 3:2:2:1（十字形のみ他形状の
-/// 1.5倍、T字形とト字形は同値）を暫定的に採用した。この対応関係は
-/// マニュアル原文（SRC 規準原典）からは一意に確定できておらず、要再照合と
-/// する。
+/// **原典照合済み（2026-07-11）**: マニュアル原典図（ユーザー提供）により、
+/// 左辺は**全体積 `cV`**（有効体積 `cVe` ではない）、右辺係数は **`h′/h`**
+/// （内法階高/階高）であることを確認し、実装を修正した（従来は `cVe`・`h/h′`）。
+/// また「3fs」の「3」が接合部形状係数 jδ であること、jδ の値
+/// （十字型=3・ト字形/T字形=2・L字形=1）を SRC パネルの原典 PDF の表で確認した。
 ///
 /// ## 諸元
-/// 梁が SRC/RC の場合（`beam_is_steel=false`）:
-/// - `cV = Cb・mBd・mCd`、`cVe = (Cb+Bb)/2・mBd・mCd`
-/// - `sV = Jtw・sBd・sCd`、`β = n・Jtw・sCd/(Cb・mCd)`
+/// - 梁が SRC/RC の場合（`beam_is_steel=false`）: `cV = Cb・mBd・mCd`
+/// - 梁が S 造の場合（`beam_is_steel=true`。`m_bd` に sBd を渡す前提）:
+///   `cV = Cb・sBd・mCd`
 ///
-/// 梁が S 造の場合（`beam_is_steel=true`。`m_bd` に sBd を渡す前提）:
-/// - `cV = Cb・sBd・mCd`、`cVe = Cb/2・sBd・mCd`
-///
-/// `cV`・`sV` は検定式そのものには使わない（`β` は入力諸元から直接算定できる
-/// ため）。`Cb・mCd ≈ 0` の場合は `β=0` とする。
+/// いずれも `cV = Cb・m_bd・mCd`（`m_bd` に mBd/sBd が入る）で共通のため、
+/// `beam_is_steel`・`beam_width` は検定計算では参照しない。
+/// `β = n・Jtw・sCd/(Cb・mCd)`（`Cb・mCd ≈ 0` の場合は `β=0`）。
 pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
     let j_delta = match inp.shape {
         JointShape::Cross => 3.0,
@@ -618,11 +612,8 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         JointShape::Corner => 1.0,
     };
 
-    let cve = if inp.beam_is_steel {
-        inp.col_width / 2.0 * inp.m_bd * inp.m_cd
-    } else {
-        (inp.col_width + inp.beam_width) / 2.0 * inp.m_bd * inp.m_cd
-    };
+    // cV = Cb・m_bd・mCd（全体積。m_bd に mBd〔SRC/RC〕か sBd〔S〕が入る）。
+    let cv = inp.col_width * inp.m_bd * inp.m_cd;
 
     let denom = inp.col_width * inp.m_cd;
     let beta = if denom.abs() > 1e-9 {
@@ -633,7 +624,8 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
 
     let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
 
-    let ma = cve * j_delta * fs * (1.0 + beta);
+    let ma = cv * j_delta * fs * (1.0 + beta);
+    // 設計用モーメント Md = (h′/h)・(BM1+BM2)（原典図の右辺係数、2026-07-11）。
     let md = inp.h_ratio * inp.sum_beam_moments;
 
     let ratio = if ma > 0.0 {
@@ -655,8 +647,8 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         shape_label, term_label
     );
     let detail = format!(
-        "cVe={:.1} mm2, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
-        cve, beta, j_delta, fs, ma, md, ratio
+        "cV={:.1} mm3, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
+        cv, beta, j_delta, fs, ma, md, ratio
     );
 
     CheckResult {
@@ -1160,10 +1152,10 @@ mod tests {
         let inp = base_src_panel_input();
         let res = src_panel_zone_check(&inp);
 
-        let cve = (inp.col_width + inp.beam_width) / 2.0 * inp.m_bd * inp.m_cd;
+        let cv = inp.col_width * inp.m_bd * inp.m_cd; // 全体積 Cb*mBd*mCd
         let beta = inp.n_ratio * inp.j_tw * inp.s_cd / (inp.col_width * inp.m_cd);
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
-        let ma = cve * 3.0 * fs * (1.0 + beta); // jdelta=3 (十字形)
+        let ma = cv * 3.0 * fs * (1.0 + beta); // jdelta=3 (十字形)
         let expected_ratio = inp.sum_beam_moments / ma;
 
         assert!((res.ratio - expected_ratio).abs() < 1e-6);
@@ -1175,9 +1167,9 @@ mod tests {
         inp.j_tw = 0.0; // 鉄骨ウェブ厚 0 → β=0
         let res = src_panel_zone_check(&inp);
 
-        let cve = (inp.col_width + inp.beam_width) / 2.0 * inp.m_bd * inp.m_cd;
+        let cv = inp.col_width * inp.m_bd * inp.m_cd;
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
-        let ma = cve * 3.0 * fs; // (1+beta) = 1
+        let ma = cv * 3.0 * fs; // (1+beta) = 1
         let expected_ratio = inp.sum_beam_moments / ma;
 
         assert!((res.ratio - expected_ratio).abs() < 1e-6);
@@ -1201,13 +1193,13 @@ mod tests {
         inp.long_term = true;
         let res = src_panel_zone_check(&inp);
 
-        let cve = (inp.col_width + inp.beam_width) / 2.0 * inp.m_bd * inp.m_cd;
+        let cv = inp.col_width * inp.m_bd * inp.m_cd;
         let beta = inp.n_ratio * inp.j_tw * inp.s_cd / (inp.col_width * inp.m_cd);
         let fs_long = crate::rc::concrete_allowable_shear(inp.fc, true);
         let fs_short = crate::rc::concrete_allowable_shear(inp.fc, false);
         assert!(fs_long < fs_short);
 
-        let ma = cve * 3.0 * fs_long * (1.0 + beta);
+        let ma = cv * 3.0 * fs_long * (1.0 + beta);
         let expected_ratio = inp.sum_beam_moments / ma;
         assert!((res.ratio - expected_ratio).abs() < 1e-6);
 
@@ -1217,17 +1209,21 @@ mod tests {
     }
 
     #[test]
-    fn src_panel_beam_is_steel_uses_half_cb() {
-        let mut inp = base_src_panel_input();
-        inp.beam_is_steel = true;
-        let res = src_panel_zone_check(&inp);
+    fn src_panel_cv_uses_full_cb_regardless_of_beam_type() {
+        // cV = Cb・m_bd・mCd（全体積、原典図で確認 2026-07-11）は m_bd に
+        // mBd/sBd のどちらが入っても同じ式なので、beam_is_steel を切り替えても
+        // （m_bd を同値に保てば）検定結果は変わらない。
+        let inp_rc = base_src_panel_input();
+        let mut inp_s = base_src_panel_input();
+        inp_s.beam_is_steel = true;
+        let res_rc = src_panel_zone_check(&inp_rc);
+        let res_s = src_panel_zone_check(&inp_s);
+        assert!((res_rc.ratio - res_s.ratio).abs() < 1e-12);
 
-        let cve = inp.col_width / 2.0 * inp.m_bd * inp.m_cd;
-        let beta = inp.n_ratio * inp.j_tw * inp.s_cd / (inp.col_width * inp.m_cd);
-        let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
-        let ma = cve * 3.0 * fs * (1.0 + beta);
-        let expected_ratio = inp.sum_beam_moments / ma;
-
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        let cv = inp_rc.col_width * inp_rc.m_bd * inp_rc.m_cd;
+        let beta = inp_rc.n_ratio * inp_rc.j_tw * inp_rc.s_cd / (inp_rc.col_width * inp_rc.m_cd);
+        let fs = crate::rc::concrete_allowable_shear(inp_rc.fc, false);
+        let ma = cv * 3.0 * fs * (1.0 + beta);
+        assert!((res_rc.ratio - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
     }
 }

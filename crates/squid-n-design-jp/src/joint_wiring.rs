@@ -74,7 +74,7 @@
 //!   `db` 算定と同じ近似）を用いる。柱鉄骨のフランジ重心間距離 sCd は
 //!   `steel_height − steel_flange_thick`、接合部鉄骨ウェブ厚 Jtw は柱の
 //!   `steel_web_thick`、ヤング係数比 n は [`crate::rc::young_ratio_n`]。
-//!   階高/内法階高比 h/h′ は情報が無いため 1.0 固定とする（暫定）。
+//!   内法階高/階高比 h′/h は情報が無いため 1.0 固定とする（暫定）。
 
 use crate::joint::{
     box_zp, cold_formed_column_ratio_check, panel_mpp, rc_joint_shear_check, rc_wall_shear_check,
@@ -642,7 +642,7 @@ pub fn collect_joint_checks_with_long(
                     s_cd,
                     beam_is_steel,
                     n_ratio: crate::rc::young_ratio_n(fc),
-                    // h/h′（階高/内法階高比）は情報が無いため 1.0 固定（暫定、
+                    // h′/h（内法階高/階高比、原典図 2026-07-11）は情報が無いため 1.0 固定（暫定、
                     // 冒頭 doc 参照）。
                     h_ratio: 1.0,
                     sum_beam_moments,
