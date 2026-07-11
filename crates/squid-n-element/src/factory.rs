@@ -85,7 +85,9 @@ fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     let Some(attr) = model.wall_attrs.iter().find(|w| w.elem == data.id) else {
         return 1.0;
     };
-    let opening_area = attr.total_opening_area();
+    // 複数開口の取り扱い（等価/包絡/自動判定）を適用した開口面積。
+    // 包絡系モードでは包絡矩形の面積となり、生の面積和より大きくなり得る。
+    let opening_area = attr.total_opening_area_for(model.multi_opening_mode);
     if opening_area <= 0.0 {
         return 1.0;
     }
@@ -162,7 +164,10 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
         // 開口低減率 r をせん断剛性に乗じる。
         ElementKind::Wall => {
             let mut elem = crate::beam::BeamElement::new(data, model);
-            let r = wall_opening_reduction(data, model);
+            // r=0（開口が壁の 64% 以上）でせん断断面積が 0 になると
+            // ティモシェンコの φ 項が ∞×0 で NaN になるため、微小値を下限とする
+            // （このような壁は本来 RC 耐震壁判定でも不成立となる）。
+            let r = wall_opening_reduction(data, model).max(1e-6);
             elem.as_y *= r;
             elem.as_z *= r;
             (Box::new(elem), ElemState::default())
@@ -755,12 +760,12 @@ mod tests {
                 squid_n_core::model::WallOpening {
                     width: 1000.0,
                     height: 2000.0,
-                    offset: None,
+                    offset: Some([0.0, 500.0]),
                 },
                 squid_n_core::model::WallOpening {
                     width: 500.0,
                     height: 2000.0,
-                    offset: Some([2500.0, 500.0]),
+                    offset: Some([3500.0, 500.0]),
                 },
             ],
         };
@@ -773,6 +778,19 @@ mod tests {
             k_dims.get(2, 2),
             k_open.get(2, 2)
         );
+
+        // 包絡モード: 離れた2開口の包絡矩形(面積増)により低減がさらに大きくなる
+        model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Envelope;
+        let (b_env, state4) = build_behavior(&wall, &model);
+        let ctx4 = crate::behavior::Ctx { model: &model };
+        let k_env = b_env.tangent_stiffness(&state4, &ctx4);
+        assert!(
+            k_env.get(2, 2) < k_dims.get(2, 2) * 0.999,
+            "包絡モードで低減が強まらない: env={} eq={}",
+            k_env.get(2, 2),
+            k_dims.get(2, 2)
+        );
+        model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Equivalent;
 
         // せん断剛性の低減で並進項が小さくなる（軸剛性 EA/L は不変）
         assert!(

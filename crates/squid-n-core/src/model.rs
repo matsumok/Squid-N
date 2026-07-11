@@ -454,6 +454,21 @@ impl LoadCfg {
     }
 }
 
+/// 複数開口の取り扱い（RESP-D マニュアル計算編 02「剛性計算」）。
+/// 建物全体で一律に選択する（`Model::multi_opening_mode`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MultiOpeningMode {
+    /// 等価開口とする（既定）: l0′·h0′=Σli·hi、l0′:h0′=lw:hw で1開口に置換。
+    #[default]
+    Equivalent,
+    /// 包絡する: 全開口の包絡矩形1つに置換（位置 `offset` が必要。
+    /// 位置不明の開口は包絡対象にできず個別のまま残る）。
+    Envelope,
+    /// 包絡開口・等価開口自動判定: 包絡可能な開口対が無くなるまで繰り返し
+    /// 包絡開口を作成し、残った開口で「等価開口とする」と同様の評価を行う。
+    Auto,
+}
+
 /// 壁の個別開口（RESP-D マニュアル計算編 02「剛性計算」複数開口の取り扱い）。
 ///
 /// 寸法は壁面内で定義する: `width`=壁長さ方向の開口長さ l0 [mm]、
@@ -475,6 +490,46 @@ impl WallOpening {
     /// 開口面積 [mm²]。
     pub fn area(&self) -> f64 {
         (self.width * self.height).max(0.0)
+    }
+
+    /// 壁面内の矩形 (x0, z0, x1, z1)。位置不明（offset=None）は None。
+    fn rect(&self) -> Option<[f64; 4]> {
+        let [x, z] = self.offset?;
+        Some([x, z, x + self.width.max(0.0), z + self.height.max(0.0)])
+    }
+
+    /// 2開口の包絡開口（外接矩形）。どちらかの位置が不明なら None。
+    pub fn envelope(&self, other: &WallOpening) -> Option<WallOpening> {
+        let a = self.rect()?;
+        let b = other.rect()?;
+        let x0 = a[0].min(b[0]);
+        let z0 = a[1].min(b[1]);
+        let x1 = a[2].max(b[2]);
+        let z1 = a[3].max(b[3]);
+        Some(WallOpening {
+            width: x1 - x0,
+            height: z1 - z0,
+            offset: Some([x0, z0]),
+        })
+    }
+
+    /// 自動判定モードで 2 開口を包絡してよいかの判定（暫定基準・要原典照合）。
+    ///
+    /// RESP-D マニュアルの判定図（添付資料では画像欠落）を参照できないため、
+    /// 暫定的に「開口間の純間隔が、水平・鉛直の各方向とも両開口の当該方向
+    /// 寸法の小さい方以下（＝開口間の壁束・壁梁が細長く有効に働かない）」を
+    /// 包絡可能条件とする。原典照合の上で specs/原典照合リスト.md の
+    /// 該当行を確認・更新すること。
+    pub fn can_envelope(&self, other: &WallOpening) -> bool {
+        let (Some(a), Some(b)) = (self.rect(), other.rect()) else {
+            return false;
+        };
+        // 各方向の純間隔（重なっていれば 0）
+        let gap_x = (a[0].max(b[0]) - a[2].min(b[2])).max(0.0);
+        let gap_z = (a[1].max(b[1]) - a[3].min(b[3])).max(0.0);
+        let min_w = self.width.min(other.width);
+        let min_h = self.height.min(other.height);
+        gap_x <= min_w && gap_z <= min_h
     }
 }
 
@@ -518,11 +573,87 @@ impl WallAttr {
     /// 個別開口の (l0, h0) ペア列。個別開口が未入力（面積のみ）なら None。
     /// 面積ゼロの開口は除外する。
     pub fn opening_dims(&self) -> Option<Vec<(f64, f64)>> {
+        Self::dims_of(&self.openings)
+    }
+
+    /// 複数開口の取り扱い（`mode`）適用後の (l0, h0) ペア列。
+    /// 個別開口が未入力（面積のみ）なら None（消費側は `opening_area` で評価）。
+    pub fn opening_dims_for(&self, mode: MultiOpeningMode) -> Option<Vec<(f64, f64)>> {
+        Self::dims_of(&self.openings_for_mode(mode))
+    }
+
+    /// 複数開口の取り扱い（`mode`）適用後の開口合計面積 [mm²]。
+    /// 包絡モードでは包絡矩形の面積となるため、生の面積和
+    /// （`total_opening_area`、自重控除用）とは異なり得る。
+    pub fn total_opening_area_for(&self, mode: MultiOpeningMode) -> f64 {
         if self.openings.is_empty() {
+            self.opening_area.max(0.0)
+        } else {
+            self.openings_for_mode(mode)
+                .iter()
+                .map(WallOpening::area)
+                .sum()
+        }
+    }
+
+    /// 複数開口の取り扱い（RESP-D 計算編 02）を適用した開口リスト。
+    /// - `Equivalent`: 個別開口をそのまま返す（等価開口への統合は消費側の式）。
+    /// - `Envelope`: 位置（offset）を持つ開口全体の包絡矩形 1 つに置換。
+    ///   位置不明の開口は包絡できないため個別のまま残る。
+    /// - `Auto`: 包絡可能（`WallOpening::can_envelope`、暫定基準）な開口対が
+    ///   無くなるまで繰り返し包絡開口を作成し、残った開口を返す
+    ///   （マニュアル「包絡できなくなった時点の開口状況で『等価開口とする』と
+    ///   同様の判定を行います」に対応。等価開口への統合は消費側）。
+    pub fn openings_for_mode(&self, mode: MultiOpeningMode) -> Vec<WallOpening> {
+        match mode {
+            MultiOpeningMode::Equivalent => self.openings.clone(),
+            MultiOpeningMode::Envelope => {
+                let mut out: Vec<WallOpening> = Vec::new();
+                let mut merged: Option<WallOpening> = None;
+                for o in &self.openings {
+                    if o.rect().is_some() {
+                        merged = Some(match merged {
+                            Some(m) => m.envelope(o).expect("両者とも位置あり"),
+                            None => o.clone(),
+                        });
+                    } else {
+                        out.push(o.clone());
+                    }
+                }
+                if let Some(m) = merged {
+                    out.insert(0, m);
+                }
+                out
+            }
+            MultiOpeningMode::Auto => {
+                let mut list: Vec<WallOpening> = self.openings.clone();
+                loop {
+                    let mut merged_pair: Option<(usize, usize)> = None;
+                    'outer: for i in 0..list.len() {
+                        for j in (i + 1)..list.len() {
+                            if list[i].can_envelope(&list[j]) {
+                                merged_pair = Some((i, j));
+                                break 'outer;
+                            }
+                        }
+                    }
+                    let Some((i, j)) = merged_pair else {
+                        break;
+                    };
+                    let env = list[i].envelope(&list[j]).expect("can_envelope=位置あり");
+                    list.remove(j);
+                    list[i] = env;
+                }
+                list
+            }
+        }
+    }
+
+    fn dims_of(openings: &[WallOpening]) -> Option<Vec<(f64, f64)>> {
+        if openings.is_empty() {
             return None;
         }
-        let dims: Vec<(f64, f64)> = self
-            .openings
+        let dims: Vec<(f64, f64)> = openings
             .iter()
             .filter(|o| o.area() > 0.0)
             .map(|o| (o.width, o.height))
@@ -589,6 +720,11 @@ pub struct Model {
     /// 壁要素の自重算定属性（開口・三方スリット）。
     #[serde(default)]
     pub wall_attrs: Vec<WallAttr>,
+    /// 複数開口の取り扱い（建物一律。RESP-D 計算編 02「剛性計算」）。
+    /// 剛性の開口低減・耐震壁判定・検定への開口供給に適用する
+    /// （自重控除は常に生の開口面積和）。既定は「等価開口とする」。
+    #[serde(default)]
+    pub multi_opening_mode: MultiOpeningMode,
     /// フレーム外雑壁。
     #[serde(default)]
     pub misc_walls: Vec<MiscWall>,
@@ -940,6 +1076,77 @@ mod tests {
         });
         assert_eq!(attr.opening_dims(), None);
         assert_eq!(attr.total_opening_area(), 0.0);
+    }
+
+    fn op(w: f64, h: f64, offset: Option<[f64; 2]>) -> WallOpening {
+        WallOpening {
+            width: w,
+            height: h,
+            offset,
+        }
+    }
+
+    fn attr_with(openings: Vec<WallOpening>) -> WallAttr {
+        WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings,
+        }
+    }
+
+    /// 包絡モード: 位置を持つ開口は外接矩形1つに統合、位置不明は個別のまま。
+    #[test]
+    fn test_openings_for_mode_envelope() {
+        let attr = attr_with(vec![
+            op(1000.0, 1000.0, Some([0.0, 0.0])),
+            op(500.0, 800.0, Some([2000.0, 1200.0])),
+            op(300.0, 300.0, None), // 位置不明
+        ]);
+        let out = attr.openings_for_mode(MultiOpeningMode::Envelope);
+        assert_eq!(out.len(), 2);
+        // 包絡矩形: x0=0,z0=0,x1=2500,z1=2000
+        assert!((out[0].width - 2500.0).abs() < 1e-9);
+        assert!((out[0].height - 2000.0).abs() < 1e-9);
+        assert_eq!(out[0].offset, Some([0.0, 0.0]));
+        assert!((out[1].width - 300.0).abs() < 1e-9);
+        // 包絡モードの面積は包絡矩形基準(生の面積和より大きい)
+        let a_env = attr.total_opening_area_for(MultiOpeningMode::Envelope);
+        assert!(a_env > attr.total_opening_area());
+    }
+
+    /// 自動判定: 近接対のみ包絡を繰り返し、離れた開口は残る。
+    #[test]
+    fn test_openings_for_mode_auto_merges_close_pairs_only() {
+        // 開口1と2は水平間隔200(≤min幅)で包絡可能。開口3は間隔5000で不可。
+        let attr = attr_with(vec![
+            op(1000.0, 2000.0, Some([0.0, 0.0])),
+            op(800.0, 2000.0, Some([1200.0, 0.0])),
+            op(900.0, 2000.0, Some([7000.0, 0.0])),
+        ]);
+        let out = attr.openings_for_mode(MultiOpeningMode::Auto);
+        assert_eq!(out.len(), 2);
+        // 包絡結果: 幅 0..2000
+        assert!((out[0].width - 2000.0).abs() < 1e-9);
+        assert!((out[1].width - 900.0).abs() < 1e-9);
+        // 等価モードは元のまま
+        assert_eq!(attr.openings_for_mode(MultiOpeningMode::Equivalent).len(), 3);
+    }
+
+    /// 自動判定の包絡可能条件(暫定): 純間隔が min(寸法) を超えると包絡しない。
+    #[test]
+    fn test_can_envelope_boundary() {
+        let a = op(1000.0, 2000.0, Some([0.0, 0.0]));
+        // 水平間隔 1000 = min(1000, 1000) → 包絡可
+        let b = op(1000.0, 2000.0, Some([2000.0, 0.0]));
+        assert!(a.can_envelope(&b));
+        // 水平間隔 1001 > min → 不可
+        let c = op(1000.0, 2000.0, Some([2001.0, 0.0]));
+        assert!(!a.can_envelope(&c));
+        // 位置不明は不可
+        let d = op(1000.0, 2000.0, None);
+        assert!(!a.can_envelope(&d));
     }
 
     /// 旧スキーマ(openings 無し)の WallAttr が読み込めること(serde 後方互換)。
