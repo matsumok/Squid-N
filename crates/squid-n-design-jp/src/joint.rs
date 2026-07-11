@@ -19,8 +19,10 @@
 //! マニュアルの元テキストは PDF/MathML からの抽出であり、分数式や上付き添字が
 //! 崩れている箇所がある。以下は本モジュールで再構成・簡略化した式であり、
 //! 各関数のドキュメントに個別に明記する:
-//! - RC 接合部の有効幅 bj: 「大きい方」と読める抽出だが、RC 規準 15 条の
-//!   接合部有効幅は `min(bi/2, D/4)` であるため、安全側の `min` を採用する。
+//! - RC 接合部の有効幅 bj: `bai = max(bi/2, D/4)`。マニュアル原典図
+//!   （2026-07-11 照合）が「bi/2 または D/4 の**大きい方**」と明記しているため
+//!   `max` を採用する（RESP-D の算定結果を再現するため。RC 規準本文の一般的な
+//!   `min` 解釈より有効幅を大きく＝許容せん断力を大きく見積もる点に注意）。
 //! - S パネルゾーンの形状係数 κ: 分数 2 項和の形に再構成した（下記
 //!   [`s_panel_zone_check`] のドキュメント参照）。
 //! - 冷間成形角形鋼管の耐力低減係数 ν、パネル耐力 Mpp の軸力依存項も
@@ -81,14 +83,15 @@ pub struct RcJointInput {
 /// - `fs`: コンクリートの**短期**許容せん断応力度
 ///   （[`crate::rc::concrete_allowable_shear`]`(fc, false)`）
 /// - `bj = bb + ba1 + ba2`（接合部有効幅）。
-///   `bai = min(bi/2, D/4)`、`bi = (col_width − beam_width) / 2`。
+///   `bai = max(bi/2, D/4)`、`bi = (col_width − beam_width) / 2`。
 ///   梁が柱断面の中心に取り付き、柱幅と梁幅の差が両側に均等に振り分けられる
 ///   （`bi` が両側で共通）と仮定している。
 ///
-///   **注記（再構成）**: マニュアル抽出テキストは bai を「大きい方」と読める
-///   記載になっているが、RC 規準 15 条本文の接合部有効幅は
-///   `bai = min(bi/2, D/4)` であり、`max` を採用すると有効幅を過大評価し
-///   非安全側になる。本実装は RC 規準原文に従い `min` を採用する。
+///   **原典照合済み（2026-07-11）**: マニュアル「せん断力に対する検討」の図
+///   （ユーザー提供）が `bai = bi/2 または D/4 の大きい方` と明記しているため
+///   `max` を採用する。`max` は有効幅を大きく＝許容せん断力を大きく見積もる
+///   （RC 規準本文の一般的な `min` 解釈より非安全側）が、RESP-D の算定結果を
+///   再現することを優先する。
 ///
 /// ## 設計用せん断力
 /// `Qdj = min(Qdj1, Qdj2)`
@@ -113,9 +116,10 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
 
     let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
 
-    // 接合部有効幅 bj = bb + ba1 + ba2（両側均等仮定、RC 規準 15 条 min 式）。
+    // 接合部有効幅 bj = bb + ba1 + ba2（両側均等仮定）。
+    // bai = max(bi/2, D/4)（マニュアル原典「大きい方」、2026-07-11 照合）。
     let bi = (inp.col_width - inp.beam_width) / 2.0;
-    let bai = (bi / 2.0).min(inp.col_depth / 4.0).max(0.0);
+    let bai = (bi / 2.0).max(inp.col_depth / 4.0).max(0.0);
     let bj = inp.beam_width + 2.0 * bai;
 
     let qaj = kappa_a * (fs - 0.5) * bj * inp.col_depth;
@@ -200,7 +204,7 @@ pub struct SPanelInput {
 /// 呼び出し側が段違いを考慮した等価な `db`（低い方の梁の値）を渡す簡略化とする。
 ///
 /// ## パネル降伏モーメント
-/// `pMy = Ve・κ・√(1 − n²)・Fy/√3`
+/// `pMy = (Ve/κ)・√(1 − n²)・Fy/√3`
 ///
 /// - H形: `Ve = dc・db・tp`、
 ///   `κ = 1/(2/3 + (4・bc・tf)/(dc・tp)) + 1/(1 + (dc・tp)/(6・bc・tf))`
@@ -208,11 +212,10 @@ pub struct SPanelInput {
 ///   `κ = 1/(2/3 + 2・bc/dc) + 1/(1 + dc/(3・bc))`
 /// - 円形: `Ve = 2・dc・db・tp`、`κ = 4/π`
 ///
-/// **注記（再構成）**: κ の式はマニュアルの MathML 抽出が崩れていたため、
-/// 分数2項の和という形に再構成したものである。妥当性は、一般的な柱梁断面で
-/// κ が概ね 0.5〜1.5 程度のオーダーに収まることをユニットテストで確認している
-/// （物理的には全塑性せん断耐力に対する有効項の割合を表す係数であり、この
-/// オーダーであれば整合的と判断した）。
+/// **原典照合済み（2026-07-11）**: マニュアル「接合部パネル降伏モーメント」の
+/// 図（ユーザー提供）と照合し、`pMy = (Ve/κ)・√(1−n²)・Fy/√3`（Ve を κ で
+/// **除する**）であること、および κ の 3 形状分の式が上記で正しいことを確認した。
+/// κ は概ね 0.5〜1.5 のオーダーで、Ve/κ でも整合的（ユニットテストで確認）。
 ///
 /// `n = |axial_ratio|` とし、`|n| ≥ 1` の場合は `√(1 − n²)` を 0 にクランプする
 /// （軸力が全塑性軸耐力に達している状態を表し、曲げ・せん断耐力の余裕なしに対応）。
@@ -241,7 +244,9 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
     let n = inp.axial_ratio.abs();
     let reduction = if n >= 1.0 { 0.0 } else { (1.0 - n * n).sqrt() };
 
-    let p_my = ve * kappa * reduction * inp.fy / 3f64.sqrt();
+    // pMy = (Ve/κ)・√(1−n²)・Fy/√3（原典図で Ve/κ を確認、2026-07-11）。
+    let kappa = if kappa.abs() > 1e-9 { kappa } else { 1e-9 };
+    let p_my = ve / kappa * reduction * inp.fy / 3f64.sqrt();
     let p_m = inp.beam_moment_left + inp.beam_moment_right
         - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0;
 
@@ -689,8 +694,8 @@ mod tests {
     fn rc_joint_kappa_a_by_shape() {
         // fs(短期) = concrete_allowable_shear(24.0,false)
         let fs = crate::rc::concrete_allowable_shear(24.0, false);
-        // bi=(600-300)/2=150, bai=min(75,150)=75, bj=300+150=450
-        let bj = 450.0;
+        // bi=(600-300)/2=150, bai=max(bi/2=75, D/4=150)=150, bj=300+2*150=600
+        let bj = 600.0;
         let d = 600.0;
         for (shape, kappa_a) in [
             (JointShape::Cross, 10.0),
@@ -714,25 +719,27 @@ mod tests {
     }
 
     #[test]
-    fn rc_joint_bj_uses_min_not_max() {
-        // col_width が大きく (bi/2) > D/4 となるケースで min が選ばれることを確認。
-        // bi = (1200-300)/2 = 450, bi/2=225, D/4=600/4=150 -> bai=min(225,150)=150
-        // bj = 300 + 2*150 = 600 (もし max なら bj = 300+2*225=750 になり異なる)
+    fn rc_joint_bj_uses_max_per_manual() {
+        // マニュアル原典「bi/2 または D/4 の大きい方」に従い max を採用する
+        // （2026-07-11 原典照合）。col_width が大きく (bi/2) > D/4 となるケースで
+        // max=bi/2 が選ばれることを確認。
+        // bi = (1200-300)/2 = 450, bi/2=225, D/4=600/4=150 -> bai=max(225,150)=225
+        // bj = 300 + 2*225 = 750 (もし min なら bj = 300+2*150=600 になり異なる)
         let mut inp = base_joint_input(JointShape::Cross);
         inp.col_width = 1200.0;
         let res = rc_joint_shear_check(&inp);
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let kappa_a = 10.0;
-        let bj_min = 600.0;
         let bj_max = 750.0;
-        let qaj_min = kappa_a * (fs - 0.5) * bj_min * inp.col_depth;
+        let bj_min = 600.0;
         let qaj_max = kappa_a * (fs - 0.5) * bj_max * inp.col_depth;
-        let qdj = res.ratio * qaj_min;
-        // min 採用時の ratio と、もし max を採用していた場合の ratio は異なるはず。
-        let ratio_if_max = qdj / qaj_max;
-        assert!((res.ratio - ratio_if_max).abs() > 1e-9);
-        // min の方が bj が小さく QAj も小さいので ratio は max のケースより大きい（安全側）。
-        assert!(res.ratio > ratio_if_max);
+        let qaj_min = kappa_a * (fs - 0.5) * bj_min * inp.col_depth;
+        let qdj = res.ratio * qaj_max;
+        // max 採用時の ratio と、もし min を採用していた場合の ratio は異なるはず。
+        let ratio_if_min = qdj / qaj_min;
+        assert!((res.ratio - ratio_if_min).abs() > 1e-9);
+        // max の方が bj が大きく QAj も大きいので ratio は min のケースより小さい。
+        assert!(res.ratio < ratio_if_min);
     }
 
     #[test]
@@ -749,7 +756,7 @@ mod tests {
         let res = rc_joint_shear_check(&inp);
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let bi = (inp.col_width - inp.beam_width) / 2.0;
-        let bai = (bi / 2.0_f64).min(inp.col_depth / 4.0);
+        let bai = (bi / 2.0_f64).max(inp.col_depth / 4.0);
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj / qaj;
@@ -766,7 +773,7 @@ mod tests {
         let expected_qdj1 = inp.sum_beam_moments / inp.beam_j;
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let bi = (inp.col_width - inp.beam_width) / 2.0;
-        let bai = (bi / 2.0_f64).min(inp.col_depth / 4.0);
+        let bai = (bi / 2.0_f64).max(inp.col_depth / 4.0);
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj1 / qaj;

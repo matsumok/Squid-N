@@ -436,19 +436,19 @@ fn shear_capacity_generic(
 
 /// 高強度せん断補強筋の製品グループ（pw 上限値の判定用）。
 ///
-/// マニュアルの製品別 pw 上限表（短期）:
-/// - ウルボン系（ウルボン785=UB785, ウルボン1275=SBPD1275）・SPR785・MK785:
+/// マニュアルの製品別 pw 上限表（短期。2026-07-11 原典図で照合済み）:
+/// - ウルボン系（ウルボン785=UB785, ウルボン1275=SBPD1275）・SPR785:
 ///   1.2%（損傷制御）/1.0%（安全確保）、Fc 非依存。
 /// - リバーボン785(KW785)・スミフープ等(KSS785)・HDC685: 0.8%、Fc 非依存。
 /// - スーパーフープ KH785: `min(1.2%, 1.0%・Fc/27)`。
 /// - スーパーフープ KH685・パワーリング SPR685: `min(1.2%, 1.2%・Fc/27)`。
-/// - UHYフープ SHD685: 1.2%、Fc 非依存。
+/// - UHYフープ SHD685・エムケーフープ MK785: 1.2%（損傷制御・安全確保とも）、Fc 非依存。
 /// - 上記以外（判別不能な高強度品）: 安全側に 0.8%。
 ///
 /// 長期は全製品 0.6% で共通（`high_strength_pw_cap` 側で分岐）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HighStrengthGroup {
-    /// ウルボン系（ウルボン785=UB785, ウルボン1275=SBPD1275）・SPR785・MK785。
+    /// ウルボン系（ウルボン785=UB785, ウルボン1275=SBPD1275）・SPR785。
     /// 短期上限 1.2%（損傷制御）/1.0%（安全確保）、Fc 非依存。
     UlbonSeries,
     /// リバーボン785(KW785)・スミフープ等(KSS785)・HDC685。
@@ -459,8 +459,9 @@ enum HighStrengthGroup {
     /// スーパーフープ KH685・パワーリング SPR685。
     /// 短期上限 `min(1.2%, 1.2%・Fc/27)`。
     Kh685Series,
-    /// UHYフープ SHD685。短期上限 1.2%、Fc 非依存。
-    Shd685,
+    /// UHYフープ SHD685・エムケーフープ MK785。短期上限 1.2%（損傷制御・
+    /// 安全確保とも）、Fc 非依存。
+    Shd685OrMk785,
     /// 上記以外（判別不能な高強度品）。安全側に短期上限 0.8% とする。
     Other,
 }
@@ -483,7 +484,6 @@ fn high_strength_group(grade: &str) -> HighStrengthGroup {
         "ウルボン785",
         "ウルボン1275",
         "SPR785",
-        "MK785",
     ]) {
         HighStrengthGroup::UlbonSeries
     } else if matches_any(&["KW785", "KSS785", "HDC685"]) {
@@ -492,8 +492,8 @@ fn high_strength_group(grade: &str) -> HighStrengthGroup {
         HighStrengthGroup::Kh785
     } else if matches_any(&["KH685", "SPR685"]) {
         HighStrengthGroup::Kh685Series
-    } else if matches_any(&["SHD685"]) {
-        HighStrengthGroup::Shd685
+    } else if matches_any(&["SHD685", "MK785"]) {
+        HighStrengthGroup::Shd685OrMk785
     } else {
         HighStrengthGroup::Other
     }
@@ -538,8 +538,8 @@ fn high_strength_pw_cap(grade: &str, term: LoadTerm, damage_control: bool, fc: f
         HighStrengthGroup::Kh785 => (0.012_f64).min(0.010 * fc / 27.0),
         // スーパーフープ KH685・パワーリング SPR685: min(1.2%, 1.2%・Fc/27)。
         HighStrengthGroup::Kh685Series => (0.012_f64).min(0.012 * fc / 27.0),
-        // UHYフープ SHD685: Fc に依存せず一律 1.2%。
-        HighStrengthGroup::Shd685 => 0.012,
+        // UHYフープ SHD685・エムケーフープ MK785: Fc に依存せず一律 1.2%。
+        HighStrengthGroup::Shd685OrMk785 => 0.012,
         HighStrengthGroup::Other => 0.008,
     }
 }
@@ -2492,11 +2492,10 @@ mod tests {
 
     #[test]
     fn test_high_strength_pw_cap_group_difference() {
-        // ウルボン系(UB785)・SPR785・MK785 は短期 1.2%(損傷制御)/1.0%(安全確保)、Fc 非依存。
+        // ウルボン系(UB785)・SPR785 は短期 1.2%(損傷制御)/1.0%(安全確保)、Fc 非依存。
         assert!((high_strength_pw_cap("UB785", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
         assert!((high_strength_pw_cap("UB785", LoadTerm::Short, false, 24.0) - 0.010).abs() < 1e-9);
         assert!((high_strength_pw_cap("SPR785", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
-        assert!((high_strength_pw_cap("MK785", LoadTerm::Short, false, 24.0) - 0.010).abs() < 1e-9);
 
         // KW785/KSS785/HDC685 は 0.8%（損傷制御・安全確保とも）、Fc 非依存。
         assert!((high_strength_pw_cap("KW785", LoadTerm::Short, true, 24.0) - 0.008).abs() < 1e-9);
@@ -2505,11 +2504,14 @@ mod tests {
         );
         assert!((high_strength_pw_cap("HDC685", LoadTerm::Short, true, 24.0) - 0.008).abs() < 1e-9);
 
-        // SHD685 は 1.2%（損傷制御・安全確保とも）、Fc 非依存。
+        // SHD685・MK785 は 1.2%（損傷制御・安全確保とも）、Fc 非依存
+        // （2026-07-11 原典図で MK785 が 1.2% 固定であることを確認）。
         assert!((high_strength_pw_cap("SHD685", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
         assert!(
             (high_strength_pw_cap("SHD685", LoadTerm::Short, false, 90.0) - 0.012).abs() < 1e-9
         );
+        assert!((high_strength_pw_cap("MK785", LoadTerm::Short, true, 24.0) - 0.012).abs() < 1e-9);
+        assert!((high_strength_pw_cap("MK785", LoadTerm::Short, false, 24.0) - 0.012).abs() < 1e-9);
 
         // 未知の高強度品名は安全側に 0.8%。
         assert!((high_strength_pw_cap("XYZ999", LoadTerm::Short, true, 24.0) - 0.008).abs() < 1e-9);
