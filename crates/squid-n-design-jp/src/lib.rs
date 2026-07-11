@@ -1,35 +1,12 @@
 //! 断面算定（許容応力度検定）と二次設計の日本基準実装。
 //!
 //! 一次設計（許容応力度検定）は RESP-D マニュアル「計算編 04 断面検定
-//! （許容応力度検定）」の計算方法に準拠する。**マニュアルの章立てと本クレートの
-//! モジュール構成を対応させ、原典との照合を容易にしている**:
+//! （許容応力度検定）」に準拠し、マニュアルの節に対応するモジュールへ分割する
+//! （材種ごとに `rc`/`steel`/`cft`/`srrc`、材料強度は `material`、節点単位の
+//! 検定の入力組み立ては `joint_wiring`）。
 //!
-//! | RESP-D マニュアル 04 断面検定 の節 | モジュール |
-//! |---|---|
-//! | 材料強度・許容応力度 | [`material`] |
-//! | 鉄筋コンクリート造梁の断面検定 | `rc::beam` |
-//! | 鉄筋コンクリート造柱の断面検定 | `rc::column` |
-//! | 鉄筋コンクリート造耐震壁の断面検定 | [`rc::wall`] |
-//! | 鉄筋コンクリート造柱梁接合部の断面検定 | [`rc::joint`] |
-//! | 鉄筋コンクリート造梁付着の断面検定 | `rc::bond` |
-//! | 鉄筋コンクリート造水平接合面の検討 | [`rc::horizontal_joint`] |
-//! | 鉄骨造梁の断面検定 | `steel::beam` |
-//! | 鉄骨造柱の断面検定 | `steel::column` |
-//! | 鉄骨造パネルゾーンの断面検定 | [`steel::panel_zone`] |
-//! | 冷間成形角型鋼管の断面検定 | [`steel::cold_formed`] |
-//! | 鉄骨の断面検定における断面性能 | `steel::section` |
-//! | 鉄骨ブレースの断面検定 | `steel::brace` |
-//! | 鉄骨造柱の座屈長さ係数 K | [`steel::buckling`] |
-//! | CFT柱の断面検定 | [`cft`] |
-//! | 鉄骨鉄筋コンクリート造梁の断面検定 | `srrc::beam` |
-//! | 鉄骨鉄筋コンクリート造柱の断面検定 | `srrc::column` |
-//! | 鉄骨鉄筋コンクリート造パネルゾーンの断面検定 | [`srrc::panel_zone`] |
-//! | JFEシビル二重鋼管座屈補剛ブレース／日鉄アンボンドブレースの断面検定 | [`brb`] |
-//!
-//! 節点単位の検定（接合部・パネル・耐震壁・水平接合面）の入力組み立ては
-//! [`joint_wiring`] が担い、上記の純関数群を `Model` から呼び出す。
-//! 二次設計（保有水平耐力・偏心率・部材ランク等）は `p7` フィーチャ配下の
-//! `ds`/`holding_capacity`/`eccentricity` 等に分離している。
+//! 二次設計（保有水平耐力計算）は `p7` フィーチャ配下の [`secondary`] モジュール
+//! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
 pub mod brb;
 pub mod cft;
 pub mod joint_wiring;
@@ -45,19 +22,7 @@ pub mod wall_opening;
 #[cfg(feature = "p12")]
 pub mod capacity_spectrum;
 #[cfg(feature = "p7")]
-pub mod ds;
-#[cfg(feature = "p7")]
-pub mod eccentricity;
-#[cfg(feature = "p7")]
-pub mod holding_capacity;
-#[cfg(feature = "p7")]
-pub mod panel_shear;
-#[cfg(feature = "p7")]
-pub mod principal_axis;
-#[cfg(feature = "p7")]
-pub mod rc_capacity;
-#[cfg(feature = "p7")]
-pub mod story_metrics;
+pub mod secondary;
 
 pub use cft::CftDesign;
 pub use material::{steel_f_value, steel_f_value_prefix};
