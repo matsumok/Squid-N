@@ -22,6 +22,8 @@
 //! - [`beam`]: 鉄筋コンクリート造梁の断面検定（RC 規準13条の曲げ・せん断）。
 //! - [`column`]: 鉄筋コンクリート造柱の断面検定（RC 規準14条の軸力+曲げ）。
 //! - [`bond`]: 鉄筋コンクリート造梁付着の断面検定（RC 規準1999/1991 方式）。
+//! - [`joint`]: 鉄筋コンクリート造柱梁接合部の断面検定（RC 規準15条）。
+//! - [`wall`]: 鉄筋コンクリート造耐震壁の断面検定（RC 規準18条）。
 
 use crate::{CheckResult, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
@@ -31,6 +33,8 @@ use squid_n_core::units::ConcreteClass;
 mod beam;
 mod bond;
 mod column;
+pub mod joint;
+pub mod wall;
 
 pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
 

@@ -7,7 +7,6 @@
 pub mod brb;
 pub mod buckling;
 pub mod cft;
-pub mod joint;
 pub mod joint_wiring;
 /// 材料強度・許容応力度（RESP-D「材料強度・許容応力度」節）。材種横断の
 /// 許容応力度・材料定数を集約する。

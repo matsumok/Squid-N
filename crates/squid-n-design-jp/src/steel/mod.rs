@@ -24,6 +24,9 @@
 //! - [`beam`][]: 鉄骨造梁の断面検定（必要横補剛数・たわみを含む）。
 //! - [`column`][]: 鉄骨造柱の断面検定。
 //! - [`brace`][]: 鉄骨ブレースの断面検定。
+//! - [`panel_zone`][]: S 造パネルゾーンの断面検定（鋼構造接合部設計指針）。
+//! - [`cold_formed`][]: 冷間成形角形鋼管柱の柱梁耐力比チェック（2008年版
+//!   角形鋼管設計・施工マニュアル）。
 
 use crate::{CheckResult, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
@@ -38,7 +41,9 @@ pub use crate::material::{
 
 mod beam;
 mod brace;
+pub mod cold_formed;
 mod column;
+pub mod panel_zone;
 mod section;
 
 // 鉄骨の断面検定における断面性能（fb・断面二次半径・断面欠損・横座屈長さ）は

@@ -49,6 +49,7 @@
 //!   （`DesignCheck` 実装、梁/柱への振り分け）。
 //! - [`beam`][]: 鉄骨鉄筋コンクリート造梁の断面検定（累加強度式 MA=sMo+rMA）。
 //! - [`column`][]: 鉄骨鉄筋コンクリート造柱の断面検定（累加強度式・fc′低減）。
+//! - [`panel_zone`][]: SRC 造柱梁接合部（パネルゾーン）の断面検定（SRC 規準）。
 
 use crate::{CheckResult, DesignCheck, DesignCtx, MemberForcesAt, MemberKind, QdMethod};
 use squid_n_core::model::{Material, Section};
@@ -56,6 +57,7 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 mod beam;
 mod column;
+pub mod panel_zone;
 
 // ============================================================================
 // 0. 共通ヘルパ
