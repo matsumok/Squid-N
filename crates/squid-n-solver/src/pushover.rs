@@ -56,6 +56,10 @@ pub struct PushoverStep {
     pub top_disp: f64,
     pub base_shear: f64,
     pub story_drifts: Vec<f64>,
+    /// 当該ステップ確定時点の全自由節点変位（`DofMap` のアクティブ添字順）。
+    /// 段階的耐力喪失解析（`strength_loss` モジュール）が部材変形角を算定するための
+    /// 記録で、既定では収集しない（オプトイン、`pushover_analysis_recording` 参照）。
+    pub node_disp: Option<Vec<f64>>,
 }
 
 pub(crate) fn assemble_k(
@@ -237,6 +241,37 @@ pub fn pushover_analysis(
     use_arc_length: bool,
     arc_length_dl: f64,
 ) -> Result<PushoverResult, String> {
+    pushover_analysis_recording(
+        model,
+        dofmap,
+        reducer,
+        dir,
+        max_steps,
+        max_disp,
+        use_kg,
+        use_arc_length,
+        arc_length_dl,
+        false,
+    )
+}
+
+/// プッシュオーバー解析（P5 §7）。`record_node_disp` が真の場合、各ステップの
+/// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
+/// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
+/// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
+#[allow(clippy::too_many_arguments)]
+pub fn pushover_analysis_recording(
+    model: &mut Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    dir: SeismicDir,
+    max_steps: usize,
+    max_disp: f64,
+    use_kg: bool,
+    use_arc_length: bool,
+    arc_length_dl: f64,
+    record_node_disp: bool,
+) -> Result<PushoverResult, String> {
     let n_active = dofmap.n_active();
     if n_active == 0 {
         return Err("no active DOF".into());
@@ -381,6 +416,7 @@ pub fn pushover_analysis(
                     top_disp: roof,
                     base_shear,
                     story_drifts: story_drift,
+                    node_disp: record_node_disp.then(|| total_disp.clone()),
                 });
                 track_hinges(
                     model,
@@ -503,6 +539,7 @@ pub fn pushover_analysis(
                             top_disp: roof,
                             base_shear,
                             story_drifts: story_drift,
+                            node_disp: record_node_disp.then(|| total_disp.clone()),
                         });
                         track_hinges(model, dofmap, &behaviors, &thresholds, cstep, &mut hinges);
                         step_ok = true;
@@ -596,6 +633,7 @@ pub fn pushover_analysis(
                         top_disp: roof,
                         base_shear,
                         story_drifts: story_drift,
+                        node_disp: record_node_disp.then(|| total_disp.clone()),
                     });
                 }
                 _ => {
