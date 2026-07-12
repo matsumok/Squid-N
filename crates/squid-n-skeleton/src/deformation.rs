@@ -21,6 +21,7 @@ const CURVATURE_EPS: f64 = 1e-15;
 /// - `ky_yield`: 降伏曲率（塑性ヒンジ判定用。未降伏なら `None`）
 /// - `span` × `inflection_ratio`: 反曲点距離 l
 /// - `plastic_hinge_length`: 塑性ヒンジ長 lp
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mphi_to_mtheta(
     ky: f64,
     m: f64,

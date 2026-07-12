@@ -71,6 +71,7 @@ fn solve_axial_strain(
 /// ファイバ断面から M–φ 関係を数値積分で算定する。
 /// 軸力 n_axial [N] を保ちながら曲率 κ [1/mm] を増やし、各ステップでファイバ状態を commit する。
 /// ひび割れ（コンクリート引張ひび割れ）・降伏（鉄筋降伏）・終局（ピークモーメント）を検出する。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_m_phi_curve_rc(
     fibers: &FiberSection,
     mats: &mut [Box<dyn UniaxialMaterial>],
