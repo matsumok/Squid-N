@@ -48,6 +48,73 @@ pub fn friction_max_force(mu: f64, axial_n: f64) -> f64 {
     mu.max(0.0) * axial_n.max(0.0)
 }
 
+// ──────────────────── 鉛プラグ挿入型積層ゴム LRB 統一型（歪依存バイリニア） ───────────
+// RESP-D「07 非線形解析（動的解析）」免震支承材「鉛プラグ挿入型積層ゴム a) LRB 統一型」。
+
+/// LRB 統一型の降伏後剛性のひずみ依存修正係数 `CKd(γ)`。
+/// `CKd = { 0.779·γ^0.41 (γ<0.25); γ^−0.25 (0.25≤γ<1.0); γ^−0.12 (1.0≤γ) }`。
+pub fn lrb_stiffness_strain_factor(gamma: f64) -> f64 {
+    let g = gamma.abs().max(1e-9);
+    if g < 0.25 {
+        0.779 * g.powf(0.41)
+    } else if g < 1.0 {
+        g.powf(-0.25)
+    } else {
+        g.powf(-0.12)
+    }
+}
+
+/// LRB 統一型の切片荷重のひずみ依存修正係数 `CQd(γ)`。
+/// `CQd = { 2.036·γ^0.41 (γ≤0.1); 1.106·γ^0.145 (0.1<γ<0.5); 1 (0.5≤γ) }`。
+pub fn lrb_intercept_strain_factor(gamma: f64) -> f64 {
+    let g = gamma.abs().max(1e-9);
+    if g <= 0.1 {
+        2.036 * g.powf(0.41)
+    } else if g < 0.5 {
+        1.106 * g.powf(0.145)
+    } else {
+        1.0
+    }
+}
+
+/// 温度換算（20℃基準）: 降伏後剛性 `Kd(t0)=Kd(20)·exp(−0.00271·(t0−20))`。
+pub fn lrb_stiffness_at_temperature(kd20: f64, t0_celsius: f64) -> f64 {
+    kd20 * (-0.00271 * (t0_celsius - 20.0)).exp()
+}
+
+/// 温度換算（20℃基準）: 切片荷重 `Qd(t0)=Qd(20)·exp(−0.00879·(t0−20))`。
+pub fn lrb_intercept_at_temperature(qd20: f64, t0_celsius: f64) -> f64 {
+    qd20 * (-0.00879 * (t0_celsius - 20.0)).exp()
+}
+
+/// バイリニア免震材の等価水平剛性 `keq = Qd/δ + Kd`（δ=設計変位、Kd=降伏後剛性）。
+pub fn equivalent_stiffness(kd: f64, qd: f64, disp: f64) -> f64 {
+    let d = disp.abs();
+    if d < 1e-12 {
+        kd
+    } else {
+        qd / d + kd
+    }
+}
+
+/// バイリニア免震材の等価粘性減衰定数 `Heq`。
+/// `Heq = (2/π)·Qd·(δ − Qd/((β−1)·Kd)) / (keq·δ²)`、`β = K1/Kd`（初期剛性/降伏後剛性）。
+pub fn equivalent_damping(k1: f64, kd: f64, qd: f64, disp: f64) -> f64 {
+    let d = disp.abs();
+    if d < 1e-12 || kd <= 0.0 || qd <= 0.0 {
+        return 0.0;
+    }
+    let beta = k1 / kd;
+    if beta <= 1.0 {
+        return 0.0;
+    }
+    let keq = qd / d + kd;
+    if keq <= 0.0 {
+        return 0.0;
+    }
+    (2.0 / std::f64::consts::PI) * qd * (d - qd / ((beta - 1.0) * kd)) / (keq * d * d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +165,49 @@ mod tests {
             assert!(multi_shear_stiffness_reduction(w[0]) > multi_shear_stiffness_reduction(w[1]));
             assert!(multi_shear_strength_reduction(w[0]) > multi_shear_strength_reduction(w[1]));
         }
+    }
+
+    #[test]
+    fn test_lrb_stiffness_strain_factor_handcalc() {
+        // 3 区間の代表値。
+        assert!((lrb_stiffness_strain_factor(0.1) - 0.779 * 0.1f64.powf(0.41)).abs() < 1e-9);
+        assert!((lrb_stiffness_strain_factor(0.5) - 0.5f64.powf(-0.25)).abs() < 1e-9);
+        assert!((lrb_stiffness_strain_factor(2.0) - 2.0f64.powf(-0.12)).abs() < 1e-9);
+        // 区間の折れ点で連続性は不要だが、単調傾向（大歪で剛性低下）を確認。
+        assert!(lrb_stiffness_strain_factor(2.0) < lrb_stiffness_strain_factor(0.5));
+    }
+
+    #[test]
+    fn test_lrb_intercept_strain_factor_handcalc() {
+        assert!((lrb_intercept_strain_factor(0.05) - 2.036 * 0.05f64.powf(0.41)).abs() < 1e-9);
+        assert!((lrb_intercept_strain_factor(0.3) - 1.106 * 0.3f64.powf(0.145)).abs() < 1e-9);
+        assert_eq!(lrb_intercept_strain_factor(0.6), 1.0);
+        assert_eq!(lrb_intercept_strain_factor(1.5), 1.0);
+    }
+
+    #[test]
+    fn test_lrb_temperature_conversion() {
+        // 30℃: Kd·exp(−0.00271·10)、Qd·exp(−0.00879·10)。高温で低下。
+        assert!(
+            (lrb_stiffness_at_temperature(100.0, 30.0) - 100.0 * (-0.0271f64).exp()).abs() < 1e-9
+        );
+        assert!(
+            (lrb_intercept_at_temperature(100.0, 30.0) - 100.0 * (-0.0879f64).exp()).abs() < 1e-9
+        );
+        // 20℃ 基準では不変。
+        assert!((lrb_stiffness_at_temperature(100.0, 20.0) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_equivalent_stiffness_and_damping_handcalc() {
+        // keq = Qd/δ + Kd = 100/200 + 1 = 1.5。
+        let keq = equivalent_stiffness(1.0, 100.0, 200.0);
+        assert!((keq - 1.5).abs() < 1e-9, "keq={keq}");
+        // Heq = (2/π)·Qd·(δ − Qd/((β−1)Kd)) / (keq·δ²), β=K1/Kd=10。
+        // = (0.63662)·100·(200 − 100/9) / (1.5·40000) ≈ 0.2004。
+        let heq = equivalent_damping(10.0, 1.0, 100.0, 200.0);
+        let expect = (2.0 / std::f64::consts::PI) * 100.0 * (200.0 - 100.0 / 9.0) / (1.5 * 40000.0);
+        assert!((heq - expect).abs() < 1e-9, "heq={heq}");
+        assert!((heq - 0.2004).abs() < 5e-4, "heq≈0.2004, got {heq}");
     }
 }

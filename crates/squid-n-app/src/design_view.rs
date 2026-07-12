@@ -270,13 +270,23 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             let ks = squid_n_design_jp::isolator::multi_shear_stiffness_reduction(p.n_springs);
             let qs = squid_n_design_jp::isolator::multi_shear_strength_reduction(p.n_springs);
             let desc = match p.kind {
-                squid_n_core::model::IsolatorKind::LaminatedRubber => format!(
-                    "積層ゴム系 K1={:.0} K2={:.0} Qd={:.0}kN Kv={:.0}",
-                    p.k1,
-                    p.k2,
-                    p.qd / 1000.0,
-                    p.kv
-                ),
+                squid_n_core::model::IsolatorKind::LaminatedRubber => {
+                    // 等価水平剛性 keq・等価粘性減衰定数 Heq を設計変位 200mm（参考）で算定
+                    // （RESP-D「07」LRB 統一型 keq=Qd/δ+Kd、Heq=(2/π)Qd(δ−Qd/((β−1)Kd))/(keq·δ²)）。
+                    let disp = 200.0;
+                    let keq = squid_n_design_jp::isolator::equivalent_stiffness(p.k2, p.qd, disp);
+                    let heq =
+                        squid_n_design_jp::isolator::equivalent_damping(p.k1, p.k2, p.qd, disp);
+                    format!(
+                        "積層ゴム系 K1={:.0} K2={:.0} Qd={:.0}kN Kv={:.0} ／ δ=200mm時 keq={:.1} Heq={:.3}",
+                        p.k1,
+                        p.k2,
+                        p.qd / 1000.0,
+                        p.kv,
+                        keq,
+                        heq
+                    )
+                }
                 squid_n_core::model::IsolatorKind::ElasticSliding => format!(
                     "弾性すべり μ={:.3} N={:.0}kN Qmax={:.0}kN Kv={:.0}",
                     p.mu,
