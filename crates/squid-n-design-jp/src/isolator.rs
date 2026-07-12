@@ -115,6 +115,71 @@ pub fn equivalent_damping(k1: f64, kd: f64, qd: f64, disp: f64) -> f64 {
     (2.0 / std::f64::consts::PI) * qd * (d - qd / ((beta - 1.0) * kd)) / (keq * d * d)
 }
 
+// ──────────────────── 転がり支承（標準型バイリニア） ────────────────────
+// RESP-D「07」免震支承材「転がり支承」。
+
+/// 転がり支承の摩擦係数 `μ = (1.2 + 7.8·Pv/Po)/1000`。
+/// `Pv`=長期軸力、`Po`=静定格圧縮荷重。
+pub fn rolling_bearing_friction(pv: f64, po: f64) -> f64 {
+    if po.abs() < 1e-12 {
+        return 0.0;
+    }
+    (1.2 + 7.8 * pv / po) / 1000.0
+}
+
+/// 転がり支承の折れ点耐力 `Q1 = μ·Pv`（軸力一定・長期軸力と摩擦係数から）。
+pub fn rolling_bearing_yield_force(pv: f64, po: f64) -> f64 {
+    rolling_bearing_friction(pv, po) * pv.max(0.0)
+}
+
+// ──────────────────── 球面すべり支承（速度・面圧依存摩擦） ────────────────────
+// RESP-D「07」免震支承材「球面すべり支承」。
+
+/// 球面すべり支承 MN タイプの標準摩擦係数 `μ0`（面圧依存）。
+/// `μ0 = 0.043·(2.03·σ^−0.19 + 0.068)`（σ=長期支持面圧）。
+pub fn spherical_bearing_mu0_mn(sigma: f64) -> f64 {
+    let s = sigma.max(1e-9);
+    0.043 * (2.03 * s.powf(-0.19) + 0.068)
+}
+
+/// 球面すべり支承 LN タイプの標準摩擦係数 `μ0`（面圧依存）。
+/// `μ0 = 0.013·(20·σ^−0.9 + 0.5)`。
+pub fn spherical_bearing_mu0_ln(sigma: f64) -> f64 {
+    let s = sigma.max(1e-9);
+    0.013 * (20.0 * s.powf(-0.9) + 0.5)
+}
+
+/// 球面すべり支承 MN タイプの速度依存摩擦係数 `μ = μ0·(1.0 − 0.55·e^(−0.019·|V|))`。
+/// `v`=層間速度 [mm/s]。
+pub fn spherical_bearing_mu_mn(mu0: f64, v: f64) -> f64 {
+    mu0 * (1.0 - 0.55 * (-0.019 * v.abs()).exp())
+}
+
+// ──────────────────── 高減衰ゴム系積層ゴム（ブリヂストン） ────────────────────
+// RESP-D「07」免震支承材「高減衰ゴム系積層ゴム ブリヂストン」。等価せん断弾性係数
+// Geq・等価粘性減衰定数 Heq・降伏荷重特性値 U を歪 γ の多項式で与える。
+
+fn poly(coeffs: &[f64], x: f64) -> f64 {
+    // 昇冪（coeffs[0] + coeffs[1]x + …）。
+    coeffs.iter().rev().fold(0.0, |acc, &c| acc * x + c)
+}
+
+/// ブリヂストン高減衰ゴム E6 タイプの `(Geq, Heq, U)`（歪 γ）。
+pub fn hdr_bridgestone_e6(gamma: f64) -> (f64, f64, f64) {
+    let g = poly(&[2.309, -4.327, 4.456, -2.379, 0.630, -0.0649], gamma);
+    let h = poly(&[0.1894, 0.0664, -0.0353, 0.0041], gamma);
+    let u = poly(&[0.3726, 0.0956, -0.0741, 0.0113], gamma);
+    (g, h, u)
+}
+
+/// ブリヂストン高減衰ゴム E4 タイプの `(Geq, Heq, U)`（歪 γ）。
+pub fn hdr_bridgestone_e4(gamma: f64) -> (f64, f64, f64) {
+    let g = poly(&[1.308, -2.438, 2.640, -1.483, 0.4086, -0.043], gamma);
+    let h = poly(&[0.227, 0.0120, -0.0088, 0.0037], gamma);
+    let u = poly(&[0.379, 0.0069, -0.0046, 0.0026], gamma);
+    (g, h, u)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +274,50 @@ mod tests {
         let expect = (2.0 / std::f64::consts::PI) * 100.0 * (200.0 - 100.0 / 9.0) / (1.5 * 40000.0);
         assert!((heq - expect).abs() < 1e-9, "heq={heq}");
         assert!((heq - 0.2004).abs() < 5e-4, "heq≈0.2004, got {heq}");
+    }
+
+    #[test]
+    fn test_rolling_bearing_handcalc() {
+        // Pv=1e6, Po=5e6 → μ=(1.2+7.8·0.2)/1000=0.00276、Q1=μ·Pv=2760。
+        let mu = rolling_bearing_friction(1.0e6, 5.0e6);
+        assert!((mu - 0.00276).abs() < 1e-9, "mu={mu}");
+        assert!((rolling_bearing_yield_force(1.0e6, 5.0e6) - 2760.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_spherical_bearing_handcalc() {
+        // μ0(MN, σ=18) = 0.043·(2.03·18^−0.19 + 0.068)。
+        let mu0 = spherical_bearing_mu0_mn(18.0);
+        let expect = 0.043 * (2.03 * 18.0f64.powf(-0.19) + 0.068);
+        assert!((mu0 - expect).abs() < 1e-12, "mu0={mu0}");
+        // V=0 で μ = μ0·(1−0.55) = 0.45·μ0（静止時）。
+        assert!((spherical_bearing_mu_mn(mu0, 0.0) - 0.45 * mu0).abs() < 1e-12);
+        // 高速では μ → μ0（速度依存項が減衰）。
+        assert!(spherical_bearing_mu_mn(mu0, 1000.0) > spherical_bearing_mu_mn(mu0, 0.0));
+        // LN タイプ μ0 も正。
+        assert!(spherical_bearing_mu0_ln(10.0) > 0.0);
+    }
+
+    #[test]
+    fn test_hdr_bridgestone_e6_handcalc() {
+        // γ=1.0 での多項式値（昇冪係数の総和）。
+        let (g, h, u) = hdr_bridgestone_e6(1.0);
+        assert!(
+            (g - (2.309 - 4.327 + 4.456 - 2.379 + 0.630 - 0.0649)).abs() < 1e-9,
+            "G={g}"
+        );
+        assert!(
+            (h - (0.1894 + 0.0664 - 0.0353 + 0.0041)).abs() < 1e-9,
+            "H={h}"
+        );
+        assert!(
+            (u - (0.3726 + 0.0956 - 0.0741 + 0.0113)).abs() < 1e-9,
+            "U={u}"
+        );
+        // Heq は正の減衰定数。
+        assert!(h > 0.0 && g > 0.0);
+        // E4 も評価可能。
+        let (g4, _, _) = hdr_bridgestone_e4(1.0);
+        assert!(g4 > 0.0);
     }
 }
