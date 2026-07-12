@@ -5,29 +5,13 @@ Rustで作成する日本の建築構造計算一貫プログラム
 
 ## 開発コマンド
 
-### ビルド
+ビルド・テスト・静的解析・機能フラグ・ドキュメントのビルド手順は
+[CONTRIBUTING.md](CONTRIBUTING.md) を参照すること。
 
-```bash
-# ワークスペース全体ビルド
-cargo build --workspace
-
-# リリースビルド
-cargo build --workspace --release
-```
-
-### テスト実行
-
-```bash
-# 全テスト実行
-cargo test --workspace
-```
-
-### 静的解析
-
-コミット前には必ず確認すること。CI と同条件で実行する（`--all-targets` がないとテストコードが clippy の対象外になる）。
+特に、**コミット前には必ず静的解析（clippy / fmt）を CI と同条件で実行する**こと
+（`--all-targets` がないとテストコードが clippy の対象外になる）。
 
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
-
 cargo fmt --all -- --check
 ```

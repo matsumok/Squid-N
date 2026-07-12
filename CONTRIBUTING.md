@@ -1,0 +1,107 @@
+# コントリビューションガイド
+
+Squid-N の開発に参加いただきありがとうございます。本書はビルド・テスト・静的解析・
+ドキュメントの手順と、開発上の約束事をまとめたものです。
+
+日本での利用を想定したプロジェクトです。**コミットメッセージ・コード中のコメント・
+Issue / PR のやりとりは日本語**で行ってください。
+
+## 前提ツール
+
+- [Rust ツールチェイン](https://rustup.rs/)（stable）。`cargo` / `rustc` が使えること
+- ドキュメントをローカルで確認する場合は [mdBook](https://rust-lang.github.io/mdBook/)
+
+## ビルド
+
+```bash
+# ワークスペース全体ビルド
+cargo build --workspace
+
+# リリースビルド
+cargo build --workspace --release
+```
+
+### 機能フラグ
+
+| フラグ | 対象クレート | 内容 |
+|--------|-------------|------|
+| `gui` | squid-n-app | GUI（egui/eframe） |
+| `mcp` | squid-n-mcp | MCP サーバ |
+| `gpu` | squid-n-gpu | GPU 行列演算（P10、実装中） |
+| `ml` | squid-n-ml | ML 断面提案（P11、未実装） |
+| `p7` | squid-n-design-jp | 二次設計（Ds、偏心率、保有耐力、パネルせん断）。既定で有効 |
+| `p12` | squid-n-design-jp | 限界耐力計算（容量スペクトル法）。未実装・opt-in |
+
+GPU や ML を無効化しても解析機能は CPU で動作する。
+
+## テスト
+
+```bash
+# 全テスト実行
+cargo test --workspace
+
+# 決定性テスト（100回ビット一致確認を含む）
+cargo test --workspace deterministic
+
+# 依存方向チェック（循環依存の検出）
+cargo run -p xtask -- check-deps
+```
+
+依存方向は上層から下層のみです。新しいクレート間依存を追加した場合は
+`check-deps` が通ることを必ず確認してください。
+
+## 静的解析
+
+**コミット前には必ず確認してください。** CI と同条件で実行します
+（`--all-targets` がないとテストコードが clippy の対象外になります）。
+
+```bash
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+`cargo fmt --all` で自動整形できます。
+
+## ドキュメントサイト（mdBook）
+
+設計仕様（`specs/`）・検証（`docs/v_and_v/`）・開発ドキュメントは
+[mdBook](https://rust-lang.github.io/mdBook/) のドキュメントサイトに集約しています。
+
+```bash
+# mdBook の導入（初回のみ）
+cargo install mdbook
+
+# ローカルでプレビュー（http://localhost:3000、変更を自動リロード）
+mdbook serve --open
+
+# 静的 HTML をビルド（出力先: book/）
+mdbook build
+```
+
+- ソース: `docs/`
+- 目次: `docs/SUMMARY.md`（ページを追加・削除したらここも更新する）
+- 設定: `book.toml`
+- `docs/specs` は `specs/` へのシンボリックリンクです。仕様書を移動せずサイトへ
+  取り込むための仕組みなので、実体は `specs/` を編集してください
+
+`main` への push で GitHub Pages に自動デプロイされます
+（`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
+`/api/` 以下に併設されます。
+
+## CI
+
+PR を作成すると以下が自動実行されます（`.github/workflows/ci.yml`）。
+ローカルで上記の静的解析・テストを通しておくと手戻りが減ります。
+
+- テスト（`cargo test --workspace`）
+- Clippy 静的解析
+- フォーマットチェック
+- 脆弱性確認（cargo audit）
+- 依存性チェック（cargo-deny）
+
+## プルリクエスト
+
+1. `main` から作業ブランチを作成する
+2. 変更を加え、上記のビルド・テスト・静的解析が通ることを確認する
+3. 日本語でコミットメッセージを記述する
+4. `main` 向けに PR を作成する
