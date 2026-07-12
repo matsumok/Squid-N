@@ -269,25 +269,42 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             let p = a.props;
             let ks = squid_n_design_jp::isolator::multi_shear_stiffness_reduction(p.n_springs);
             let qs = squid_n_design_jp::isolator::multi_shear_strength_reduction(p.n_springs);
+            use squid_n_core::model::IsolatorKind;
             let desc = match p.kind {
-                squid_n_core::model::IsolatorKind::LaminatedRubber => {
+                IsolatorKind::LaminatedRubber
+                | IsolatorKind::LeadRubber
+                | IsolatorKind::HighDampingRubber => {
                     // 等価水平剛性 keq・等価粘性減衰定数 Heq を設計変位 200mm（参考）で算定
                     // （RESP-D「07」LRB 統一型 keq=Qd/δ+Kd、Heq=(2/π)Qd(δ−Qd/((β−1)Kd))/(keq·δ²)）。
                     let disp = 200.0;
                     let keq = squid_n_design_jp::isolator::equivalent_stiffness(p.k2, p.qd, disp);
                     let heq =
                         squid_n_design_jp::isolator::equivalent_damping(p.k1, p.k2, p.qd, disp);
+                    let kind_label = match p.kind {
+                        IsolatorKind::LeadRubber => "鉛プラグ積層ゴム(LRB)",
+                        IsolatorKind::HighDampingRubber => "高減衰ゴム(HDR)",
+                        _ => "天然ゴム積層ゴム",
+                    };
+                    let strain_dep = if p.total_rubber_thickness > 0.0
+                        && (p.ckd_gamma != [1.0, 0.0, 0.0] || p.cqd_gamma != [1.0, 0.0, 0.0])
+                    {
+                        format!("／ 歪依存 H={:.0}mm", p.total_rubber_thickness)
+                    } else {
+                        String::new()
+                    };
                     format!(
-                        "積層ゴム系 K1={:.0} K2={:.0} Qd={:.0}kN Kv={:.0} ／ δ=200mm時 keq={:.1} Heq={:.3}",
+                        "{} K1={:.0} K2={:.0} Qd={:.0}kN Kv={:.0} ／ δ=200mm時 keq={:.1} Heq={:.3} {}",
+                        kind_label,
                         p.k1,
                         p.k2,
                         p.qd / 1000.0,
                         p.kv,
                         keq,
-                        heq
+                        heq,
+                        strain_dep
                     )
                 }
-                squid_n_core::model::IsolatorKind::ElasticSliding => format!(
+                IsolatorKind::ElasticSliding => format!(
                     "弾性すべり μ={:.3} N={:.0}kN Qmax={:.0}kN Kv={:.0}",
                     p.mu,
                     p.n_long / 1000.0,

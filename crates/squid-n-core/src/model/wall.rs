@@ -256,10 +256,21 @@ pub struct BrbAttr {
 /// 免震支承材の種別（RESP-D マニュアル「05 非線形モデル」免震支承材）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum IsolatorKind {
-    /// 積層ゴム系（マルチシアスプリング、水平バイリニア。鉛・高減衰含む）。
+    /// 天然ゴム系積層ゴム（マルチシアスプリング、水平バイリニア）。
     LaminatedRubber,
+    /// 鉛プラグ挿入型積層ゴム（LRB。鉛 Qd + ゴム二次剛性のバイリニア）。
+    LeadRubber,
+    /// 高減衰ゴム系積層ゴム（HDR。等価せん断剛性が歪 γ 依存）。
+    HighDampingRubber,
     /// 弾性すべり支承（摩擦ばね、Qmax=μ·N）。
     ElasticSliding,
+}
+
+fn default_ckd_gamma() -> [f64; 3] {
+    [1.0, 0.0, 0.0]
+}
+fn default_cqd_gamma() -> [f64; 3] {
+    [1.0, 0.0, 0.0]
 }
 
 /// 免震支承材の特性（`ElementKind::Isolator` 要素の非線形特性、
@@ -282,6 +293,16 @@ pub struct IsolatorProps {
     pub n_long: f64,
     /// マルチシアスプリング本数 n（既定 8、天然ゴム系 2。表示・低減率照合用）。
     pub n_springs: u32,
+    /// ゴム総厚 H [mm]（歪 γ=δ/H の算定用。0 以下で歪依存を無効化）。
+    #[serde(default)]
+    pub total_rubber_thickness: f64,
+    /// 二次剛性の歪依存係数 CKd(γ)=c0+c1·γ+c2·γ²（K2(γ)=K2·CKd(γ)）。
+    /// 既定 [1,0,0]（歪依存なし）。RESP-D「07」LRB 統一型・高減衰ゴムの歪依存。
+    #[serde(default = "default_ckd_gamma")]
+    pub ckd_gamma: [f64; 3],
+    /// 特性耐力の歪依存係数 CQd(γ)=c0+c1·γ+c2·γ²（Qd(γ)=Qd·CQd(γ)）。既定 [1,0,0]。
+    #[serde(default = "default_cqd_gamma")]
+    pub cqd_gamma: [f64; 3],
 }
 
 impl Default for IsolatorProps {
@@ -295,6 +316,9 @@ impl Default for IsolatorProps {
             mu: 0.1,
             n_long: 0.0,
             n_springs: 8,
+            total_rubber_thickness: 0.0,
+            ckd_gamma: default_ckd_gamma(),
+            cqd_gamma: default_cqd_gamma(),
         }
     }
 }
