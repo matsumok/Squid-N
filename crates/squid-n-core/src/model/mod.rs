@@ -54,6 +54,72 @@ pub enum ForceRegime {
     Auto,
 }
 
+/// 部材の復元力特性（履歴則）。RESP-D「07 非線形解析（動的解析）」の
+/// 「履歴特性」および「立体解析モデルの非線形特性（既定の非線形特性）」に対応する。
+/// 材端集中バネ（`ConcentratedSpringBeam`）の曲げ履歴に適用され、`Auto` は
+/// 構造種別ごとの既定（[`default_member_hysteresis`]）へ解決される。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum HysteresisModel {
+    /// 既定（構造種別で自動判定: RC/SRC/CFT=武田型、S=標準型）。
+    #[default]
+    Auto,
+    /// 逆行型（常にスケルトン上、履歴ループなし）。
+    Retrograde,
+    /// 標準型（Masing 則。除荷開始剛性=初期剛性）。
+    Standard,
+    /// 原点指向型（除荷・再載荷は原点指向の割線）。
+    OriginOriented,
+    /// 最大点指向型（Clough 系。反対側の最大経験点を指向）。
+    MaxPointOriented,
+    /// 武田型（剛性低下型トリリニア。RC/SRC/CFT 梁の既定）。
+    Takeda,
+}
+
+impl HysteresisModel {
+    /// 表示用の日本語名。
+    pub fn label(&self) -> &'static str {
+        match self {
+            HysteresisModel::Auto => "自動",
+            HysteresisModel::Retrograde => "逆行型",
+            HysteresisModel::Standard => "標準型",
+            HysteresisModel::OriginOriented => "原点指向型",
+            HysteresisModel::MaxPointOriented => "最大点指向型",
+            HysteresisModel::Takeda => "武田型",
+        }
+    }
+
+    /// UI・列挙用の全候補。
+    pub const ALL: [HysteresisModel; 6] = [
+        HysteresisModel::Auto,
+        HysteresisModel::Retrograde,
+        HysteresisModel::Standard,
+        HysteresisModel::OriginOriented,
+        HysteresisModel::MaxPointOriented,
+        HysteresisModel::Takeda,
+    ];
+}
+
+/// 既定の部材曲げ履歴則（RESP-D「07 非線形解析（動的解析）」立体解析モデルの
+/// 既定の非線形特性表）。梁の曲げは **RC/SRC/CFT 造＝武田型（トリリニア）**、
+/// **S 造＝標準型（バイリニア）** を既定とする。ブレースの軸は S 造＝標準型。
+/// `rc_like` は RC/SRC/CFT（コンクリート系）か否か。
+pub fn default_member_hysteresis(rc_like: bool) -> HysteresisModel {
+    if rc_like {
+        HysteresisModel::Takeda
+    } else {
+        HysteresisModel::Standard
+    }
+}
+
+/// 部材の履歴則の指定（要素 ID と履歴則の対。`Model::member_hysteresis_attrs`）。
+/// RESP-D「07 非線形解析（動的解析）」履歴特性。既定（Auto）と異なる履歴則を
+/// 部材個別に指定する場合に用いる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MemberHysteresisAttr {
+    pub elem: ElemId,
+    pub rule: HysteresisModel,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalAxis {
     pub ref_vector: [f64; 3],
@@ -429,6 +495,10 @@ pub struct Model {
     /// 免震支承材の非線形特性（`ElementKind::Isolator` 要素、RESP-D 05 非線形モデル）。
     #[serde(default)]
     pub isolator_attrs: Vec<IsolatorAttr>,
+    /// 部材の履歴則の個別指定（RESP-D「07 非線形解析（動的解析）」履歴特性）。
+    /// 未指定の部材は構造種別ごとの既定（[`default_member_hysteresis`]）に従う。
+    #[serde(default)]
+    pub member_hysteresis_attrs: Vec<MemberHysteresisAttr>,
     /// 一本部材の指定（RESP-D マニュアル 04 断面検定「採用応力 ■一本部材指定時の
     /// 採用応力」）。各エントリは**軸方向に連続する梁要素の ID を並び順**で持ち、
     /// 断面検定の採用応力（端部・中央モーメント、部材長、内法長、せん断スパン比
@@ -617,6 +687,31 @@ impl Model {
             && self.pca_attrs == other.pca_attrs
             && self.beam_groups == other.beam_groups
             && self.isolator_attrs == other.isolator_attrs
+            && self.member_hysteresis_attrs == other.member_hysteresis_attrs
+    }
+
+    /// 部材に指定された履歴則を返す（未指定は `None`＝既定に従う）。
+    pub fn member_hysteresis(&self, elem: ElemId) -> Option<HysteresisModel> {
+        self.member_hysteresis_attrs
+            .iter()
+            .find(|a| a.elem == elem)
+            .map(|a| a.rule)
+    }
+
+    /// 部材の履歴則を設定する。`HysteresisModel::Auto` を指定した場合は指定を解除
+    /// （既定に従う）。戻り値は変更前の指定（undo 用）。
+    pub fn set_member_hysteresis(
+        &mut self,
+        elem: ElemId,
+        rule: HysteresisModel,
+    ) -> Option<HysteresisModel> {
+        let old = self.member_hysteresis(elem);
+        self.member_hysteresis_attrs.retain(|a| a.elem != elem);
+        if rule != HysteresisModel::Auto {
+            self.member_hysteresis_attrs
+                .push(MemberHysteresisAttr { elem, rule });
+        }
+        old
     }
 }
 

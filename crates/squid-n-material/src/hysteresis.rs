@@ -41,6 +41,32 @@ pub enum HysteresisRule {
         /// スリップ量係数（0..1、大きいほど原点付近で剛性が落ちる）
         slip_factor: f64,
     },
+    /// 逆行型（RESP-D「07 非線形解析（動的解析）」履歴特性）。
+    /// 「常にスケルトンカーブ上を進む」。除荷・再載荷ともスケルトンを可逆に辿り、
+    /// 履歴ループ（エネルギー吸収）を生じない。トリリニアスケルトン。
+    Retrograde {
+        crack: (f64, f64),
+        yield_point: (f64, f64),
+        ultimate: (f64, f64),
+    },
+    /// 標準型（RESP-D「07 非線形解析（動的解析）」履歴特性）。
+    /// 除荷履歴は Masing 則（相似則）により決定される。除荷開始時の剛性は
+    /// 初期剛性 K1 となり、除荷後の第2・第3剛性は骨格曲線の剛性低下率と同様。
+    /// トリリニアスケルトン（鋼材はひび割れ点を初期弾性線上に置きバイリニア相当）。
+    Standard {
+        crack: (f64, f64),
+        yield_point: (f64, f64),
+        ultimate: (f64, f64),
+    },
+    /// 最大点指向型（RESP-D「07 非線形解析（動的解析）」履歴特性）。
+    /// |δ|<δy1 は原点を通る勾配 K1。±δy1/δy2/最大変形を超えるとスケルトンの
+    /// 第2/第3勾配上を進み、除荷・再載荷は戻り点から反対側の最大経験変形点を
+    /// 直線で目指す（Clough 系のピーク指向）。トリリニアスケルトン。
+    MaxPointOriented {
+        crack: (f64, f64),
+        yield_point: (f64, f64),
+        ultimate: (f64, f64),
+    },
 }
 
 impl HysteresisRule {
@@ -60,6 +86,21 @@ impl HysteresisRule {
                 yield_point: (my, ty),
                 ultimate: (mu, tu),
                 ..
+            }
+            | HysteresisRule::Retrograde {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+            }
+            | HysteresisRule::Standard {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
+            }
+            | HysteresisRule::MaxPointOriented {
+                crack: (mc, tc),
+                yield_point: (my, ty),
+                ultimate: (mu, tu),
             } => {
                 let (m, k) = trilinear_symmetric(theta, tc, mc, ty, my, tu, mu);
                 (m * degrade_factor, k * degrade_factor)
@@ -98,7 +139,10 @@ impl HysteresisRule {
             HysteresisRule::Takeda { yield_point, .. }
             | HysteresisRule::TakedaDegrading { yield_point, .. }
             | HysteresisRule::OriginOriented { yield_point, .. }
-            | HysteresisRule::Slip { yield_point, .. } => yield_point,
+            | HysteresisRule::Slip { yield_point, .. }
+            | HysteresisRule::Retrograde { yield_point, .. }
+            | HysteresisRule::Standard { yield_point, .. }
+            | HysteresisRule::MaxPointOriented { yield_point, .. } => yield_point,
         }
     }
 
@@ -116,7 +160,10 @@ impl HysteresisRule {
     pub fn crack_point(&self) -> Option<(f64, f64)> {
         match *self {
             HysteresisRule::Takeda { crack, .. }
-            | HysteresisRule::TakedaDegrading { crack, .. } => Some(crack),
+            | HysteresisRule::TakedaDegrading { crack, .. }
+            | HysteresisRule::Retrograde { crack, .. }
+            | HysteresisRule::Standard { crack, .. }
+            | HysteresisRule::MaxPointOriented { crack, .. } => Some(crack),
             _ => None,
         }
     }
@@ -127,32 +174,44 @@ impl HysteresisRule {
             HysteresisRule::Takeda { ultimate, .. }
             | HysteresisRule::TakedaDegrading { ultimate, .. }
             | HysteresisRule::OriginOriented { ultimate, .. }
-            | HysteresisRule::Slip { ultimate, .. } => ultimate,
+            | HysteresisRule::Slip { ultimate, .. }
+            | HysteresisRule::Retrograde { ultimate, .. }
+            | HysteresisRule::Standard { ultimate, .. }
+            | HysteresisRule::MaxPointOriented { ultimate, .. } => ultimate,
         }
     }
 
-    /// 除荷剛性（降伏後）を計算する（仕様書 §5）。
-    /// Ku = Ky · (θm / θy)^(−α),  Ky = My / θy,  θm = 最大経験変形
+    /// 除荷剛性（降伏後）を計算する（RESP-D「07 非線形解析（動的解析）」武田型）。
+    /// Kd+ = K0 · |δmax / δy2|^(−ν)。ここで K0 = 初期勾配（0→ひび割れ点の勾配 Mc/θc）、
+    /// δy2 = 第2折点（降伏）変形 θy、ν = 除荷剛性低下指数（本実装の `alpha`）、
+    /// δmax = 最大経験変形。従来は基準を降伏割線 Ky=My/θy としていたが、原典に合わせ
+    /// 初期勾配 K0 を基準に是正した。
     pub fn unloading_stiffness(&self, max_deformation: f64) -> Option<f64> {
         match *self {
             HysteresisRule::Takeda {
-                yield_point: (my, theta_y),
+                crack: (mc, tc),
+                yield_point: (_my, theta_y),
                 alpha,
                 ..
             }
             | HysteresisRule::TakedaDegrading {
-                yield_point: (my, theta_y),
+                crack: (mc, tc),
+                yield_point: (_my, theta_y),
                 alpha,
                 ..
             } => {
-                if theta_y.abs() < 1e-15 {
+                if theta_y.abs() < 1e-15 || tc.abs() < 1e-15 {
                     return None;
                 }
-                let ky = my / theta_y;
+                let k0 = mc / tc;
                 let ratio = (max_deformation.abs() / theta_y).max(1.0);
-                Some(ky * ratio.powf(-alpha))
+                Some(k0 * ratio.powf(-alpha))
             }
-            HysteresisRule::OriginOriented { .. } | HysteresisRule::Slip { .. } => None,
+            HysteresisRule::OriginOriented { .. }
+            | HysteresisRule::Slip { .. }
+            | HysteresisRule::Retrograde { .. }
+            | HysteresisRule::Standard { .. }
+            | HysteresisRule::MaxPointOriented { .. } => None,
         }
     }
 
@@ -161,6 +220,21 @@ impl HysteresisRule {
             *self,
             HysteresisRule::Takeda { .. } | HysteresisRule::TakedaDegrading { .. }
         )
+    }
+
+    /// 逆行型か（除荷・再載荷ともスケルトンを辿る）。
+    fn is_retrograde(&self) -> bool {
+        matches!(*self, HysteresisRule::Retrograde { .. })
+    }
+
+    /// 標準型（Masing 則）か。
+    fn is_standard(&self) -> bool {
+        matches!(*self, HysteresisRule::Standard { .. })
+    }
+
+    /// 最大点指向型か。
+    fn is_max_point_oriented(&self) -> bool {
+        matches!(*self, HysteresisRule::MaxPointOriented { .. })
     }
 }
 
@@ -260,6 +334,16 @@ enum Branch {
         /// 外側の目標点（反対側ピーク）。内側ループ脱出後に再指向する先。
         outer_target: (f64, f64),
     },
+    /// 標準型（Masing 則）の除荷・再載荷枝。反転点 (θr,Qr) からスケルトンを
+    /// 2 倍相似に拡大した曲線 Q(θ)=Qr − 2·sgn(θr−θ)·g(|θr−θ|/2) を辿る。
+    /// スケルトンに到達した時点で `Skeleton` へ復帰する。
+    Masing { reversal: (f64, f64) },
+    /// 最大点指向型のピーク指向枝。戻り点 origin から反対側の最大経験点 target へ
+    /// 直線で向かう。target 到達で `Skeleton` へ復帰する。
+    PeakOriented {
+        origin: (f64, f64),
+        target: (f64, f64),
+    },
 }
 
 /// 履歴則パラメータ + 状態を持つ `UniaxialMaterial`（設計書 §6.8 集中ばね用）。
@@ -329,13 +413,45 @@ impl HysteresisMaterial {
             return s;
         }
 
+        // 逆行型: 常にスケルトン上（除荷・再載荷ともスケルトンを可逆に辿る）。
+        if self.rule.is_retrograde() {
+            let (m, kt) = self.rule.skeleton(theta);
+            s.theta = theta;
+            s.m = m;
+            s.kt = kt;
+            s.dir = dir_new;
+            s.branch = Branch::Skeleton;
+            if theta > s.max_pos.0 {
+                s.max_pos = (theta, m);
+            }
+            if theta < s.max_neg.0 {
+                s.max_neg = (theta, m);
+            }
+            return s;
+        }
+
         // 方向反転の検知 → 分岐切り替え
         let reversed = c.dir != 0.0 && dir_new != c.dir;
         if reversed {
             s.reversal = (c.theta, c.m);
             let ty = self.rule.yield_deformation();
             let yielded = c.theta.abs() >= ty || self.has_yielded();
-            if c.m.abs() < 1e-12 {
+            if self.rule.is_standard() {
+                // 標準型: Masing 則の除荷・再載荷枝（除荷開始剛性 = K1）。
+                s.branch = Branch::Masing {
+                    reversal: (c.theta, c.m),
+                };
+            } else if self.rule.is_max_point_oriented() {
+                // 最大点指向型: 降伏後は戻り点から反対側の最大経験点を直線で指向。
+                s.branch = if yielded {
+                    Branch::PeakOriented {
+                        origin: (c.theta, c.m),
+                        target: self.opposite_target(dir_new),
+                    }
+                } else {
+                    Branch::Skeleton
+                };
+            } else if c.m.abs() < 1e-12 {
                 // 原点付近で反転: 除荷ではなく反対側ピークへの再載荷
                 let target = self.opposite_target(dir_new);
                 s.branch = Branch::Reloading {
@@ -512,6 +628,44 @@ impl HysteresisMaterial {
                     )
                 }
             }
+            Branch::Masing { reversal } => {
+                // 標準型 Masing 則: 反転点 (tr,qr) からスケルトンを 2 倍相似に拡大した
+                // 曲線 Q(θ)=Qr − 2·sgn(θr−θ)·g(|θr−θ|/2)。除荷開始勾配は g'(0)=K1、
+                // 除荷後の第2・第3勾配は骨格の剛性低下率に一致する。反射点でスケルトンへ復帰。
+                let (tr, qr) = reversal;
+                let arg = (tr - theta).abs() / 2.0;
+                let (g_mag, g_tan) = self.rule.skeleton(arg);
+                let q = qr - (tr - theta).signum() * 2.0 * g_mag;
+                let rejoined = s.dir * theta >= tr.abs();
+                if rejoined {
+                    let (m, k) = self.rule.skeleton(theta);
+                    (m, k, Branch::Skeleton)
+                } else {
+                    (q, g_tan.max(1e-9), Branch::Masing { reversal })
+                }
+            }
+            Branch::PeakOriented { origin, target } => {
+                // 最大点指向型: 戻り点 origin から反対側の最大経験点 target へ直線で向かい、
+                // target 到達でスケルトンへ復帰する。
+                let reached = if target.0 >= origin.0 {
+                    theta >= target.0
+                } else {
+                    theta <= target.0
+                };
+                if reached {
+                    let (m, k) = self.rule.skeleton(theta);
+                    (m, k, Branch::Skeleton)
+                } else {
+                    let dt = target.0 - origin.0;
+                    if dt.abs() < 1e-15 {
+                        (origin.1, 1e-9, Branch::PeakOriented { origin, target })
+                    } else {
+                        let k = (target.1 - origin.1) / dt;
+                        let m = origin.1 + k * (theta - origin.0);
+                        (m, k.max(1e-9), Branch::PeakOriented { origin, target })
+                    }
+                }
+            }
         }
     }
 }
@@ -626,8 +780,9 @@ mod tests {
         let (m_r, _) = mat.trial(0.029);
         let (m2, _) = mat.trial(0.028);
         let ku = (m_r - m2) / (0.029 - 0.028);
-        let ky = 100.0 / 0.01;
-        let expected_ku: f64 = ky * (0.03_f64 / 0.01).powf(-0.4);
+        // RESP-D 武田型: Kd+ = K0·|δmax/δy2|^(−ν), K0 = Mc/θc（初期勾配）, δy2 = θy, ν = α。
+        let k0 = 40.0 / 0.002;
+        let expected_ku: f64 = k0 * (0.03_f64 / 0.01).powf(-0.4);
         let k1 = 40.0 / 0.002;
         assert!(
             ku < k1,
@@ -753,5 +908,118 @@ mod tests {
             "degrading model should reduce peak on 2nd cycle: m={}",
             m_peak2
         );
+    }
+
+    fn retrograde() -> HysteresisRule {
+        HysteresisRule::Retrograde {
+            crack: (40.0, 0.002),
+            yield_point: (100.0, 0.01),
+            ultimate: (120.0, 0.05),
+        }
+    }
+
+    fn standard() -> HysteresisRule {
+        HysteresisRule::Standard {
+            crack: (40.0, 0.002),
+            yield_point: (100.0, 0.01),
+            ultimate: (120.0, 0.05),
+        }
+    }
+
+    fn max_point() -> HysteresisRule {
+        HysteresisRule::MaxPointOriented {
+            crack: (40.0, 0.002),
+            yield_point: (100.0, 0.01),
+            ultimate: (120.0, 0.05),
+        }
+    }
+
+    #[test]
+    fn test_retrograde_traces_skeleton_both_ways() {
+        // 逆行型: 除荷・再載荷ともスケルトンを可逆に辿る（履歴ループなし）。
+        let mut mat = HysteresisMaterial::new(retrograde());
+        mat.trial(0.03);
+        mat.commit();
+        // 除荷: 力はスケルトン値に一致（除荷枝を描かない）。
+        let (m, _) = mat.trial(0.02);
+        let (ms, _) = retrograde().skeleton(0.02);
+        assert_relative_eq!(m, ms, epsilon = 1e-6);
+        mat.commit();
+        // 原点まで戻れば力は 0（エネルギー吸収なし）。
+        let (m0, _) = mat.trial(0.0);
+        assert_relative_eq!(m0, 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_standard_masing_unload_starts_at_initial_stiffness() {
+        // 標準型: 除荷開始剛性は初期剛性 K1 = Mc/θc = 20000。
+        let mut mat = HysteresisMaterial::new(standard());
+        mat.trial(0.03); // スケルトン上 (110, 0.03)
+        mat.commit();
+        let peak = 110.0_f64;
+        let (m1, k1) = mat.trial(0.0299); // 反転 → Masing 枝
+        let k1_expected = 40.0 / 0.002;
+        let slope = (peak - m1) / (0.03 - 0.0299);
+        assert_relative_eq!(slope, k1_expected, epsilon = k1_expected * 0.05);
+        assert_relative_eq!(k1, k1_expected, epsilon = k1_expected * 0.1);
+    }
+
+    #[test]
+    fn test_standard_masing_reaches_opposite_skeleton() {
+        // 標準型: 反射点（反対側 |θ|≥|反転点|）でスケルトンへ復帰する。
+        let mut mat = HysteresisMaterial::new(standard());
+        mat.trial(0.03);
+        mat.commit();
+        for &t in &[0.02, 0.0, -0.02, -0.03] {
+            mat.trial(t);
+            mat.commit();
+        }
+        let (m, _) = mat.trial(-0.03);
+        let (ms, _) = standard().skeleton(-0.03);
+        assert_relative_eq!(m, ms, epsilon = 2.0);
+        // 途中（θ=0）は履歴枝上にあり、原点指向型のように 0 にはならない。
+        let mut mat2 = HysteresisMaterial::new(standard());
+        mat2.trial(0.03);
+        mat2.commit();
+        let (m_zero, _) = mat2.trial(0.0);
+        assert!(
+            m_zero < -1.0,
+            "Masing loop should carry negative force at θ=0, got {}",
+            m_zero
+        );
+    }
+
+    #[test]
+    fn test_max_point_oriented_targets_opposite_peak() {
+        // 最大点指向型: 戻り点から反対側の最大経験点を直線で指向する。
+        let mut mat = HysteresisMaterial::new(max_point());
+        mat.trial(0.03); // +ピーク (110, 0.03)
+        mat.commit();
+        for &t in &[0.0, -0.01, -0.025] {
+            mat.trial(t);
+            mat.commit();
+        }
+        // -0.025 から再載荷（反転）→ +ピークを直線で指向。
+        mat.trial(-0.02);
+        mat.commit();
+        let (m_mid, _) = mat.trial(0.0);
+        let (m_end, _) = mat.trial(0.03);
+        assert!(m_end > 100.0, "should reach positive peak, got {}", m_end);
+        assert!(
+            m_mid > -110.0 && m_mid < m_end,
+            "peak-oriented interpolation mid={}",
+            m_mid
+        );
+    }
+
+    #[test]
+    fn test_new_rules_skeleton_matches_takeda_trilinear() {
+        // 新規則のスケルトンは武田と同じトリリニア（骨格は履歴則に依存しない）。
+        for rule in [retrograde(), standard(), max_point()] {
+            let (m, _) = rule.skeleton(0.01);
+            assert_relative_eq!(m, 100.0, epsilon = 1e-6);
+            let (m2, _) = rule.skeleton(-0.002);
+            assert_relative_eq!(m2, -40.0, epsilon = 1e-6);
+        }
     }
 }

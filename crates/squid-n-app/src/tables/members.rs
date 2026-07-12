@@ -1,7 +1,11 @@
 use crate::app::App;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
-use squid_n_edit::{AddMember, DeleteMember, SetElementMaterial, SetElementSection};
+use squid_n_core::model::{
+    ElementData, ElementKind, EndCondition, ForceRegime, HysteresisModel, LocalAxis,
+};
+use squid_n_edit::{
+    AddMember, DeleteMember, SetElementMaterial, SetElementSection, SetMemberHysteresis,
+};
 
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     use egui_extras::{Column, TableBuilder};
@@ -125,6 +129,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     let n = app.model.elements.len();
     let mut pending_section: Vec<(usize, u32)> = Vec::new();
     let mut pending_material: Vec<(usize, u32)> = Vec::new();
+    let mut pending_hysteresis: Vec<(usize, HysteresisModel)> = Vec::new();
     let mut pending_delete: Option<ElemId> = None;
 
     TableBuilder::new(ui)
@@ -134,9 +139,10 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(70.0))
         .column(Column::initial(80.0))
         .column(Column::initial(90.0))
+        .column(Column::initial(120.0))
         .column(Column::auto())
         .header(20.0, |mut h| {
-            for t in &["ID", "種別", "節点", "断面", "材料", ""] {
+            for t in &["ID", "種別", "節点", "断面", "材料", "履歴則", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
                 });
@@ -215,6 +221,40 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 });
                 row.col(|ui| {
+                    // 履歴則（復元力特性）。RESP-D「07 非線形解析（動的解析）」履歴特性。
+                    // 梁のみ材端曲げバネへ反映（柱=ファイバー、ブレース=軸バイリニア）。
+                    let current = app.model.member_hysteresis(elem.id);
+                    let selected_text = match current {
+                        Some(r) => r.label().to_string(),
+                        None => {
+                            let eff = squid_n_element::factory::resolve_member_hysteresis(
+                                elem, &app.model,
+                            );
+                            format!("自動（{}）", eff.label())
+                        }
+                    };
+                    let enabled = elem.kind == ElementKind::Beam;
+                    ui.add_enabled_ui(enabled, |ui| {
+                        egui::ComboBox::from_id_salt(format!("elem_hyst_{}", i))
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for m in HysteresisModel::ALL {
+                                    let is_sel = match current {
+                                        Some(c) => m == c,
+                                        None => m == HysteresisModel::Auto,
+                                    };
+                                    if ui.selectable_label(is_sel, m.label()).clicked() {
+                                        pending_hysteresis.push((i, m));
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "材端曲げの復元力履歴則（自動: RC/SRC/CFT=武田型、S=標準型）",
+                            );
+                    });
+                });
+                row.col(|ui| {
                     if ui
                         .button("🗑")
                         .on_hover_text("部材を削除（関連する部材荷重も削除されます）")
@@ -227,8 +267,10 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         });
 
     // 確定処理
-    let had_pending =
-        !pending_section.is_empty() || !pending_material.is_empty() || pending_delete.is_some();
+    let had_pending = !pending_section.is_empty()
+        || !pending_material.is_empty()
+        || !pending_hysteresis.is_empty()
+        || pending_delete.is_some();
     for (i, sec_id) in pending_section {
         let elem_id = app.model.elements[i].id;
         let section = if sec_id == u32::MAX {
@@ -267,6 +309,16 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             Box::new(SetElementMaterial {
                 elem: elem_id,
                 material,
+            }),
+        );
+    }
+    for (i, rule) in pending_hysteresis {
+        let elem_id = app.model.elements[i].id;
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetMemberHysteresis {
+                elem: elem_id,
+                rule,
             }),
         );
     }

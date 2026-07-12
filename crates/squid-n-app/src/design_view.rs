@@ -292,6 +292,39 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
+    // ── 非線形解析の材端履歴則（RESP-D 07 非線形解析（動的解析）履歴特性） ──
+    ui.add_space(12.0);
+    egui::CollapsingHeader::new("非線形解析の材端履歴則（RESP-D 07）")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                "材端曲げバネの復元力履歴則。既定は RC/SRC/CFT 梁=武田型、S 梁=標準型（部材表で個別指定可）。",
+            );
+            use std::collections::BTreeMap;
+            let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();
+            let mut overrides: Vec<String> = Vec::new();
+            for e in &app.model.elements {
+                if e.kind != squid_n_core::model::ElementKind::Beam {
+                    continue;
+                }
+                let eff = squid_n_element::factory::resolve_member_hysteresis(e, &app.model);
+                *counts.entry(eff.label()).or_default() += 1;
+                if let Some(r) = app.model.member_hysteresis(e.id) {
+                    overrides.push(format!("部材{}: {}", e.id.0, r.label()));
+                }
+            }
+            if counts.is_empty() {
+                ui.label("梁部材がありません。");
+            } else {
+                for (label, cnt) in &counts {
+                    ui.label(format!("{}: {} 部材", label, cnt));
+                }
+            }
+            if !overrides.is_empty() {
+                ui.label(format!("個別指定: {}", overrides.join(", ")));
+            }
+        });
+
     // ── 二次設計: 層指標（層間変形角・剛性率・偏心率） ────────────
     ui.add_space(12.0);
     ui.strong("層指標（二次設計: 層間変形角・剛性率・偏心率）");

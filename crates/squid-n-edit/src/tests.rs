@@ -1612,3 +1612,68 @@ fn test_set_multi_opening_mode_same_value_is_symmetric() {
     stack.undo(&mut model);
     assert_eq!(model.multi_opening_mode, MultiOpeningMode::Equivalent);
 }
+
+#[test]
+fn test_set_member_hysteresis_roundtrip() {
+    use squid_n_core::model::HysteresisModel;
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0; 3],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(1),
+        coord: [1000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+    });
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(SetMemberHysteresis {
+            elem: ElemId(0),
+            rule: HysteresisModel::Takeda,
+        }),
+    );
+    assert_eq!(
+        model.member_hysteresis(ElemId(0)),
+        Some(HysteresisModel::Takeda)
+    );
+    stack.undo(&mut model);
+    assert_eq!(model.member_hysteresis(ElemId(0)), None);
+    stack.redo(&mut model);
+    assert_eq!(
+        model.member_hysteresis(ElemId(0)),
+        Some(HysteresisModel::Takeda)
+    );
+
+    // 存在しない部材は Noop。
+    let mut stack2 = UndoStack::new();
+    stack2.run(
+        &mut model,
+        Box::new(SetMemberHysteresis {
+            elem: ElemId(99),
+            rule: HysteresisModel::Standard,
+        }),
+    );
+    assert_eq!(model.member_hysteresis(ElemId(99)), None);
+}
