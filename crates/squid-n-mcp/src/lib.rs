@@ -26,6 +26,9 @@ pub enum JobKind {
     Pushover,
     TimeHistory,
     DesignCheck,
+    /// 終局検定（RESP-D「06 終局検定」）: RC 矩形部材の塑性理論式による終局
+    /// せん断・付着・軸余裕度を算定する。
+    UltimateCheck,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

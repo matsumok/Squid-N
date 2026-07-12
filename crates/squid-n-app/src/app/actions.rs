@@ -446,6 +446,130 @@ impl App {
         Ok((result, story_ranks))
     }
 
+    /// 終局検定（RESP-D「06 終局検定」）: RC 矩形部材の終局せん断強度（塑性
+    /// 理論式）・付着割裂耐力・軸終局耐力に対する余裕度を算定する。
+    ///
+    /// 柱の曲げ終局強度 Mu・軸余裕度に用いる設計軸力は、長期（G+P 相当）静的
+    /// 解析結果（先頭重力ケースを優先、無ければ最後に実行した静的解析）の軸力
+    /// （圧縮正）を用いる。静的解析結果が無い場合は軸力 0（安全側）で評価する。
+    ///
+    /// 対象 RC 矩形部材が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
+    pub fn compute_ultimate_checks(
+        &mut self,
+    ) -> Result<Vec<squid_n_design_jp::ultimate::UltimateCheck>, String> {
+        use squid_n_core::section_shape::SectionShape;
+
+        // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
+        self.apply_rigid_zones_for_analysis();
+
+        let demand = self.ultimate_demand_by_elem();
+
+        let opts = squid_n_design_jp::ultimate::UltimateShearOptions {
+            rp: self.ultimate_rp.max(0.0),
+            lightweight: self.ultimate_lightweight,
+            upper_strength_factor: self.ultimate_upper_factor.max(0.0),
+            sigma_wy: 295.0,
+            include_bond: self.ultimate_include_bond,
+            mu_method: if self.ultimate_mu_aci {
+                squid_n_design_jp::ultimate::MuMethod::Aci
+            } else {
+                squid_n_design_jp::ultimate::MuMethod::AtFormula
+            },
+            shear_method: if self.ultimate_shear_ductility {
+                squid_n_design_jp::ultimate::ShearMethod::Ductility
+            } else {
+                squid_n_design_jp::ultimate::ShearMethod::Plastic
+            },
+            biaxial_shear: self.ultimate_biaxial_shear,
+            biaxial_bending: self.ultimate_biaxial_bending,
+        };
+        let checks =
+            squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &demand, &opts);
+
+        // RC 矩形部材が無い場合の案内。
+        let has_rc_rect = self.model.elements.iter().any(|e| {
+            e.section
+                .and_then(|sid| self.model.sections.get(sid.index()))
+                .and_then(|s| s.shape.as_ref())
+                .map(|sh| matches!(sh, SectionShape::RcRect { .. }))
+                .unwrap_or(false)
+        });
+        if checks.is_empty() {
+            if has_rc_rect {
+                return Err(
+                    "RC 矩形部材の終局検定を算定できませんでした（コンクリート強度 Fc の設定・\
+                     有効せいを確認してください）。"
+                        .to_string(),
+                );
+            }
+            return Err(
+                "終局検定の対象（RcRect の RC 矩形部材）がありません。RC 断面を割り当ててください。"
+                    .to_string(),
+            );
+        }
+        Ok(checks)
+    }
+
+    /// 終局検定用の部材需要（軸力 [N]圧縮正・強軸/弱軸の設計用曲げ [N·mm]）。
+    /// 先頭重力ケース（G+P 相当）の静的解析結果を優先し、無ければ最後に実行した
+    /// 静的解析結果を用いる。軸力は始端値、曲げは部材内の最大絶対値（各方向）。
+    /// 2 軸曲げ余裕度の需要曲げも本結果を用いるため、地震時の相関を評価するには
+    /// 該当する組合せ／地震静的を最後に実行しておくこと（簡略化）。
+    /// 静的解析結果が無ければ空（＝需要 0）。
+    fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
+        use squid_n_design_jp::ultimate::MemberDemand;
+        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+            .first()
+            .copied();
+        self.results
+            .as_ref()
+            .map(|r| {
+                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] = gravity_lc
+                    .and_then(|lc| {
+                        r.statics
+                            .iter()
+                            .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    })
+                    .map(|(_, s)| s.member_forces.as_slice())
+                    .unwrap_or(r.member_forces.as_slice());
+                member_forces
+                    .iter()
+                    .filter_map(|(id, mf)| {
+                        let n_axial = mf.at.first().map(|(_, f)| f[0])?;
+                        let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
+                        let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
+                        Some((*id, MemberDemand { n_axial, mz, my }))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    /// CFT 柱の軸終局検定（RESP-D「06 終局検定」CFT）: CftBox/CftPipe 柱の
+    /// 軸圧縮終局耐力 Ncu・軸引張終局耐力 Ntu に対する軸余裕度を算定する。
+    ///
+    /// 対象 CFT 柱が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
+    pub fn compute_cft_ultimate_checks(
+        &mut self,
+    ) -> Result<Vec<squid_n_design_jp::ultimate::CftUltimateCheck>, String> {
+        self.apply_rigid_zones_for_analysis();
+        // CFT の軸終局検定は軸力のみを用いる（MemberDemand から軸力を取り出す）。
+        let axial: Vec<(ElemId, f64)> = self
+            .ultimate_demand_by_elem()
+            .into_iter()
+            .map(|(id, d)| (id, d.n_axial))
+            .collect();
+        let checks = squid_n_design_jp::ultimate::collect_cft_ultimate_checks(&self.model, &axial);
+        if checks.is_empty() {
+            return Err(
+                "終局検定の対象（CftBox/CftPipe の CFT 柱）がありません。CFT 断面と\
+                 コンクリート強度 Fc を設定してください。"
+                    .to_string(),
+            );
+        }
+        Ok(checks)
+    }
+
     /// T3: 固有値解析を実行し、結果を `self.results` に格納する。
     pub fn run_eigen(&mut self, n_modes: usize) {
         self.last_error = None;

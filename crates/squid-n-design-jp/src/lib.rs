@@ -19,6 +19,9 @@ pub mod material_strength;
 pub mod rc;
 pub mod srrc;
 pub mod steel;
+/// 終局検定（RESP-D「06 終局検定」）。荷重増分解析後の各部材の終局せん断強度
+/// （塑性理論式）・付着割裂耐力・軸終局耐力に対する余裕度を検定する。
+pub mod ultimate;
 pub mod wall_opening;
 
 // 容量スペクトル法（限界耐力計算）は P12 のスコープ。P7 とは別フェーズなので p12 で分離。
