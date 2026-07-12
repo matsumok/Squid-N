@@ -1,4 +1,3 @@
-
 use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SectionId};

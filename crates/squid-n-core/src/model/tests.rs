@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::dof::Dof6Mask;
 

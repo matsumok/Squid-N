@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::constraint::Reducer;
 use squid_n_core::dof::{Dof6Mask, DofMap};

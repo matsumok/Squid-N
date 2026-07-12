@@ -1,4 +1,3 @@
-
 use super::*;
 use smallvec::SmallVec;
 use squid_n_core::dof::Dof6Mask;

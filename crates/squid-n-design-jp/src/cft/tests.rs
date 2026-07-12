@@ -1,4 +1,3 @@
-
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
 use squid_n_core::units::ConcreteClass;

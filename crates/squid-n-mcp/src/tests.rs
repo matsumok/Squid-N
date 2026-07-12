@@ -1,4 +1,3 @@
-
 use super::*;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{ElementData, ElementKind, LocalAxis, Node, Section};

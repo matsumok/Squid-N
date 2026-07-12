@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::rc::{concrete_allowable_shear, rebar_allowable_shear};
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};

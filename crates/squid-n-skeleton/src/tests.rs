@@ -1,4 +1,3 @@
-
 use super::*;
 use approx::assert_relative_eq;
 use squid_n_core::ids::SectionId;
