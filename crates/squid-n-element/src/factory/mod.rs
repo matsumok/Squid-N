@@ -215,6 +215,12 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
             Box::new(crate::spring::NodalSpringElement::new(data, model)),
             ElemState::default(),
         ),
+        // 免震支承材：RESP-D マニュアル計算編05「非線形モデル」免震支承材。
+        // 水平は非線形せん断（積層ゴム系バイリニア／摩擦ばね）、鉛直は弾性軸。
+        ElementKind::Isolator => (
+            Box::new(crate::isolator::IsolatorElement::new(data, model)),
+            ElemState::default(),
+        ),
     }
 }
 
