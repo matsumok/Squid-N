@@ -1,0 +1,107 @@
+//! モデルの照会（JSON 出力・クエリ・解析）関数。
+
+use super::*;
+
+pub fn get_model_json(state: &ServerState) -> String {
+    serde_json::to_string(&state.model).unwrap_or_default()
+}
+
+/// `model.query` の中核ロジック（feature 非依存・テスト可能）。
+///
+/// `kind` で `node`/`member`(=element)/`section` を選び、各要素を JSON 化して返す。
+/// `filter` が与えられたときは、各 JSON を文字列化した中に部分一致するものだけを残す
+/// （簡易フィルタ。名前・ID 等での絞り込み用）。MCP ツール `model_query` はこれを呼ぶ。
+pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let items: Vec<serde_json::Value> = match kind {
+        "node" | "nodes" => model
+            .nodes
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id.0,
+                    "coord": n.coord,
+                    "story": n.story.map(|s| s.0),
+                })
+            })
+            .collect(),
+        "member" | "members" | "element" | "elements" => model
+            .elements
+            .iter()
+            .map(|e| {
+                json!({
+                    "id": e.id.0,
+                    "kind": format!("{:?}", e.kind),
+                    "nodes": e.nodes.iter().map(|n| n.0).collect::<Vec<_>>(),
+                    "section": e.section.map(|s| s.0),
+                    "material": e.material.map(|m| m.0),
+                })
+            })
+            .collect(),
+        "section" | "sections" => model
+            .sections
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id.0,
+                    "name": s.name,
+                    "area": s.area,
+                    "iy": s.iy,
+                    "iz": s.iz,
+                })
+            })
+            .collect(),
+        _ => vec![],
+    };
+    match filter {
+        Some(f) if !f.is_empty() => items
+            .into_iter()
+            .filter(|v| v.to_string().contains(f))
+            .collect(),
+        _ => items,
+    }
+}
+
+/// 解析の実処理（feature 非依存・テスト可能）。`Model` の参照だけを受け取るため、
+/// `ServerState` のロックを取らずに（= ロック解放後に）呼び出せる。
+/// 現状は先頭の荷重ケースに対する線形静的解析のみ（他ジョブ種別は将来対応）。
+///
+/// `analysis_run`（MCP ツール）は `state.model.clone()` を取ってロックを落としてから
+/// `spawn_blocking` 内でこの関数を呼ぶことで、CPU バウンドな解析中も `ServerState` の
+/// ミューテックスを他ツール呼び出しのためにブロックしない。
+pub fn analyze_model(model: &Model) -> Result<String, String> {
+    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1「剛域」は標準実装）。
+    let mut model = model.clone();
+    squid_n_element::beam::apply_auto_rigid_zones(
+        &mut model,
+        &squid_n_element::beam::RigidZoneRule::default(),
+    );
+    let model = &model;
+    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
+        .map_err(|e| format!("prepare failed: {e}"))?;
+    if let Some(lc) = model.load_cases.first() {
+        let result = analysis
+            .linear_static(lc.id)
+            .map_err(|e| format!("solve failed: {e}"))?;
+        Ok(serde_json::to_string(&result.disp).unwrap_or_default())
+    } else {
+        Err("no load cases".into())
+    }
+}
+
+/// `analyze_model` の `ServerState` 経由の薄いラッパ（後方互換用）。
+pub fn analyze(state: &mut ServerState) -> Result<String, String> {
+    analyze_model(&state.model)
+}
+
+// ============================================================================
+// 全 JobKind の実処理（feature 非依存・テスト可能）。
+//
+// `analysis_run`（MCP ツール、mod server）は「ロック保持中にモデルを複製 →
+// ロック解放 → spawn_blocking でこの節の compute_* を呼ぶ → 再度ロックして
+// 結果ストアへ永続化 + ジョブ状態更新」という流れを取る（P8 の既存方針を踏襲）。
+// compute_* はいずれも GUI（squid-n-app）非依存の純関数（&Model か Model の
+// クローンだけで完結）とし、squid-n-app の同等ロジック（compute_pushover /
+// compute_time_history / sample_wave / run_design_check）と重複する箇所は
+// コメントで明記する（squid-n-mcp は squid-n-app に依存しないため複製が必要）。
+// ============================================================================
