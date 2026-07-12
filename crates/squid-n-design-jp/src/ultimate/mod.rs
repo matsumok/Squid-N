@@ -39,10 +39,13 @@ pub mod rc_column_aci;
 pub mod rc_shear;
 
 pub use cft::{
-    cft_axial_ultimate, cft_column_class, cft_concrete_buckling_stress, cft_ncu1, CftAxialInput,
+    cft_axial_ultimate, cft_column_class, cft_concrete_buckling_axial,
+    cft_concrete_buckling_stress, cft_concrete_slenderness, cft_ncu1, CftAxialInput,
     CftAxialUltimate, CftColumnClass,
 };
-pub use cft_nm::{cft_short_column_mu, CftBendingInput};
+pub use cft_nm::{
+    cft_long_medium_column_mu, cft_nk, cft_short_column_mu, CftBendingInput, CftLongMediumInput,
+};
 pub use joint::{
     joint_fj, joint_kappa, rc_joint_ultimate, RcJointUltimateInput, RcJointUltimateResult,
 };
@@ -527,8 +530,8 @@ pub struct CftUltimateCheck {
     pub ncu: f64,
     /// 軸引張終局耐力 Ntu [N]。
     pub ntu: f64,
-    /// 設計軸力における短柱 N-M 相互作用の終局曲げ耐力 Mu [N·mm]
-    /// （短柱の式に基づく。中柱・長柱では上限側の目安）。
+    /// 設計軸力における N-M 相互作用の終局曲げ耐力 Mu [N·mm]
+    /// （柱分類に応じて短柱／中柱／長柱の式を用いる）。
     pub mu_nm: f64,
     /// 設計軸力 [N]（圧縮正）。
     pub n_design: f64,
@@ -631,7 +634,7 @@ pub fn collect_cft_ultimate_checks(
             .map(|(_, n)| *n)
             .unwrap_or(0.0);
 
-        // 短柱 N-M 相互作用の終局曲げ耐力 Mu(N)。曲げは強軸（せい方向）で評価する。
+        // N-M 相互作用の終局曲げ耐力 Mu(N)。曲げは強軸（せい方向）で評価する。
         let (bd, bb, bcd, bcb) = match *shape {
             SectionShape::CftBox {
                 height,
@@ -646,22 +649,35 @@ pub fn collect_cft_ultimate_checks(
             ),
             _ => (d_section, d_section, d_section, d_section),
         };
-        let ncu1 = cft_ncu1(&inp);
-        let mu_nm = cft_short_column_mu(
-            &CftBendingInput {
-                circular,
-                d_steel: bd,
-                b_steel: bb,
-                c_d: bcd,
-                c_b: bcb,
-                t: thick,
-                fc,
-                fy,
-            },
-            n_design,
-            ncu1,
-            r.ntu,
-        );
+        let bending = CftBendingInput {
+            circular,
+            d_steel: bd,
+            b_steel: bb,
+            c_d: bcd,
+            c_b: bcb,
+            t: thick,
+            fc,
+            fy,
+        };
+        // 短柱は短柱 N-M、中柱・長柱は座屈低減を考慮した中柱・長柱 N-M を用いる。
+        let mu_nm = match r.class {
+            CftColumnClass::Short => {
+                let ncu1 = cft_ncu1(&inp);
+                cft_short_column_mu(&bending, n_design, ncu1, r.ntu)
+            }
+            CftColumnClass::Medium | CftColumnClass::Long => cft_long_medium_column_mu(
+                &CftLongMediumInput {
+                    bending,
+                    is_long: r.class == CftColumnClass::Long,
+                    c_ncr: cft_concrete_buckling_axial(c_inertia, c_area, fc, lk),
+                    c_lambda1: cft_concrete_slenderness(c_inertia, c_area, fc, lk),
+                    nk: cft_nk(c_inertia, s_inertia, 205000.0, fc, lk),
+                    ncu_axial: r.ncu,
+                    ntu: r.ntu,
+                },
+                n_design,
+            ),
+        };
 
         let axial_margin = if n_design > 0.0 {
             if r.ncu > 0.0 {

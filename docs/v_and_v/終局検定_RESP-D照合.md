@@ -175,11 +175,35 @@ Vju/Qdu を算定し、「接合部終局(RC)」ラベルの検定結果（`rati
 - **角形 sMu の第 2 項**は、マニュアル抽出では末尾が `Fc` だが、ウェブ 2 枚の全塑性モーメント
   `2t·xn·(cD−xn)·Fy`（中立軸まわりのモーメント積分と一致）であるため `Fy` を採用した
   （`Fc` は OCR 誤りと判断）。第 1 項 `B·t·(D−t)·Fy` はフランジの全塑性モーメント。
-- 長柱・中柱の N-M 相互作用（Nk・CM・cMmax・sMu0 を用いる式）は今後の課題。中柱・長柱では
-  本短柱式の Mu を上限側の目安として表示する。
+- 中柱・長柱の N-M 相互作用は 6-c を参照。
 
 **配線:** `collect_cft_ultimate_checks` が設計軸力における Mu(N) を算定し、`CftUltimateCheck.mu_nm`
 として設計タブ「CFT柱の軸終局耐力」表（Mu(N-M) 列）・MCP UltimateCheck ジョブに反映する。
+
+### 6-c. CFT 中柱・長柱の N-M 相互作用
+
+**対象:** `squid-n-design-jp/src/ultimate/cft_nm.rs`（`cft_long_medium_column_mu`・`cft_nk`）＋
+`ultimate/cft.rs`（`cft_concrete_slenderness`・`cft_concrete_buckling_axial`）。
+
+座屈長さが断面せいの 4 倍超の中柱・長柱の N-M 相互作用（座屈による曲げ低減を考慮）。
+
+| 諸元 | 式 |
+|---|---|
+| 曲げ低減係数 R | `(1 − cNcu/Nk)^(1/CM)`（CM=1、0 未満は 0） |
+| 座屈補助軸力 Nk | `π²(cE'·cI/5 + sE·sI)/lk²`, `cE'=(3.32√Fc+6.90)×10³` |
+| 鋼管の曲げのみ耐力 sMu0 | 円形 `4r2²t·Fy` / 角形 `B·t(D−t)Fy + t·cD²/2·Fy` |
+| コンクリート曲げ cMu | `max(0, 4cN/(0.9cNcr)(1−cN/(0.9cNcr))·cMmax)` |
+| cMmax | `Cb/(Cb+cλ1²)·cMmax0`, `Cb=0.923−0.0045Fc`, cMmax0=`Fc·cD³/8`(角)/`Fc·cD³/12`(円) |
+| Case1 (N≤cNcr) | `Mu = cMu(N) + sMu0·R` |
+| Case2 (N>cNcr) | 長柱円形は θ パラメトリック `4r2²t·sinθ·Fy·R`、中柱・角形長柱は Ncu への線形低減 |
+
+- Case1/Case2 の境界 N=cNcr で連続（いずれも sMu0·R）することを 4 通り（円/角×長/中）でテスト確認。
+- Nk を小さくする（細長い）と R が下がり Mu 減少、中柱 Mu < 短柱 Mu を確認。
+- 長柱・角形の Case2 は円形の θ パラメトリック式が適用できないため、中柱と同じ Ncu への線形
+  低減で近似する（要・原典照合）。
+
+**配線:** `collect_cft_ultimate_checks` が柱分類（短柱/中柱/長柱）に応じて短柱式または
+中柱・長柱式を切り替えて `mu_nm` を算定する。
 
 **配線:** ドライバ `collect_cft_ultimate_checks` が `CftBox`/`CftPipe` 柱の断面諸元
 （cA・sA・cI・sI・弱軸）を組み立てて算定し、`App::compute_cft_ultimate_checks` 経由で
@@ -205,7 +229,5 @@ RESP-D「06 終局検定」のうち、本照合で**未実装**の項目:
 2. **柱の二軸曲げ余裕度**（`1/((Mmx/Mux)^αx+(Mmy/Muy)^αy)^(1/α)`、Mmx/Mmy は応答曲げ需要）。
    2 軸せん断余裕度は実装済み。二軸曲げは応答モーメント Mmx/Mmy（プッシュオーバー応答）が
    必要なため今後の課題。
-4. **CFT 中柱・長柱の N-M 相互作用**。短柱の N-M（円形・角形）・軸終局耐力・分類は実装済み。
-   長柱・中柱の M-N 相関（Nk・CM・cMmax・sMu0 を用いる式）は今後の課題。
-5. **プッシュオーバー応答からの部材別 Rp/設計用せん断力の直接反映**。現状は Rp を UI 一律指定、
+4. **プッシュオーバー応答からの部材別 Rp/設計用せん断力の直接反映**。現状は Rp を UI 一律指定、
    Qmu は両端ヒンジ（2·Mu/内法）で算定（プッシュオーバーは部材別内力を保持しないため）。

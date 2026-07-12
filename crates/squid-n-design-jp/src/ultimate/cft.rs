@@ -76,6 +76,33 @@ pub fn cft_epsilon_u(fc: f64) -> f64 {
     0.93 * fc.powf(0.25) * 1.0e-3
 }
 
+/// 充填コンクリートの規準化細長比 `cλ1 = cλ/π·√εu`（`cλ = lk/ci`, `ci = √(cI/cA)`）。
+/// 不正入力（cA・cI・lk のいずれか 0 以下）は 0。
+pub fn cft_concrete_slenderness(c_inertia: f64, c_area: f64, fc: f64, lk: f64) -> f64 {
+    if c_area <= 0.0 || c_inertia <= 0.0 || lk <= 0.0 {
+        return 0.0;
+    }
+    let ci = (c_inertia / c_area).sqrt();
+    if ci <= 0.0 {
+        return 0.0;
+    }
+    let c_lambda = lk / ci;
+    c_lambda / std::f64::consts::PI * cft_epsilon_u(fc).sqrt()
+}
+
+/// 充填コンクリートの座屈軸耐力 `cNcr = cσcr·cA`（RESP-D「06 終局検定」CFT）。
+/// 不正入力（cA・cI のいずれか 0 以下）は 0。`lk ≤ 0` は無座屈として `cA·Fc`。
+pub fn cft_concrete_buckling_axial(c_inertia: f64, c_area: f64, fc: f64, lk: f64) -> f64 {
+    if c_area <= 0.0 || c_inertia <= 0.0 || fc <= 0.0 {
+        return 0.0;
+    }
+    if lk <= 0.0 {
+        return c_area * fc;
+    }
+    let c_lambda1 = cft_concrete_slenderness(c_inertia, c_area, fc, lk);
+    cft_concrete_buckling_stress(fc, c_lambda1, cft_cc(fc)) * c_area
+}
+
 /// CFT 柱の軸終局耐力算定の入力（RESP-D「06 終局検定」CFT）。
 #[derive(Clone, Copy, Debug)]
 pub struct CftAxialInput {
@@ -139,16 +166,7 @@ fn cft_ncu3_at_lk(inp: &CftAxialInput, lk: f64) -> f64 {
         return cft_ncu1(inp);
     }
     // 充填コンクリートの座屈耐力 cNcr。
-    let c_ncr = if inp.c_area > 0.0 && inp.c_inertia > 0.0 {
-        let ci = (inp.c_inertia / inp.c_area).sqrt();
-        let c_lambda = if ci > 0.0 { lk / ci } else { 0.0 };
-        let eu = cft_epsilon_u(inp.fc);
-        let c_lambda1 = c_lambda / std::f64::consts::PI * eu.sqrt();
-        let sigma_cr = cft_concrete_buckling_stress(inp.fc, c_lambda1, cft_cc(inp.fc));
-        sigma_cr * inp.c_area
-    } else {
-        0.0
-    };
+    let c_ncr = cft_concrete_buckling_axial(inp.c_inertia, inp.c_area, inp.fc, lk);
     // 鋼管の座屈耐力 sNcr。
     let s_ncr = if inp.s_area > 0.0 && inp.s_inertia > 0.0 && inp.s_young > 0.0 {
         let si = (inp.s_inertia / inp.s_area).sqrt();
