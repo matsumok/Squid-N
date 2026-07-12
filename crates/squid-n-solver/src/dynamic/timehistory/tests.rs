@@ -1343,6 +1343,13 @@ fn test_nonlinear_time_history_sdof_plastic() {
         "peak should be reasonable, got {}",
         result.peak_disp[1][0]
     );
+    // 累積損傷度（RESP-D「07」鉄骨梁端部の累積損傷度）: 塑性化した要素で非ゼロになる。
+    assert_eq!(result.cumulative_ductility.len(), model.elements.len());
+    assert!(
+        result.cumulative_ductility.iter().any(|&d| d > 0.0),
+        "塑性化した要素の累積損傷度が非ゼロであるべき: {:?}",
+        result.cumulative_ductility
+    );
 }
 
 /// 接線剛性比例(α1一定・h1一定)・モード別の減衰が非線形時刻歴で収束し有限応答を返す

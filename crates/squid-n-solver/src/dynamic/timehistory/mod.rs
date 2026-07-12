@@ -1203,6 +1203,9 @@ pub fn nonlinear_time_history_analysis(
     for b in behaviors.iter_mut() {
         b.set_time_step(dt);
     }
+    // 累積損傷度用の塑性率 μ 時刻歴（要素ごと。塑性率プローブを持つ要素のみ収集）。
+    // RESP-D「07」その他の解析機能「鉄骨梁端部の累積損傷度計算」。
+    let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
     // 行列組立（縮約空間）
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
@@ -1491,6 +1494,13 @@ pub fn nonlinear_time_history_analysis(
                 b.commit_state();
             }
 
+            // 累積損傷度用に、各要素の危険断面塑性率 μ（=max_yield_ratio）を収集する。
+            for (i, b) in behaviors.iter().enumerate() {
+                if let Some(p) = b.ductility_probe() {
+                    mu_hist[i].push(p.max_yield_ratio);
+                }
+            }
+
             time.push(t_next);
 
             let u_free = reducer.expand_u(&u);
@@ -1538,11 +1548,20 @@ pub fn nonlinear_time_history_analysis(
         }
     }
 
+    // 各要素の μ 時刻歴からレインフロー法で累積損傷度 D を算定する
+    // （RESP-D「07」鉄骨梁端部の累積損傷度計算）。μ 時刻歴が空（塑性率プローブ
+    // 非対応要素）の場合は 0。疲労特性 C・β は既定（要原典照合）。
+    let fatigue = crate::damage::FatigueParams::default();
+    let cumulative_ductility: Vec<f64> = mu_hist
+        .iter()
+        .map(|series| crate::damage::cumulative_damage_rainflow(series, fatigue))
+        .collect();
+
     Ok(ResponseResult {
         time,
         peak_disp,
         story_drift_angle,
-        cumulative_ductility: vec![0.0; model.elements.len()],
+        cumulative_ductility,
         history,
     })
 }
