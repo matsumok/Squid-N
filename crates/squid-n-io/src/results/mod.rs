@@ -571,17 +571,21 @@ impl ResultStore for FsResultStore {
     }
 
     fn query(&self, q: &ResultQuery) -> ResultBatch {
-        let entry = self
-            .manifest
-            .entries
-            .iter()
-            .find(|e| e.case == q.case && e.kind == q.kind)
-            .unwrap_or_else(|| {
-                panic!(
-                    "manifest に case={} kind={:?} のエントリが無い(query 前に manifest() で存在確認すること)",
-                    q.case, q.kind
-                )
-            });
+        // manifest 内に該当エントリが存在することのみを確認する。実ファイルパスは
+        // manifest に記録された `path` を信用せず case/kind から再計算する。
+        // （manifest.json はユーザーが書換え可能で、`../` や絶対パスを混入させると
+        //   任意ファイル読み出しに悪用され得るため。書込み側も常に file_path を使う。）
+        assert!(
+            self.manifest
+                .entries
+                .iter()
+                .any(|e| e.case == q.case && e.kind == q.kind),
+            "manifest に case={} kind={:?} のエントリが無い(query 前に manifest() で存在確認すること)",
+            q.case,
+            q.kind
+        );
+        let path = self.file_path(q.case, q.kind);
+        let path = path.to_string_lossy();
 
         match q.kind {
             ResultKind::TimeHistory => {
@@ -589,15 +593,14 @@ impl ResultStore for FsResultStore {
                     .node_filter
                     .as_ref()
                     .map(|ids| ids.iter().map(|n| n.0).collect());
-                let batches =
-                    read_time_history_range(&entry.path, q.step_range, node_ids.as_deref())
-                        .expect("time_history 部分読み出しに失敗");
+                let batches = read_time_history_range(&path, q.step_range, node_ids.as_deref())
+                    .expect("time_history 部分読み出しに失敗");
                 let batch = arrow::compute::concat_batches(&time_history_schema(), &batches)
                     .expect("concat_batches (time_history)");
                 ResultBatch { batch }
             }
             ResultKind::NodalDisp => {
-                let mut batches = read_all(&entry.path).expect("nodal_disp 読み出しに失敗");
+                let mut batches = read_all(&path).expect("nodal_disp 読み出しに失敗");
                 if let Some(ids) = &q.node_filter {
                     let ids: Vec<u32> = ids.iter().map(|n| n.0).collect();
                     batches = filter_by_u32_column(batches, 0, &ids);
@@ -607,7 +610,7 @@ impl ResultStore for FsResultStore {
                 ResultBatch { batch }
             }
             ResultKind::MemberForce => {
-                let mut batches = read_all(&entry.path).expect("member_force 読み出しに失敗");
+                let mut batches = read_all(&path).expect("member_force 読み出しに失敗");
                 if let Some(ids) = &q.member_filter {
                     let ids: Vec<u32> = ids.iter().map(|e| e.0).collect();
                     batches = filter_by_u32_column(batches, 0, &ids);
@@ -618,7 +621,7 @@ impl ResultStore for FsResultStore {
             }
             ResultKind::Modal => {
                 // モーダル結果に node/member の概念は無いため node_filter/member_filter は無視する。
-                let batches = read_all(&entry.path).expect("modal 読み出しに失敗");
+                let batches = read_all(&path).expect("modal 読み出しに失敗");
                 let batch = arrow::compute::concat_batches(&modal_schema(), &batches)
                     .expect("concat_batches (modal)");
                 ResultBatch { batch }
