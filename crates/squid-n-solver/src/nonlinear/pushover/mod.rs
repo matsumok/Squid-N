@@ -756,34 +756,6 @@ fn is_steel_shape(shape: &SectionShape) -> bool {
     )
 }
 
-/// 鉄骨断面の塑性断面係数 Zp [mm³]（強軸）。H・箱・パイプは閉形式、その他は
-/// None（呼び出し側で形状係数×弾性断面係数で近似する）。
-fn steel_plastic_modulus(shape: &SectionShape) -> Option<f64> {
-    match *shape {
-        SectionShape::SteelH {
-            height,
-            width,
-            web_thick,
-            flange_thick,
-        } => Some(
-            width * flange_thick * (height - flange_thick)
-                + web_thick * (height - 2.0 * flange_thick).powi(2) / 4.0,
-        ),
-        SectionShape::SteelBox {
-            height,
-            width,
-            thick,
-        } => Some(
-            width * height * height / 4.0
-                - (width - 2.0 * thick) * (height - 2.0 * thick).powi(2) / 4.0,
-        ),
-        SectionShape::SteelPipe { outer_dia, thick } => {
-            Some((outer_dia.powi(3) - (outer_dia - 2.0 * thick).powi(3)) / 6.0)
-        }
-        _ => None,
-    }
-}
-
 /// 部材の曲げヒンジ閾値（実スケルトン）を算定する（RESP-D「05 非線形モデル」）。
 /// RC: Mc=κ·Fc·Ze（κ=0.56）・My=0.9·at·σy·j。鉄骨: Mp=Zp·σy（Mc=My）。
 /// 複合断面・形状不明は σy·Ze を降伏とする改良簡易値でフォールバックする。
@@ -831,7 +803,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         }
         Some(shape) if is_steel_shape(shape) => {
             // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れは無いため Mc=My=Mp。
-            let zp = steel_plastic_modulus(shape).unwrap_or(1.12 * ze);
+            let zp = shape.plastic_modulus_strong().unwrap_or(1.12 * ze);
             let mp = sigma_y_steel * zp;
             HingeThreshold { mc: mp, my: mp }
         }

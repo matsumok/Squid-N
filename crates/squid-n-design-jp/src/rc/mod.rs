@@ -31,6 +31,9 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 use squid_n_core::units::ConcreteClass;
 
 mod beam;
+/// 鉄筋コンクリート造梁の非線形復元力特性（曲げトリリニア・せん断・軸）。
+/// 非線形解析の材端バネ骨格に用いる（RESP-D「05 非線形モデル」）。
+pub mod beam_nonlinear;
 mod bond;
 mod column;
 /// 鉄筋コンクリート造水平接合面の検討（PCa 打継ぎ面のせん断検定）。

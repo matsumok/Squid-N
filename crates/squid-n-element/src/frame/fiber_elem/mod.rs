@@ -95,7 +95,13 @@ impl FiberBeam {
         let n_fibers = nw * nd;
 
         let template: Box<dyn UniaxialMaterial> = if let Some(fc) = mat_ref.and_then(|m| m.fc) {
-            Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0))
+            if fc <= 60.0 {
+                // 適用範囲(Fc≤60)は NewRC モデル(RESP-D「05 非線形モデル」)。
+                Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0))
+            } else {
+                // Fc60 超は NewRC 適用範囲外のため従来の放物線モデルへフォールバック。
+                Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0))
+            }
         } else {
             // 鋼材：降伏応力 fy が与えられれば弾塑性、無ければ実質弾性（fy=1e20）。
             let fy = mat_ref.and_then(|m| m.fy).unwrap_or(1e20);
@@ -179,7 +185,13 @@ impl FiberBeam {
         let iz = sec.map(|s| s.iz).unwrap_or(1.0);
 
         let template: Box<dyn UniaxialMaterial> = if let Some(fc) = mat_ref.and_then(|m| m.fc) {
-            Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0))
+            if fc <= 60.0 {
+                // 適用範囲(Fc≤60)は NewRC モデル(RESP-D「05 非線形モデル」)。
+                Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0))
+            } else {
+                // Fc60 超は NewRC 適用範囲外のため従来の放物線モデルへフォールバック。
+                Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0))
+            }
         } else {
             let fy = mat_ref.and_then(|m| m.fy).unwrap_or(1e20);
             Box::new(squid_n_material::uniaxial::Bilinear::new(e, fy, 0.01))
