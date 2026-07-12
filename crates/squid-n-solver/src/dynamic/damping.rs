@@ -49,6 +49,19 @@ pub enum StiffnessKind {
     Tangent,
 }
 
+/// 減衰力の評価方式（RESP-D「07 非線形解析（動的解析）」減衰マトリクス
+/// 「累積型・非累積型」）。減衰行列 C が時々刻々変化する（接線比例・モード別で
+/// 剛性が変化する）場合に両者は異なる。C 一定なら両者は一致する。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DampingAccumulation {
+    /// 非累積型: 減衰力 = 瞬間減衰マトリクス × 速度（`{Cn}=[Cn]{ẋn}`）。
+    #[default]
+    NonCumulative,
+    /// 累積型: 増分減衰力を積分（`{Cn}={Cn−1}+[Cn]{Δẋn}`）。C が変化する場合に
+    /// 履歴依存となり、瞬間 C×速度とは異なる。
+    Cumulative,
+}
+
 impl Damping {
     /// 減衰行列 C を組み立てる。`m`, `k` は縮約済みまたは自由度版の質量・剛性行列。
     pub fn assemble_c(&self, m: &SparseMat, k: &SparseMat) -> SparseMat {

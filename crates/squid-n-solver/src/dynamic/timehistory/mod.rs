@@ -7,7 +7,7 @@
 
 use crate::assemble::{assemble_global_k, assemble_global_m};
 use crate::constraint::Reducer;
-use crate::damping::Damping;
+use crate::damping::{Damping, DampingAccumulation};
 use crate::pushover::{assemble_k, compute_f_int};
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
@@ -1096,6 +1096,7 @@ pub fn nonlinear_time_history_analysis(
     wave: &GroundMotion,
     newmark: &NewmarkCfg,
     damping: &Damping,
+    accumulation: DampingAccumulation,
     initial_disp: &[f64],
     initial_vel: &[f64],
     use_kg: bool,
@@ -1170,6 +1171,10 @@ pub fn nonlinear_time_history_analysis(
     u[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
     let n_init_v = n_indep.min(initial_vel.len());
     v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
+
+    // 累積型減衰力 {Cn}（初期は C·v0）と、各ステップ収束時の減衰力（累積更新用）。
+    let mut f_damp = sparse_matvec(&c_red, &v);
+    let mut c_v_last = vec![0.0; n_indep];
 
     // 初期変位を要素状態に反映
     {
@@ -1334,8 +1339,17 @@ pub fn nonlinear_time_history_analysis(
             let f_int_free = compute_f_int(model, dofmap, &behaviors);
             let f_int_red = reducer.reduce_f(&f_int_free);
 
-            // C·v と M·a（縮約空間）
-            let c_v_red = sparse_matvec(c_cur, &v_trial);
+            // 減衰力（縮約空間）。非累積型は瞬間 C×速度、累積型は増分減衰力の積分
+            // （{Cn}={Cn−1}+[Cn]{Δẋn}、Δẋn=v_trial−v_前ステップ）。
+            let c_v_red = match accumulation {
+                DampingAccumulation::NonCumulative => sparse_matvec(c_cur, &v_trial),
+                DampingAccumulation::Cumulative => {
+                    let dv: Vec<f64> = (0..n_indep).map(|i| v_trial[i] - v[i]).collect();
+                    let c_dv = sparse_matvec(c_cur, &dv);
+                    (0..n_indep).map(|i| f_damp[i] + c_dv[i]).collect()
+                }
+            };
+            c_v_last.clone_from(&c_v_red);
             let m_a_red = sparse_matvec(&m_red, &a_trial);
 
             // 残差
@@ -1384,6 +1398,10 @@ pub fn nonlinear_time_history_analysis(
         if converged {
             for i in 0..n_indep {
                 u[i] += du_total[i];
+            }
+            // 累積型: 収束した減衰力を次ステップの積分開始値として保持する。
+            if accumulation == DampingAccumulation::Cumulative {
+                f_damp.clone_from(&c_v_last);
             }
             v.copy_from_slice(&v_trial);
             a.copy_from_slice(&a_trial);

@@ -56,7 +56,7 @@ fn test_timehistory_config_deterministic() {
 // ===== §8.1 SDOF / §8.2 減衰 検証テスト =====
 
 use crate::constraint::Reducer;
-use crate::damping::{Damping, StiffnessKind};
+use crate::damping::{Damping, DampingAccumulation, StiffnessKind};
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
@@ -1163,6 +1163,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
         &wave,
         &newmark,
         &damping,
+        DampingAccumulation::NonCumulative,
         &[1.0],
         &[0.0],
         false,
@@ -1240,6 +1241,7 @@ fn test_nonlinear_time_history_sdof_plastic() {
         &wave,
         &newmark,
         &damping,
+        DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
         false,
@@ -1304,6 +1306,7 @@ fn test_nonlinear_time_history_extended_damping_models_run() {
             &wave,
             &newmark,
             damping,
+            DampingAccumulation::NonCumulative,
             &[50.0],
             &[0.0],
             false,
@@ -1317,6 +1320,73 @@ fn test_nonlinear_time_history_extended_damping_models_run() {
             result.peak_disp[1][0]
         );
     }
+}
+
+/// 累積型/非累積型（RESP-D「07」）: C 一定なら両者は一致し、接線比例（C 変化）でも
+/// 累積型が収束して有限応答を返す。
+#[test]
+fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
+    let base = fiber_column_model(100.0);
+    let dof0 = DofMap::build(&base);
+    let red0 = Reducer::build(&base, &dof0);
+    let m_red = red0.reduce_k(&assemble_global_m(&base, &dof0, MassOption::Consistent));
+    let k_red = red0.reduce_k(&assemble_global_k(&base, &dof0));
+    let omega = (*k_red.get(0, 0).unwrap_or(&0.0) / *m_red.get(0, 0).unwrap_or(&1.0)).sqrt();
+    let dt = 0.001;
+    let n_steps = 200;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let run = |damping: &Damping, acc: DampingAccumulation| {
+        let mut m = fiber_column_model(100.0);
+        let d = DofMap::build(&m);
+        let r = Reducer::build(&m, &d);
+        nonlinear_time_history_analysis(
+            &mut m,
+            &d,
+            &r,
+            &wave,
+            &newmark,
+            damping,
+            acc,
+            &[50.0],
+            &[0.0],
+            false,
+            20,
+            1e-6,
+        )
+        .expect("should converge")
+        .peak_disp[1][0]
+    };
+
+    // C 一定（初期剛性比例）: 累積型 ≈ 非累積型。
+    let const_c = Damping::StiffnessProportional {
+        h: 0.05,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let non = run(&const_c, DampingAccumulation::NonCumulative);
+    let cum = run(&const_c, DampingAccumulation::Cumulative);
+    assert!(
+        (non - cum).abs() < non.abs() * 1e-4 + 1e-6,
+        "constant C: cumulative≈non-cumulative (non={non}, cum={cum})"
+    );
+
+    // 接線比例（C 変化）でも累積型が収束し有限応答を返す。
+    let tangent_c = Damping::StiffnessProportional {
+        h: 0.05,
+        omega,
+        basis: StiffnessKind::Tangent,
+    };
+    let cum_t = run(&tangent_c, DampingAccumulation::Cumulative);
+    assert!(
+        cum_t.is_finite() && cum_t >= 1.0,
+        "tangent cumulative peak={cum_t}"
+    );
 }
 
 /// 不収束時の restore が動作すること（収束失敗時にステップ開始状態に戻る）。
@@ -1358,6 +1428,7 @@ fn test_nonlinear_time_history_convergence() {
         &wave,
         &newmark,
         &damping,
+        DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
         false,
@@ -1378,6 +1449,7 @@ fn test_nonlinear_time_history_convergence() {
         &wave,
         &newmark,
         &damping,
+        DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
         false,
