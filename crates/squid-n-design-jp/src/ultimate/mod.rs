@@ -59,8 +59,8 @@ pub use rc_shear::{
     RcBondSplitInput, RcPlasticShearInput,
 };
 pub use rc_shear_ductility::{
-    arch_tan_theta, ductility_mu, ductility_nu, rc_shear_vu_ductility, truss_lambda,
-    RcDuctilityShearInput,
+    arch_tan_theta, bond_force_tx, ductility_mu, ductility_nu, rc_shear_vbu_ductility,
+    rc_shear_vu_ductility, truss_lambda, RcDuctilityShearInput, RcVbuInput,
 };
 
 /// 部材の設計用需要（終局検定の入力）。**圧縮を正**とする軸力と、強軸・弱軸まわりの
@@ -389,12 +389,11 @@ fn member_vu_ductility(
     l_clear: f64,
     opts: &UltimateShearOptions,
 ) -> f64 {
+    let (be, n_s) = ductility_be_ns(b_dir, rebar);
     let s = rebar.shear.pitch;
     let aw =
         rebar.shear.legs as f64 * std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia;
-    let be = (b_dir - 2.0 * (rebar.cover + rebar.shear.dia / 2.0)).max(1.0);
     let pwe = if s > 0.0 { aw / (be * s) } else { 0.0 };
-    let n_s = (rebar.shear.legs / 2).saturating_sub(1);
     rc_shear_vu_ductility(&RcDuctilityShearInput {
         b: b_dir,
         d_full: d_dir,
@@ -410,6 +409,14 @@ fn member_vu_ductility(
         tensile_axial: n_axial < 0.0,
         lightweight: opts.lightweight,
     })
+}
+
+/// 靭性指針式のトラス機構有効幅 `be`（外側横補強筋の芯々間隔近似）と中子筋本数 `Ns`
+/// （`legs/2 − 1` 近似）を断面諸元から求める（[`member_vu_ductility`]・Vbu で共用）。
+fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
+    let be = (b_dir - 2.0 * (rebar.cover + rebar.shear.dia / 2.0)).max(1.0);
+    let n_s = (rebar.shear.legs / 2).saturating_sub(1);
+    (be, n_s)
 }
 
 /// 選択された [`ShearMethod`] に応じた終局せん断強度 `Qsu`/`Vu` [N]。
@@ -523,17 +530,43 @@ fn check_member(
             top_bar: false,
         });
         let sum_phi = n_tension * std::f64::consts::PI * rebar.main_x.dia;
-        let qbu = rc_shear_qbu_bond(&RcBondSplitInput {
-            b,
-            d_full: d,
-            jt,
-            tau_bu,
-            sum_phi,
-            l_clear,
-            fc,
-            rp: opts.rp,
-            lightweight: opts.lightweight,
-        });
+        // 塑性理論式は付着割裂耐力 Qbu、靭性指針式は付着考慮せん断信頼強度 Vbu を用いる。
+        let qbu = match opts.shear_method {
+            ShearMethod::Plastic => rc_shear_qbu_bond(&RcBondSplitInput {
+                b,
+                d_full: d,
+                jt,
+                tau_bu,
+                sum_phi,
+                l_clear,
+                fc,
+                rp: opts.rp,
+                lightweight: opts.lightweight,
+            }),
+            ShearMethod::Ductility => {
+                let (be, n_s) = ductility_be_ns(b, rebar);
+                rc_shear_vbu_ductility(&RcVbuInput {
+                    b,
+                    d_full: d,
+                    be,
+                    je: jt,
+                    tau_bu,
+                    sum_phi1: sum_phi,
+                    // モデルは 1 段配筋を仮定するため 2 段目主筋（τbu2・Σφ2）は 0。
+                    tau_bu2: 0.0,
+                    sum_phi2: 0.0,
+                    s: rebar.shear.pitch,
+                    n_s,
+                    l_clear,
+                    fc,
+                    rp: opts.rp,
+                    tensile_axial: n_axial < 0.0,
+                    // Rp>0（ヒンジ回転を指定）を降伏ヒンジ計画部材とみなす（6.8.16b）。
+                    yield_hinge: opts.rp > 0.0,
+                    lightweight: opts.lightweight,
+                })
+            }
+        };
         (qbu, tau_bu)
     } else {
         (0.0, 0.0)

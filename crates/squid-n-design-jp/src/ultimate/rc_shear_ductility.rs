@@ -174,6 +174,113 @@ pub fn rc_shear_vu_ductility(inp: &RcDuctilityShearInput) -> f64 {
     }
 }
 
+/// 部材単位長さあたりに負担できる付着力 `Tx` [N/mm]（AIJ 靭性指針 6.8.16）。
+///
+/// ```text
+/// Tx = τbu·Σφ1 + τbu2·Σφ2                     （降伏ヒンジを計画しない部材, 6.8.16a）
+/// Tx = (1 − 10·Rp)·(τbu·Σφ1 + τbu2·Σφ2)       （降伏ヒンジを計画する部材,   6.8.16b）
+/// ```
+/// `yield_hinge=true` で (6.8.16b)（ヒンジ域の付着劣化を `(1−10·Rp)` で反映、下限 0）。
+/// `τbu`・`τbu2` は 1・2 段目主筋の付着信頼強度、`Σφ1`・`Σφ2` はその周長合計。
+pub fn bond_force_tx(
+    tau_bu: f64,
+    sum_phi1: f64,
+    tau_bu2: f64,
+    sum_phi2: f64,
+    rp: f64,
+    yield_hinge: bool,
+) -> f64 {
+    let base = tau_bu.max(0.0) * sum_phi1.max(0.0) + tau_bu2.max(0.0) * sum_phi2.max(0.0);
+    if yield_hinge {
+        (1.0 - 10.0 * rp).max(0.0) * base
+    } else {
+        base
+    }
+}
+
+/// 付着破壊の影響を考慮した終局せん断信頼強度 `Vbu` の算定入力（AIJ 靭性指針 6.8）。
+#[derive(Clone, Copy, Debug)]
+pub struct RcVbuInput {
+    /// 部材幅 b [mm]。
+    pub b: f64,
+    /// 部材せい D [mm]。
+    pub d_full: f64,
+    /// トラス機構に関与する断面の有効幅 be [mm]。
+    pub be: f64,
+    /// トラス機構に関与する断面の有効せい je [mm]。
+    pub je: f64,
+    /// 1 段目主筋の付着信頼強度 τbu [N/mm²]。
+    pub tau_bu: f64,
+    /// 1 段目主筋の周長合計 Σφ1 [mm]。
+    pub sum_phi1: f64,
+    /// 2 段目主筋の付着信頼強度 τbu2 [N/mm²]（無い場合 0）。
+    pub tau_bu2: f64,
+    /// 2 段目主筋の周長合計 Σφ2 [mm]（無い場合 0）。
+    pub sum_phi2: f64,
+    /// 横補強筋の間隔 s [mm]（λ に用いる）。
+    pub s: f64,
+    /// 中子筋の本数 Ns（λ に用いる）。
+    pub n_s: u32,
+    /// クリアスパン長さ L [mm]（tanθ に用いる）。
+    pub l_clear: f64,
+    /// コンクリートの圧縮強度 σB [N/mm²]。
+    pub fc: f64,
+    /// 終局限界状態でのヒンジ領域の回転角 Rp [rad]（ν・Tx に用いる）。
+    pub rp: f64,
+    /// 引張軸力を受ける柱の場合 true（tanθ=0）。
+    pub tensile_axial: bool,
+    /// 降伏ヒンジを計画する部材の場合 true（Tx に (1−10·Rp) を乗じる, 6.8.16b）。
+    pub yield_hinge: bool,
+    /// 軽量コンクリートを使用する場合 true（0.9 倍に低減）。
+    pub lightweight: bool,
+}
+
+/// 付着破壊の影響を考慮した終局せん断信頼強度 `Vbu = min(Vbu1, Vbu2)` [N]
+/// （AIJ 靭性指針 6.8）。
+///
+/// ```text
+/// Vbu1 = Tx·je + (ν·σB − 2.5·Tx/(λ·be))·(b·D/2)·tanθ        (6.8.14)
+/// Vbu2 = (λ·ν·σB/2)·be·je                                    (6.8.15)
+/// ```
+/// - トラス機構をせん断補強筋（[`rc_shear_vu_ductility`] の `pwe·σwy`）ではなく付着力
+///   `Tx`（[`bond_force_tx`]）で置き換えた式。付着割裂が支配する場合のせん断信頼強度。
+/// - Vbu2 は [`rc_shear_vu_ductility`] の Vu3（6.4.3）と同型（コンクリート圧壊の頭打ち）。
+/// - (6.8.14) 第 2 項の応力 `ν·σB − 2.5·Tx/(λ·be)` は負にならないよう下限 0 でクランプ。
+/// - `lightweight` が true の場合 0.9 倍に低減する。
+/// - 不正入力（b・D・be・je・Fc のいずれかが 0 以下）は 0.0 を返す。
+pub fn rc_shear_vbu_ductility(inp: &RcVbuInput) -> f64 {
+    if inp.b <= 0.0 || inp.d_full <= 0.0 || inp.be <= 0.0 || inp.je <= 0.0 || inp.fc <= 0.0 {
+        return 0.0;
+    }
+    let nu = ductility_nu(inp.fc, inp.rp);
+    let lambda = truss_lambda(inp.s, inp.je, inp.be, inp.n_s);
+    let tan_theta = arch_tan_theta(inp.l_clear, inp.d_full, inp.tensile_axial);
+    let tx = bond_force_tx(
+        inp.tau_bu,
+        inp.sum_phi1,
+        inp.tau_bu2,
+        inp.sum_phi2,
+        inp.rp,
+        inp.yield_hinge,
+    );
+    let nu_sb = nu * inp.fc;
+
+    let arch_stress = if lambda > 0.0 {
+        (nu_sb - 2.5 * tx / (lambda * inp.be)).max(0.0)
+    } else {
+        nu_sb
+    };
+    let vbu1 = tx * inp.je + arch_stress * (inp.b * inp.d_full / 2.0) * tan_theta;
+    let vbu2 = (lambda * nu_sb / 2.0) * inp.be * inp.je;
+
+    let vbu = vbu1.min(vbu2).max(0.0);
+    if inp.lightweight {
+        0.9 * vbu
+    } else {
+        vbu
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +436,78 @@ mod tests {
         bad = sample();
         bad.d_full = 0.0;
         assert_eq!(rc_shear_vu_ductility(&bad), 0.0);
+    }
+
+    #[test]
+    fn test_bond_force_tx() {
+        // 降伏ヒンジ無: Tx = τbu·Σφ1 + τbu2·Σφ2。
+        let tx = bond_force_tx(3.0, 300.0, 2.0, 150.0, 0.02, false);
+        assert!((tx - (3.0 * 300.0 + 2.0 * 150.0)).abs() < 1e-9);
+        // 降伏ヒンジ有: (1−10·Rp) 倍（Rp=0.02 → 0.8 倍）。
+        let tx_h = bond_force_tx(3.0, 300.0, 2.0, 150.0, 0.02, true);
+        assert!((tx_h - 0.8 * (3.0 * 300.0 + 2.0 * 150.0)).abs() < 1e-9);
+        // Rp=0.1 → (1−1.0)=0 でクランプ。
+        assert!(bond_force_tx(3.0, 300.0, 0.0, 0.0, 0.1, true).abs() < 1e-9);
+    }
+
+    fn sample_vbu() -> RcVbuInput {
+        RcVbuInput {
+            b: 400.0,
+            d_full: 600.0,
+            be: 350.0,
+            je: 7.0 * 530.0 / 8.0,
+            tau_bu: 3.0,
+            sum_phi1: 4.0 * std::f64::consts::PI * 25.0, // 4-D25 の周長合計
+            tau_bu2: 0.0,
+            sum_phi2: 0.0,
+            s: 100.0,
+            n_s: 1,
+            l_clear: 3000.0,
+            fc: 24.0,
+            rp: 0.0,
+            tensile_axial: false,
+            yield_hinge: false,
+            lightweight: false,
+        }
+    }
+
+    #[test]
+    fn test_rc_shear_vbu_ductility_matches_handcalc() {
+        let inp = sample_vbu();
+        let vbu = rc_shear_vbu_ductility(&inp);
+        let nu: f64 = 0.7 - 24.0 / 200.0;
+        let je: f64 = 7.0 * 530.0 / 8.0;
+        let be: f64 = 350.0;
+        let lambda = 1.0 - 100.0 / (2.0 * je) - (be / 2.0) / (4.0 * je);
+        let tan_theta = 0.9 * 600.0 / (2.0 * 3000.0); // L/D=5 ≥ 1.5
+        let tx = 3.0 * (4.0 * std::f64::consts::PI * 25.0);
+        let nu_sb = nu * 24.0;
+        let arch_stress = (nu_sb - 2.5 * tx / (lambda * be)).max(0.0);
+        let vbu1 = tx * je + arch_stress * (400.0 * 600.0 / 2.0) * tan_theta;
+        let vbu2 = (lambda * nu_sb / 2.0) * be * je;
+        let hand = vbu1.min(vbu2);
+        assert!((vbu - hand).abs() < 1e-3, "Vbu={vbu} vs {hand}");
+        assert!(vbu > 0.0);
+    }
+
+    #[test]
+    fn test_rc_shear_vbu_ductility_yield_hinge_reduces() {
+        // 降伏ヒンジ計画（Rp>0）は Tx 低減で Vbu が下がる（トラス項が支配する範囲）。
+        let mut inp = sample_vbu();
+        inp.rp = 0.03;
+        let v_no = rc_shear_vbu_ductility(&inp);
+        inp.yield_hinge = true;
+        let v_hinge = rc_shear_vbu_ductility(&inp);
+        assert!(v_hinge <= v_no + 1e-6, "hinge={v_hinge} no={v_no}");
+    }
+
+    #[test]
+    fn test_rc_shear_vbu_ductility_invalid_zero() {
+        let mut bad = sample_vbu();
+        bad.fc = 0.0;
+        assert_eq!(rc_shear_vbu_ductility(&bad), 0.0);
+        bad = sample_vbu();
+        bad.be = 0.0;
+        assert_eq!(rc_shear_vbu_ductility(&bad), 0.0);
     }
 }

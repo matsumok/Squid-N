@@ -116,11 +116,11 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             ui.add_space(4.0);
 
             let bond = app.ultimate_include_bond;
-            // 終局せん断強度の列見出し（靭性指針式は Vu 表記）。
-            let (qsu_hdr, ratio_hdr) = if app.ultimate_shear_ductility {
-                ("Vu[kN]", "Vu/Qmu")
+            // 終局せん断強度の列見出し（靭性指針式は Vu／付着考慮 Vbu 表記）。
+            let (qsu_hdr, ratio_hdr, qbu_hdr, bond_ratio_hdr) = if app.ultimate_shear_ductility {
+                ("Vu[kN]", "Vu/Qmu", "Vbu[kN]", "Vbu/Qmu")
             } else {
-                ("Qsu[kN]", "Qsu/Qmu")
+                ("Qsu[kN]", "Qsu/Qmu", "Qbu[kN]", "Qbu/Qmu")
             };
             TableBuilder::new(ui)
                 .id_salt("ultimate_checks")
@@ -142,8 +142,8 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                         "Qmu[kN]",
                         qsu_hdr,
                         ratio_hdr,
-                        "Qbu[kN]",
-                        "Qbu/Qmu",
+                        qbu_hdr,
+                        bond_ratio_hdr,
                         "判定",
                     ] {
                         h.col(|ui| {
@@ -203,16 +203,19 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 });
 
             ui.add_space(4.0);
-            let shear_note = if app.ultimate_shear_ductility {
-                "Vu=靭性指針式の終局せん断信頼強度 min(Vu1,Vu2,Vu3)（トラス＋アーチ機構）"
+            let (shear_note, bond_note) = if app.ultimate_shear_ductility {
+                (
+                    "Vu=靭性指針式の終局せん断信頼強度 min(Vu1,Vu2,Vu3)（トラス＋アーチ機構）",
+                    "Vbu=付着考慮せん断信頼強度 min(Vbu1,Vbu2)",
+                )
             } else {
-                "Qsu=塑性理論式の終局せん断強度"
+                ("Qsu=塑性理論式の終局せん断強度", "Qbu=付着割裂耐力")
             };
             ui.colored_label(
                 crate::theme::GRAY_600,
                 format!(
                     "Qmu=上限強度倍率·2·Mu/内法（両端ヒンジ）、{shear_note}、\
-                     Qbu=付着割裂耐力。余裕度<1.0（赤）はせん断・付着が曲げ降伏に先行することを示す。\
+                     {bond_note}。余裕度<1.0（赤）はせん断・付着が曲げ降伏に先行することを示す。\
                      対象は RcRect の RC 矩形部材（強軸）。柱の Mu は長期軸力を考慮。"
                 ),
             );

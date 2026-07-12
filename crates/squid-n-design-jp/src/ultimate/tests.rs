@@ -341,6 +341,15 @@ fn test_ultimate_check_shear_method_ductility() {
     // basis 文字列に選択した式名が反映される。
     assert!(col_d.basis.contains("靭性指針式"), "basis={}", col_d.basis);
     assert!(col_p.basis.contains("塑性理論式"), "basis={}", col_p.basis);
+    // 付着側も靭性指針式は Vbu（付着考慮せん断信頼強度）を用い、塑性の Qbu と異なる。
+    assert!(col_d.qbu > 0.0, "靭性 Vbu>0");
+    assert!(col_p.qbu > 0.0, "塑性 Qbu>0");
+    assert!(
+        (col_p.qbu - col_d.qbu).abs() > 1e-3,
+        "塑性 Qbu={} と靭性 Vbu={} は一般に異なるはず",
+        col_p.qbu,
+        col_d.qbu
+    );
 }
 
 /// CFT 角形柱 1 本のモデルで軸終局検定ドライバが Ncu/Ntu・軸余裕度を算定する。
