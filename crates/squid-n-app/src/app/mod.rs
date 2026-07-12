@@ -40,6 +40,8 @@ pub enum ResultsView {
     Spatial,
     TimeHistory,
     Pushover,
+    /// 質点系（串団子）モデル（プッシュオーバーから生成）。
+    LumpedMass,
 }
 
 /// 設計タブ内の切替（検定表・MN相関曲面ビュー）。
@@ -162,6 +164,10 @@ pub struct AnalysisSettings {
     pub push_max_disp: f64,
     /// プッシュオーバー: 塑性率（ductility）の算定方式（RESP-D「05 非線形モデル」）。
     pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
+    /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
+    pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
+    /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
+    pub lumped_secant_ratio: f64,
     /// 時刻歴: 減衰比・サンプル波の刻み/継続時間/周期/振幅 [mm/s²]
     pub th_damping: f64,
     pub th_dt: f64,
@@ -242,6 +248,8 @@ impl Default for AnalysisSettings {
             push_steps: 50,
             push_max_disp: 500.0,
             ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
+            lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
+            lumped_secant_ratio: 0.75,
             th_damping: 0.02,
             th_dt: 0.01,
             th_duration: 10.0,

@@ -1033,6 +1033,7 @@ impl App {
             let sel_spatial = self.results_view == ResultsView::Spatial;
             let sel_th = self.results_view == ResultsView::TimeHistory;
             let sel_po = self.results_view == ResultsView::Pushover;
+            let sel_lm = self.results_view == ResultsView::LumpedMass;
             if ui.selectable_label(sel_spatial, "3D/応力図").clicked() {
                 self.results_view = ResultsView::Spatial;
             }
@@ -1041,6 +1042,9 @@ impl App {
             }
             if ui.selectable_label(sel_po, "プッシュオーバー").clicked() {
                 self.results_view = ResultsView::Pushover;
+            }
+            if ui.selectable_label(sel_lm, "質点系モデル").clicked() {
+                self.results_view = ResultsView::LumpedMass;
             }
             ui.separator();
             // 結果サマリ
@@ -1060,6 +1064,7 @@ impl App {
             ResultsView::Spatial => crate::viewer::viewer_panel(ui, self),
             ResultsView::TimeHistory => crate::time_history_view::time_history_panel(ui, self),
             ResultsView::Pushover => self.pushover_panel(ui),
+            ResultsView::LumpedMass => self.lumped_mass_panel(ui),
         }
     }
 
@@ -1160,6 +1165,112 @@ impl App {
             if po.hinges.len() > 20 {
                 ui.label(format!("... 他 {} 件", po.hinges.len() - 20));
             }
+        });
+    }
+
+    /// 質点系（串団子）モデルの表示。プッシュオーバー結果から層 Q-δ を
+    /// トリリニア縮約し、層ごとの質量・階高・復元力特性を一覧する
+    /// （RESP-D「07 非線形解析（動的解析）」質点系解析モデル）。
+    pub(crate) fn lumped_mass_panel(&mut self, ui: &mut egui::Ui) {
+        use squid_n_solver::lumped_mass::{build_lumped_mass_model, LumpedMassType};
+
+        let Some(po) = self.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "プッシュオーバー結果がありません。質点系モデルは\
+                 プッシュオーバー結果から生成します。解析タブから実行してください。",
+            );
+            return;
+        };
+
+        // モデル化タイプ・第1折点判定の割線剛性比を選択。
+        ui.horizontal(|ui| {
+            ui.label("モデル化タイプ:");
+            let cur = self.analysis_cfg.lumped_mass_type;
+            egui::ComboBox::from_id_salt("lumped_mass_type")
+                .selected_text(cur.label())
+                .show_ui(ui, |ui| {
+                    for t in [
+                        LumpedMassType::EquivalentShear,
+                        LumpedMassType::EquivalentBendingShear,
+                        LumpedMassType::BendingShearSeparated,
+                    ] {
+                        ui.selectable_value(&mut self.analysis_cfg.lumped_mass_type, t, t.label());
+                    }
+                });
+            ui.separator();
+            ui.label("第1折点 割線比:");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_secant_ratio)
+                    .speed(0.01)
+                    .range(0.3..=0.95),
+            );
+        });
+        ui.separator();
+
+        // プッシュオーバーから串団子モデルを生成（軽量なので毎フレーム再構成）。
+        let lm = build_lumped_mass_model(
+            &self.model,
+            po,
+            self.analysis_cfg.lumped_mass_type,
+            self.analysis_cfg.lumped_secant_ratio,
+        );
+
+        let total_mass: f64 = lm.stories.iter().map(|s| s.mass).sum();
+        ui.horizontal(|ui| {
+            ui.label(format!("質点数: {}", lm.stories.len()));
+            ui.separator();
+            ui.label(format!("総質量: {:.1} t", total_mass));
+            ui.separator();
+            ui.label(format!("モデル: {}", lm.model_type.label()));
+        });
+        ui.separator();
+
+        // 層ごとの質点・復元力特性（トリリニア）を一覧。上層から順に表示。
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("lumped_mass_stories")
+                .num_columns(9)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("階");
+                    ui.strong("質量[t]");
+                    ui.strong("階高[mm]");
+                    ui.strong("K1[kN/mm]");
+                    ui.strong("K2[kN/mm]");
+                    ui.strong("K3[kN/mm]");
+                    ui.strong("第1折点 δ1/Q1");
+                    ui.strong("第2折点 δ2/Q2");
+                    ui.strong("第3折点 δ3/Q3");
+                    ui.end_row();
+
+                    // model.stories と stick は同順（build_lumped_mass_model が順に生成）。
+                    for (i, stick) in lm.stories.iter().enumerate().rev() {
+                        let name = self
+                            .model
+                            .stories
+                            .get(i)
+                            .map(|s| s.name.as_str())
+                            .unwrap_or("-");
+                        let sk = &stick.skeleton;
+                        ui.label(name);
+                        ui.label(format!("{:.2}", stick.mass));
+                        ui.label(format!("{:.0}", stick.height));
+                        ui.label(format!("{:.1}", sk.k1 / 1000.0));
+                        ui.label(format!("{:.1}", sk.k2() / 1000.0));
+                        ui.label(format!("{:.1}", sk.k3() / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d1, sk.q1 / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d2, sk.q2 / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d3, sk.q3 / 1000.0));
+                        ui.end_row();
+                    }
+                });
+
+            ui.add_space(6.0);
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "K は [kN/mm]、Q は [kN]、δ は [mm]。骨格はプッシュオーバー層 Q-δ を\
+                 等包絡面積則でトリリニア縮約したもの。",
+            );
         });
     }
 

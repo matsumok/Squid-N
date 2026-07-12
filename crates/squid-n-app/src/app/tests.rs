@@ -712,6 +712,34 @@ fn test_pushover_flow() {
     assert!(!po.capacity_curve.is_empty());
 }
 
+/// プッシュオーバー結果から質点系（串団子）モデルを生成する配線の end-to-end 確認。
+#[test]
+fn test_lumped_mass_model_from_pushover() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let po = app.results.as_ref().unwrap().pushover.as_ref().unwrap();
+
+    let lm = squid_n_solver::lumped_mass::build_lumped_mass_model(
+        &app.model,
+        po,
+        app.analysis_cfg.lumped_mass_type,
+        app.analysis_cfg.lumped_secant_ratio,
+    );
+    // 層数分の質点が生成され、各層のトリリニア骨格が妥当（K1>0・折点昇順）。
+    assert_eq!(lm.stories.len(), app.model.stories.len());
+    assert!(!lm.stories.is_empty());
+    for stick in &lm.stories {
+        let sk = &stick.skeleton;
+        assert!(sk.k1 > 0.0, "K1>0: {sk:?}");
+        assert!(sk.d1 <= sk.d2 && sk.d2 <= sk.d3, "折点昇順: {sk:?}");
+        assert!(stick.mass >= 0.0);
+    }
+}
+
 /// `poll_job` が完了するまで待つ（タイムアウト5秒でパニック、10ms 間隔でポーリング）。
 fn wait_for_job(app: &mut App) {
     let start = std::time::Instant::now();
