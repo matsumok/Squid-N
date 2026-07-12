@@ -73,6 +73,8 @@ pub enum HysteresisModel {
     MaxPointOriented,
     /// 武田型（剛性低下型トリリニア。RC/SRC/CFT 梁の既定）。
     Takeda,
+    /// 辻・山田型（バイリニア＋β 混合硬化。座屈補剛ブレース等）。
+    TsujiYamada,
 }
 
 impl HysteresisModel {
@@ -85,17 +87,19 @@ impl HysteresisModel {
             HysteresisModel::OriginOriented => "原点指向型",
             HysteresisModel::MaxPointOriented => "最大点指向型",
             HysteresisModel::Takeda => "武田型",
+            HysteresisModel::TsujiYamada => "辻・山田型",
         }
     }
 
     /// UI・列挙用の全候補。
-    pub const ALL: [HysteresisModel; 6] = [
+    pub const ALL: [HysteresisModel; 7] = [
         HysteresisModel::Auto,
         HysteresisModel::Retrograde,
         HysteresisModel::Standard,
         HysteresisModel::OriginOriented,
         HysteresisModel::MaxPointOriented,
         HysteresisModel::Takeda,
+        HysteresisModel::TsujiYamada,
     ];
 }
 

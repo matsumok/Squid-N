@@ -3,7 +3,7 @@ use squid_n_core::model::{
     default_member_hysteresis, ElementData, ElementKind, ForceRegime, HysteresisModel, Model,
 };
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
-use squid_n_material::{HysteresisMaterial, HysteresisRule};
+use squid_n_material::{HysteresisMaterial, HysteresisRule, TsujiYamada};
 
 /// ForceRegime の自動選択結果（P5 §5）
 pub enum ResolvedRegime {
@@ -465,6 +465,13 @@ fn build_flexural_springs(
             Box::new(Bilinear::new(k_rot, my, 0.01)),
             true,
         );
+    }
+    // 辻・山田型（バイリニア＋β 混合硬化）。K2=0.01·k_rot、β=0.5（既定）。
+    // set_yield 対応のため N-M 相関を適用可能。
+    if rule == HysteresisModel::TsujiYamada {
+        let k2 = 0.01 * k_rot;
+        let mk = || Box::new(TsujiYamada::new(k_rot, my, k2, 0.5)) as Box<dyn UniaxialMaterial>;
+        return (mk(), mk(), true);
     }
     // トリリニア折れ点: ひび割れ Mc/θc（初期勾配 k_rot）、降伏 My/θy（降伏時剛性
     // 低下率 αy=0.3）、終局 Mu=1.1·My/θu（塑性率 4）。αy=0.3 は既定値であり、
