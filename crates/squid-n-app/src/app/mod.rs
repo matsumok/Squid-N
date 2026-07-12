@@ -323,6 +323,8 @@ pub struct App {
     pub ultimate_include_bond: bool,
     /// 終局検定の上限強度倍率（Qmu = 上限強度倍率·2·Mu/内法。既定 1.0）。
     pub ultimate_upper_factor: f64,
+    /// 終局検定で柱の Mu を ACI 規準（平面保持）で算定するか（false は at 式）。
+    pub ultimate_mu_aci: bool,
     /// 左ペインの幅（px）。ドラッグで調整可能（180–520 にクランプ）。
     #[cfg(feature = "gui")]
     pub left_panel_width: f32,
@@ -448,6 +450,7 @@ impl Default for App {
             ultimate_lightweight: false,
             ultimate_include_bond: true,
             ultimate_upper_factor: 1.0,
+            ultimate_mu_aci: false,
             #[cfg(feature = "gui")]
             left_panel_width: 280.0,
             #[cfg(feature = "gui")]

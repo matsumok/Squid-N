@@ -470,6 +470,11 @@ impl App {
             upper_strength_factor: self.ultimate_upper_factor.max(0.0),
             sigma_wy: 295.0,
             include_bond: self.ultimate_include_bond,
+            mu_method: if self.ultimate_mu_aci {
+                squid_n_design_jp::ultimate::MuMethod::Aci
+            } else {
+                squid_n_design_jp::ultimate::MuMethod::AtFormula
+            },
         };
         let checks =
             squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &axial, &opts);

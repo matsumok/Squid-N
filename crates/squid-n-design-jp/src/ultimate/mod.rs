@@ -12,16 +12,17 @@
 //! - 余裕度 ≥ 1.0（せん断・付着が曲げ降伏に先行しない）で OK。
 //!
 //! # 曲げ終局強度 Mu
-//! 曲げ終局強度は既存の [`squid_n_core::rc_capacity`]（構造規定 at 式）を再利用する
-//! （梁は [`squid_n_core::rc_capacity::rc_mu_simple`]、柱は軸力を考慮した
-//! [`squid_n_core::rc_capacity::rc_column_mu_simple`]）。RESP-D は柱について ACI
-//! 規準（平面保持）も選択できるが、本モジュールは構造規定 at 式を用いる。
+//! 梁は [`squid_n_core::rc_capacity::rc_mu_simple`]（構造規定 at 式）を用いる。
+//! 柱は [`MuMethod`] により、軸力を考慮した構造規定 at 式
+//! （[`squid_n_core::rc_capacity::rc_column_mu_simple`]）または ACI 規準の平面保持
+//! 解析（[`rc_column_aci::rc_column_mu_aci`]）を選択できる。
 //!
 //! # 適用範囲・簡略化（doc 兼申し送り）
-//! - 対象は `SectionShape::RcRect`（矩形 RC 断面）のみ。円形柱・SRC・CFT・鋼は
-//!   別途（本モジュールの対象外）。
+//! - RC 部材の検定対象は `SectionShape::RcRect`（矩形 RC 断面）のみ。円形柱・SRC・鋼は
+//!   別途（本モジュールの RC 経路の対象外）。CFT 柱の軸終局耐力は [`cft`]、柱梁接合部の
+//!   終局耐力は [`joint`] を参照。
 //! - 強軸（せい方向主筋 main_x）まわりのせん断・付着を検定する（二軸せん断余裕度・
-//!   ACI 規準による曲げ・靭性指針式 Vu は今後の課題）。
+//!   靭性指針式 Vu は今後の課題）。
 //! - 主筋は上下対称配筋を仮定し、引張側主筋量は main_x の総断面積の半分とする。
 
 use crate::MemberKind;
@@ -33,6 +34,7 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 pub mod cft;
 pub mod joint;
 pub mod rc_axial;
+pub mod rc_column_aci;
 pub mod rc_shear;
 
 pub use cft::{
@@ -43,11 +45,22 @@ pub use joint::{
     joint_fj, joint_kappa, rc_joint_ultimate, RcJointUltimateInput, RcJointUltimateResult,
 };
 pub use rc_axial::{rc_axial_margin, rc_column_axial_ultimate, RcAxialUltimate};
+pub use rc_column_aci::{aci_beta1, rc_column_mu_aci, AciColumnInput};
 pub use rc_shear::{
     bond_reliable_strength_deformed, bond_split_ratio, plastic_cot_phi, plastic_k1, plastic_k2,
     plastic_nu, plastic_nu0, rc_shear_qbu_bond, rc_shear_qsu_plastic, BondStrengthInput,
     RcBondSplitInput, RcPlasticShearInput,
 };
+
+/// 柱の曲げ終局強度 Mu の算定方法（RESP-D「06 終局検定」柱 a)）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MuMethod {
+    /// 構造規定式（at 式、軸力考慮の閉形式略算）。
+    #[default]
+    AtFormula,
+    /// ACI 規準による平面保持解析（等価応力度ブロック法）。
+    Aci,
+}
 
 /// 終局検定（塑性理論式）の算定オプション。
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +76,8 @@ pub struct UltimateShearOptions {
     pub sigma_wy: f64,
     /// 付着割裂の検定を含める場合 true。
     pub include_bond: bool,
+    /// 柱の曲げ終局強度 Mu の算定方法（既定 at 式）。
+    pub mu_method: MuMethod,
 }
 
 impl Default for UltimateShearOptions {
@@ -73,6 +88,7 @@ impl Default for UltimateShearOptions {
             upper_strength_factor: 1.0,
             sigma_wy: 295.0,
             include_bond: true,
+            mu_method: MuMethod::default(),
         }
     }
 }
@@ -222,7 +238,24 @@ fn check_member(
         sigma_0: 0.0,
     };
     let mu = match kind {
-        MemberKind::Column => rc_column_mu_simple(&cap, ag, n_axial),
+        MemberKind::Column => match opts.mu_method {
+            MuMethod::Aci => {
+                // 平面保持解析用の主筋段（上下対称配筋: 圧縮縁 dt に ac、反対縁 D−dt に at）。
+                let layers = [(dt, at), (d - dt, at)];
+                rc_column_mu_aci(
+                    &AciColumnInput {
+                        b,
+                        d_full: d,
+                        fc,
+                        sigma_y,
+                        es: 205000.0,
+                    },
+                    &layers,
+                    n_axial,
+                )
+            }
+            MuMethod::AtFormula => rc_column_mu_simple(&cap, ag, n_axial),
+        },
         _ => rc_mu_simple(&cap),
     };
 

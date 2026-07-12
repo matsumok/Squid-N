@@ -64,6 +64,12 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
         .on_hover_text("軽量コンクリート使用時のせん断終局耐力 0.9 倍低減（共通事項）。");
         ui.checkbox(&mut app.ultimate_include_bond, "付着割裂 Qbu を検定");
     });
+    ui.horizontal(|ui| {
+        ui.label("柱 Mu 算定:");
+        ui.selectable_value(&mut app.ultimate_mu_aci, false, "構造規定式(at式)");
+        ui.selectable_value(&mut app.ultimate_mu_aci, true, "ACI規準(平面保持)")
+            .on_hover_text("ACI318 等価応力度ブロック法による平面保持解析で柱の Mu を算定します。");
+    });
     ui.separator();
 
     match app.compute_ultimate_checks() {
