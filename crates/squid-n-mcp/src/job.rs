@@ -128,14 +128,21 @@ fn resolve_load_case(
     }
 }
 
-/// LinearStatic ジョブの純粋計算部分。
-fn compute_linear_static_job(model: &Model, load_case: Option<u32>) -> Result<JobOutcome, String> {
-    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
+/// モデルを複製し、標準の自動剛域（設計書 §6.2.1）を反映して返す。
+/// clone → apply_auto_rigid_zones(default) の定型を集約する。`Analysis` は
+/// モデルを借用するため、準備は呼出側で `Analysis::prepare(&model)` を行う。
+fn model_with_auto_rigid_zones(model: &Model) -> Model {
     let mut model = model.clone();
     squid_n_element::beam::apply_auto_rigid_zones(
         &mut model,
         &squid_n_element::beam::RigidZoneRule::default(),
     );
+    model
+}
+
+/// LinearStatic ジョブの純粋計算部分。
+fn compute_linear_static_job(model: &Model, load_case: Option<u32>) -> Result<JobOutcome, String> {
+    let model = model_with_auto_rigid_zones(model);
     let model = &model;
     let analysis = squid_n_solver::analysis::Analysis::prepare(model)
         .map_err(|e| format!("prepare failed: {e}"))?;
@@ -176,14 +183,8 @@ fn compute_linear_static_job(model: &Model, load_case: Option<u32>) -> Result<Jo
 
 /// Eigen ジョブの純粋計算部分。
 fn compute_eigen_job(model: &Model, n_modes: usize) -> Result<JobOutcome, String> {
-    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
-    let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
-    let model = &model;
-    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
+    let model = model_with_auto_rigid_zones(model);
+    let analysis = squid_n_solver::analysis::Analysis::prepare(&model)
         .map_err(|e| format!("prepare failed: {e}"))?;
     let modal = analysis
         .eigen(n_modes)
@@ -271,12 +272,7 @@ fn compute_time_history_job(
     period: f64,
     amp: f64,
 ) -> Result<JobOutcome, String> {
-    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
-    let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
+    let model = model_with_auto_rigid_zones(model);
     let model = &model;
     let analysis = squid_n_solver::analysis::Analysis::prepare(model)
         .map_err(|e| format!("解析準備エラー: {e}"))?;
@@ -434,13 +430,8 @@ fn is_near_design_position(pos: f64, positions: &[f64; 3]) -> bool {
 /// （squid-n-mcp は squid-n-app に依存しないため複製している）。
 /// 検定条件（長期/短期）は既定で長期（`LoadTerm::Long`）とする。
 fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<JobOutcome, String> {
-    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
-    // face_i/face_j は危険断面位置（§6.2.3）の算定にも使う。
-    let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
+    // 剛域自動算定は face_i/face_j による危険断面位置（§6.2.3）の算定にも使う。
+    let model = model_with_auto_rigid_zones(model);
     let model = &model;
     let analysis = squid_n_solver::analysis::Analysis::prepare(model)
         .map_err(|e| format!("prepare failed: {e}"))?;
@@ -638,11 +629,7 @@ fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<Job
 /// 先頭ケース＝長期相当）の線形静的解析の軸力（圧縮正）を用いる。
 fn compute_ultimate_check_job(model: &Model, load_case: Option<u32>) -> Result<JobOutcome, String> {
     // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
-    let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
+    let model = model_with_auto_rigid_zones(model);
     let model = &model;
     let analysis = squid_n_solver::analysis::Analysis::prepare(model)
         .map_err(|e| format!("prepare failed: {e}"))?;

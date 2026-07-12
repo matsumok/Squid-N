@@ -29,6 +29,10 @@ const CHECKPOINT_DIR: &str = "checkpoint";
 const CHECKPOINT_FILE: &str = "checkpoint.bin";
 const CHECKPOINT_TMP: &str = "checkpoint.tmp";
 
+/// bincode 復号時の最大バイト数（不正な長さ前置による過大メモリ確保＝DoS 対策）。
+/// 正当なチェックポイントはこの上限を大きく下回る。
+const MAX_CHECKPOINT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// チェックポイントを高速バイナリ形式（bincode）で保存する。
 /// 原子的書込のため、一時ファイルに書いてからリネームする。
 pub fn save_checkpoint(dir: &Path, cp: &Checkpoint) -> io::Result<()> {
@@ -46,10 +50,19 @@ pub fn save_checkpoint(dir: &Path, cp: &Checkpoint) -> io::Result<()> {
 }
 
 /// チェックポイントを高速バイナリ形式から読み込む。
+///
+/// 復号は `with_limit` 付きで行い、破損・改竄ファイルの過大な長さ前置による
+/// メモリ枯渇（DoS）を防ぐ。エンコードは `bincode::serialize` と互換の
+/// fixint・リトルエンディアンに揃える。
 pub fn load_checkpoint(dir: &Path) -> io::Result<Checkpoint> {
+    use bincode::Options;
     let path = dir.join(CHECKPOINT_DIR).join(CHECKPOINT_FILE);
     let bytes = std::fs::read(&path)?;
-    bincode::deserialize(&bytes).map_err(io::Error::other)
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(MAX_CHECKPOINT_BYTES)
+        .deserialize(&bytes)
+        .map_err(io::Error::other)
 }
 
 /// チェックポイントの model_hash と期待値が一致するか検証する。

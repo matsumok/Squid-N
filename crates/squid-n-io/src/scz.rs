@@ -12,6 +12,10 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 /// 読み込まれてしまうため、読込時に存在を強制する。
 const REQUIRED_ENTRIES: [&str; 2] = ["model.msgpack", "settings.json"];
 
+/// zip エントリ 1 個あたりの最大展開サイズ [byte]（zip 爆弾／DoS 対策）。
+/// 構造モデルの msgpack は通常数十 MiB 未満。512 MiB を超える展開は攻撃とみなし拒否する。
+const MAX_ENTRY_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
     #[error("io: {0}")]
@@ -26,12 +30,36 @@ pub enum IoError {
     MissingEntry(String),
     #[error("unsupported schema version: {0}")]
     UnsupportedVersion(u32),
+    #[error("entry {0} exceeds max uncompressed size")]
+    EntryTooLarge(String),
 }
 
 fn sha256_of(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+/// zip エントリを展開サイズ上限付きで読み込む（zip 爆弾対策）。
+/// ヘッダ申告サイズで早期に弾き、申告が嘘でも `take` で実バイトを上限に縛る。
+fn read_entry_capped(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    name: &str,
+) -> Result<Vec<u8>, IoError> {
+    let mut zf = archive
+        .by_name(name)
+        .map_err(|e| IoError::Zip(format!("missing entry {}: {}", name, e)))?;
+    if zf.size() > MAX_ENTRY_UNCOMPRESSED {
+        return Err(IoError::EntryTooLarge(name.to_string()));
+    }
+    let mut data = Vec::new();
+    let read = (&mut zf)
+        .take(MAX_ENTRY_UNCOMPRESSED + 1)
+        .read_to_end(&mut data)?;
+    if read as u64 > MAX_ENTRY_UNCOMPRESSED {
+        return Err(IoError::EntryTooLarge(name.to_string()));
+    }
+    Ok(data)
 }
 
 pub fn save_scz(path: &Path, model: &Model) -> Result<(), IoError> {
@@ -115,11 +143,7 @@ pub fn load_scz(path: &Path) -> Result<Model, IoError> {
     let f = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| IoError::Zip(e.to_string()))?;
 
-    let mut manifest_bytes = Vec::new();
-    archive
-        .by_name("manifest.json")
-        .map_err(|e| IoError::Zip(e.to_string()))?
-        .read_to_end(&mut manifest_bytes)?;
+    let manifest_bytes = read_entry_capped(&mut archive, "manifest.json")?;
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(|e| IoError::Decode(e.to_string()))?;
 
@@ -138,11 +162,7 @@ pub fn load_scz(path: &Path) -> Result<Model, IoError> {
 
     let mut model_data = None;
     for entry in &manifest.entries {
-        let mut data = Vec::new();
-        archive
-            .by_name(&entry.name)
-            .map_err(|e| IoError::Zip(format!("missing entry {}: {}", entry.name, e)))?
-            .read_to_end(&mut data)?;
+        let data = read_entry_capped(&mut archive, &entry.name)?;
         let actual_hash = sha256_of(&data);
         if actual_hash != entry.sha256 {
             return Err(IoError::HashMismatch(entry.name.clone()));

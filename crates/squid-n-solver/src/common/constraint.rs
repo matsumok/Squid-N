@@ -188,24 +188,30 @@ impl Reducer {
         }
     }
 
+    /// 拘束縮約 Tᵀ·K·T を計算する。
+    ///
+    /// K は疎行列なので、格納された非ゼロ要素（CSC 列ごと）だけを走査する。
+    /// 従来の n_free² 全ペア走査＋要素ごとの二分探索 (`get`) を廃し、非ゼロ数に
+    /// 比例するコストに落とす（結果は同一）。K[i][j] が列 j・行 i の格納値。
     pub fn reduce_k(&self, k_free: &SparseColMat<usize, f64>) -> SparseColMat<usize, f64> {
+        let col_ptr = k_free.col_ptr();
+        let row_idx = k_free.row_idx();
+        let values = k_free.val();
+        let ncols = k_free.ncols();
         let mut triplets = Vec::new();
-        for i in 0..self.n_free {
-            let ti_list = &self.t_rows[i];
-            if ti_list.is_empty() {
+        for j in 0..ncols {
+            let tj_list = &self.t_rows[j];
+            if tj_list.is_empty() {
                 continue;
             }
-            for j in 0..self.n_free {
-                let tj_list = &self.t_rows[j];
-                if tj_list.is_empty() {
+            for pos in col_ptr[j]..col_ptr[j + 1] {
+                let i = row_idx[pos];
+                let v = values[pos];
+                if v == 0.0 {
                     continue;
                 }
-                let v_entry = k_free.get(i, j);
-                let v = match v_entry {
-                    Some(&val) => val,
-                    None => 0.0,
-                };
-                if v == 0.0 {
+                let ti_list = &self.t_rows[i];
+                if ti_list.is_empty() {
                     continue;
                 }
                 for &(a, ta) in ti_list {

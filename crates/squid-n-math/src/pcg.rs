@@ -165,7 +165,14 @@ impl LinearSolver for PcgSolver {
         copy_f32(&mut p, &z);
         let mut rho = dot_f32(&r, &z);
 
+        let mut converged = false;
         for _iter in 0..max_iter {
+            // rho（=rᵀz）が underflow すると次の beta=rho_next/rho が NaN/Inf になり
+            // 以降の反復が破綻するため、ここで打ち切る（実質収束または停滞）。
+            if rho.abs() < 1e-30 {
+                converged = true;
+                break;
+            }
             csr_spmv(csr, &p, &mut q);
             let pq = dot_f32(&p, &q);
             if pq.abs() < 1e-30 {
@@ -178,6 +185,7 @@ impl LinearSolver for PcgSolver {
 
             let r_norm = dot_f32(&r, &r).sqrt();
             if r_norm / b_norm < tol {
+                converged = true;
                 break;
             }
 
@@ -191,6 +199,15 @@ impl LinearSolver for PcgSolver {
             for i in 0..n {
                 p[i] = z[i] + beta * p[i];
             }
+        }
+
+        if !converged {
+            let r_norm = dot_f32(&r, &r).sqrt();
+            return Err(SolveError::NonConvergence(format!(
+                "PCG が {} 反復で収束しませんでした (相対残差 {:.3e})",
+                max_iter,
+                r_norm / b_norm
+            )));
         }
 
         Ok((0..n).map(|i| x[i] as f64).collect())
