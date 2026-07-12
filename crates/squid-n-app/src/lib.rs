@@ -15,6 +15,8 @@ pub mod theme;
 #[cfg(feature = "gui")]
 pub mod time_history_view;
 #[cfg(feature = "gui")]
+pub mod ultimate_view;
+#[cfg(feature = "gui")]
 pub mod viewer;
 
 pub use squid_n_edit::{EditCommand, UndoStack};

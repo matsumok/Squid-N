@@ -82,6 +82,9 @@ pub enum JobOutcome {
         member_force_rows: Vec<(u32, f64, [f64; 6])>,
         summary: serde_json::Value,
     },
+    UltimateCheck {
+        summary: serde_json::Value,
+    },
 }
 
 /// `kind` に応じて対応する compute_* 関数へ振り分ける。
@@ -101,6 +104,7 @@ pub fn compute_job(model: &Model, kind: JobKind, params: &JobParams) -> Result<J
             params.amp,
         ),
         JobKind::DesignCheck => compute_design_check_job(model, params.load_case),
+        JobKind::UltimateCheck => compute_ultimate_check_job(model, params.load_case),
     }
 }
 
@@ -623,4 +627,70 @@ fn compute_design_check_job(model: &Model, load_case: Option<u32>) -> Result<Job
         member_force_rows,
         summary,
     })
+}
+
+/// 終局検定ジョブ（RESP-D「06 終局検定」）。RC 矩形部材の塑性理論式による
+/// 終局せん断強度 Qsu・付着割裂耐力 Qbu・軸終局耐力に対する余裕度を算定する。
+///
+/// 柱の曲げ終局強度 Mu・軸余裕度に用いる設計軸力は、`load_case`（未指定なら
+/// 先頭ケース＝長期相当）の線形静的解析の軸力（圧縮正）を用いる。
+fn compute_ultimate_check_job(model: &Model, load_case: Option<u32>) -> Result<JobOutcome, String> {
+    // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
+    let mut model = model.clone();
+    squid_n_element::beam::apply_auto_rigid_zones(
+        &mut model,
+        &squid_n_element::beam::RigidZoneRule::default(),
+    );
+    let model = &model;
+    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
+        .map_err(|e| format!("prepare failed: {e}"))?;
+    let lc = resolve_load_case(model, load_case)?;
+    let lc_id = lc.id.0;
+    let result = analysis
+        .linear_static(lc.id)
+        .map_err(|e| format!("solve failed: {e}"))?;
+
+    // 部材軸力（圧縮正）: 各部材の始端（pos=0.0）の N（f[0] は圧縮正）。
+    let axial: Vec<(squid_n_core::ids::ElemId, f64)> = result
+        .member_forces
+        .iter()
+        .filter_map(|(id, mf)| mf.at.first().map(|(_, f)| (*id, f[0])))
+        .collect();
+
+    let opts = squid_n_design_jp::ultimate::UltimateShearOptions::default();
+    let checks = squid_n_design_jp::ultimate::collect_rc_ultimate_checks(model, &axial, &opts);
+
+    let n_checks = checks.len();
+    let n_ng = checks.iter().filter(|c| !c.ok).count();
+    let min_shear_margin = checks
+        .iter()
+        .map(|c| c.shear_margin)
+        .filter(|m| m.is_finite())
+        .fold(f64::INFINITY, f64::min);
+    let members: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "elem": c.elem.0,
+                "kind": format!("{:?}", c.kind),
+                "mu": c.mu,
+                "qmu": c.qmu,
+                "qsu": c.qsu,
+                "qbu": c.qbu,
+                "shear_margin": c.shear_margin,
+                "bond_margin": c.bond_margin,
+                "ok": c.ok,
+            })
+        })
+        .collect();
+
+    let summary = serde_json::json!({
+        "kind": "UltimateCheck",
+        "case": lc_id,
+        "n_checks": n_checks,
+        "n_ng": n_ng,
+        "min_shear_margin": if min_shear_margin.is_finite() { serde_json::json!(min_shear_margin) } else { serde_json::Value::Null },
+        "members": members,
+    });
+    Ok(JobOutcome::UltimateCheck { summary })
 }

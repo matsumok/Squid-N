@@ -2227,3 +2227,134 @@ fn test_run_wind_static() {
         Some(StaticKey::Case(StaticCaseKey::Wind(SeismicDir::Y)))
     );
 }
+
+/// 終局検定（RESP-D「06 終局検定」）の App 経由の一括算定を検証する。
+/// RC 矩形の柱・梁について `compute_ultimate_checks` が部材別の終局せん断・付着
+/// 余裕度を返し、柱には軸終局耐力（Nuc/Nut）が付くことを確認する。
+#[test]
+fn test_compute_ultimate_checks_rc_frame() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::MaterialId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
+    };
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+    use squid_n_design_jp::MemberKind;
+
+    let rebar = RcRebar {
+        main_x: BarSet {
+            count: 8,
+            dia: 25.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 8,
+            dia: 25.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let col_shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rebar.clone(),
+    };
+    let beam_rebar = RcRebar {
+        main_x: BarSet {
+            count: 6,
+            dia: 25.0,
+            layers: 1,
+        },
+        ..rebar
+    };
+    let beam_shape = SectionShape::RcRect {
+        b: 400.0,
+        d: 700.0,
+        rebar: beam_rebar,
+    };
+
+    let mut model = Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(2),
+                coord: [6000.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            },
+        ],
+        sections: vec![
+            col_shape.to_section(SectionId(0), "C600".into()),
+            beam_shape.to_section(SectionId(1), "B400x700".into()),
+        ],
+        materials: vec![Material {
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "SD345".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: Some(345.0),
+        }],
+        ..Default::default()
+    };
+    let members = [
+        (0u32, 0u32, 1u32, 0u32, [1.0, 0.0, 0.0]), // 柱（鉛直）
+        (1, 1, 2, 1, [0.0, 0.0, 1.0]),             // 梁（水平）
+    ];
+    for (id, i, j, sec, ref_vector) in members {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: Some(SectionId(sec)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis { ref_vector },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+
+    let mut app = App::default();
+    app.load_model(model);
+    let checks = app
+        .compute_ultimate_checks()
+        .expect("RC 矩形部材があれば Ok のはず");
+    assert_eq!(checks.len(), 2, "柱・梁の 2 部材が検定される");
+
+    let col = checks.iter().find(|c| c.elem == ElemId(0)).unwrap();
+    let beam = checks.iter().find(|c| c.elem == ElemId(1)).unwrap();
+    assert_eq!(col.kind, MemberKind::Column);
+    assert_eq!(beam.kind, MemberKind::Beam);
+    // 各耐力・余裕度が正常に算定される。
+    assert!(col.qsu > 0.0 && col.qmu > 0.0 && col.shear_margin > 0.0);
+    assert!(col.axial.is_some(), "柱は軸終局耐力を持つ");
+    assert!(beam.axial.is_none(), "梁は軸終局耐力なし");
+    // 付着検定 ON（既定）なので Qbu も算定される。
+    assert!(col.qbu > 0.0 && col.bond_margin.is_finite());
+}

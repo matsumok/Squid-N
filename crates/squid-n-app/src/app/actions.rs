@@ -446,6 +446,79 @@ impl App {
         Ok((result, story_ranks))
     }
 
+    /// 終局検定（RESP-D「06 終局検定」）: RC 矩形部材の終局せん断強度（塑性
+    /// 理論式）・付着割裂耐力・軸終局耐力に対する余裕度を算定する。
+    ///
+    /// 柱の曲げ終局強度 Mu・軸余裕度に用いる設計軸力は、長期（G+P 相当）静的
+    /// 解析結果（先頭重力ケースを優先、無ければ最後に実行した静的解析）の軸力
+    /// （圧縮正）を用いる。静的解析結果が無い場合は軸力 0（安全側）で評価する。
+    ///
+    /// 対象 RC 矩形部材が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
+    pub fn compute_ultimate_checks(
+        &mut self,
+    ) -> Result<Vec<squid_n_design_jp::ultimate::UltimateCheck>, String> {
+        use squid_n_core::section_shape::SectionShape;
+
+        // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
+        self.apply_rigid_zones_for_analysis();
+
+        // 長期軸力（圧縮正）: 先頭重力ケースの静的結果を優先、無ければ最後の静的結果。
+        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+            .first()
+            .copied();
+        let axial: Vec<(ElemId, f64)> = self
+            .results
+            .as_ref()
+            .map(|r| {
+                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] = gravity_lc
+                    .and_then(|lc| {
+                        r.statics
+                            .iter()
+                            .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    })
+                    .map(|(_, s)| s.member_forces.as_slice())
+                    .unwrap_or(r.member_forces.as_slice());
+                member_forces
+                    .iter()
+                    .filter_map(|(id, mf)| mf.at.first().map(|(_, f)| (*id, f[0])))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let opts = squid_n_design_jp::ultimate::UltimateShearOptions {
+            rp: self.ultimate_rp.max(0.0),
+            lightweight: self.ultimate_lightweight,
+            upper_strength_factor: self.ultimate_upper_factor.max(0.0),
+            sigma_wy: 295.0,
+            include_bond: self.ultimate_include_bond,
+        };
+        let checks =
+            squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &axial, &opts);
+
+        // RC 矩形部材が無い場合の案内。
+        let has_rc_rect = self.model.elements.iter().any(|e| {
+            e.section
+                .and_then(|sid| self.model.sections.get(sid.index()))
+                .and_then(|s| s.shape.as_ref())
+                .map(|sh| matches!(sh, SectionShape::RcRect { .. }))
+                .unwrap_or(false)
+        });
+        if checks.is_empty() {
+            if has_rc_rect {
+                return Err(
+                    "RC 矩形部材の終局検定を算定できませんでした（コンクリート強度 Fc の設定・\
+                     有効せいを確認してください）。"
+                        .to_string(),
+                );
+            }
+            return Err(
+                "終局検定の対象（RcRect の RC 矩形部材）がありません。RC 断面を割り当ててください。"
+                    .to_string(),
+            );
+        }
+        Ok(checks)
+    }
+
     /// T3: 固有値解析を実行し、結果を `self.results` に格納する。
     pub fn run_eigen(&mut self, n_modes: usize) {
         self.last_error = None;

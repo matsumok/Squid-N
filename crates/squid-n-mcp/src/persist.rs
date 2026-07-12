@@ -107,9 +107,9 @@ pub fn persist_job_outcome(
             attach_store_info(&mut summary, case, &["Modal"]);
             summary.to_string()
         }
-        JobOutcome::Pushover { summary } | JobOutcome::TimeHistory { summary } => {
-            summary.to_string()
-        }
+        JobOutcome::Pushover { summary }
+        | JobOutcome::TimeHistory { summary }
+        | JobOutcome::UltimateCheck { summary } => summary.to_string(),
     }
 }
 

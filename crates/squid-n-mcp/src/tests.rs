@@ -89,6 +89,115 @@ fn test_query_model_unknown_kind() {
     assert!(query_model(&m, "bogus", None).is_empty());
 }
 
+/// RC 矩形の片持ち柱モデル（終局検定ジョブ用）。長期荷重ケース 1 つ。
+fn rc_column_model() -> Model {
+    use squid_n_core::model::{LoadCase, Material, NodalLoad};
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let rebar = RcRebar {
+        main_x: BarSet {
+            count: 8,
+            dia: 25.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 8,
+            dia: 25.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar,
+    };
+    Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: squid_n_core::dof::Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 3000.0],
+                restraint: squid_n_core::dof::Dof6Mask::FREE,
+                mass: None,
+                story: Some(squid_n_core::ids::StoryId(0)),
+            },
+        ],
+        sections: vec![shape.to_section(SectionId(0), "C600".into())],
+        materials: vec![Material {
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "SD345".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: Some(345.0),
+        }],
+        elements: vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [
+                squid_n_core::model::EndCondition::Fixed,
+                squid_n_core::model::EndCondition::Fixed,
+            ],
+            force_regime: squid_n_core::model::ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }],
+        load_cases: vec![LoadCase {
+            kind: Default::default(),
+            id: squid_n_core::ids::LoadCaseId(0),
+            name: "長期".into(),
+            nodal: vec![NodalLoad {
+                node: NodeId(1),
+                values: [0.0, 0.0, -500_000.0, 0.0, 0.0, 0.0],
+            }],
+            member: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_compute_ultimate_check_job() {
+    let model = rc_column_model();
+    let outcome = compute_job(&model, JobKind::UltimateCheck, &JobParams::default())
+        .expect("終局検定ジョブは成功するはず");
+    match outcome {
+        JobOutcome::UltimateCheck { summary } => {
+            assert_eq!(summary["kind"], "UltimateCheck");
+            assert_eq!(summary["n_checks"], 1);
+            // 柱 1 本のせん断余裕度・耐力が算定されている。
+            let members = summary["members"].as_array().expect("members 配列");
+            assert_eq!(members.len(), 1);
+            assert!(members[0]["qsu"].as_f64().unwrap() > 0.0);
+            assert!(members[0]["shear_margin"].as_f64().unwrap() > 0.0);
+        }
+        _ => panic!("expected UltimateCheck outcome"),
+    }
+}
+
 #[test]
 fn test_job_registry_lifecycle() {
     let mut reg = JobRegistry::new();

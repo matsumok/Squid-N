@@ -42,11 +42,13 @@ pub enum ResultsView {
     Pushover,
 }
 
-/// 設計タブ内の切替（検定表・MN相関曲面ビュー）。
+/// 設計タブ内の切替（検定表・終局検定表・MN相関曲面ビュー）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DesignView {
     #[default]
     Table,
+    /// 終局検定（RESP-D「06 終局検定」塑性理論式による終局せん断・付着余裕度）。
+    Ultimate,
     MnSurface,
 }
 
@@ -313,6 +315,14 @@ pub struct App {
     /// `s_member_rank` で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
+    /// 終局検定（RESP-D「06 終局検定」）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
+    pub ultimate_rp: f64,
+    /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
+    pub ultimate_lightweight: bool,
+    /// 終局検定で付着割裂耐力 Qbu の余裕度を算定するか。
+    pub ultimate_include_bond: bool,
+    /// 終局検定の上限強度倍率（Qmu = 上限強度倍率·2·Mu/内法。既定 1.0）。
+    pub ultimate_upper_factor: f64,
     /// 左ペインの幅（px）。ドラッグで調整可能（180–520 にクランプ）。
     #[cfg(feature = "gui")]
     pub left_panel_width: f32,
@@ -434,6 +444,10 @@ impl Default for App {
             design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
             design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
             design_rank_auto: false,
+            ultimate_rp: 0.0,
+            ultimate_lightweight: false,
+            ultimate_include_bond: true,
+            ultimate_upper_factor: 1.0,
             #[cfg(feature = "gui")]
             left_panel_width: 280.0,
             #[cfg(feature = "gui")]
