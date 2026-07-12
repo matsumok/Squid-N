@@ -446,21 +446,19 @@ pub fn pushover_analysis_recording(
                 let du_free = reducer.expand_u(&du_red);
                 last_du_free = du_free.clone();
 
-                let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
-                for (_elem, b) in model.elements.iter_mut().zip(behaviors.iter_mut()) {
+                let model_ref: &Model = model;
+                for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
                     let gdofs = b.global_dofs(dofmap);
                     let mut du_elem = LocalVec {
-                        data: SmallVec::from_elem(0.0, 12),
+                        data: SmallVec::from_elem(0.0, gdofs.len()),
                     };
                     for (i, &g) in gdofs.iter().enumerate() {
                         if g != usize::MAX {
                             du_elem.data[i] = du_free[g];
                         }
                     }
-                    let dummy_ctx = Ctx {
-                        model: unsafe { &*model_ptr },
-                    };
-                    b.update_state(&du_elem, false, &dummy_ctx);
+                    let ctx = Ctx { model: model_ref };
+                    b.update_state(&du_elem, false, &ctx);
                 }
             }
 
@@ -582,21 +580,19 @@ pub fn pushover_analysis_recording(
                         let du_free = reducer.expand_u(&du_red);
                         last_du_free = du_free.clone();
 
-                        let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
-                        for (_elem, b) in model.elements.iter_mut().zip(behaviors.iter_mut()) {
+                        let model_ref: &Model = model;
+                        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
                             let gdofs = b.global_dofs(dofmap);
                             let mut du_elem = LocalVec {
-                                data: SmallVec::from_elem(0.0, 12),
+                                data: SmallVec::from_elem(0.0, gdofs.len()),
                             };
                             for (i, &g) in gdofs.iter().enumerate() {
                                 if g != usize::MAX {
                                     du_elem.data[i] = du_free[g];
                                 }
                             }
-                            let dummy_ctx = Ctx {
-                                model: unsafe { &*model_ptr },
-                            };
-                            b.update_state(&du_elem, false, &dummy_ctx);
+                            let ctx = Ctx { model: model_ref };
+                            b.update_state(&du_elem, false, &ctx);
                         }
                     }
 
@@ -689,7 +685,7 @@ pub fn pushover_analysis_recording(
                         for b in behaviors_ref.iter_mut() {
                             let gdofs = b.global_dofs(dofmap);
                             let mut du_elem = LocalVec {
-                                data: SmallVec::from_elem(0.0, 12),
+                                data: SmallVec::from_elem(0.0, gdofs.len()),
                             };
                             for (i, &g) in gdofs.iter().enumerate() {
                                 if g != usize::MAX && g < delta_u.len() {

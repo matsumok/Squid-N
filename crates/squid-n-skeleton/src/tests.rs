@@ -1,7 +1,8 @@
 use super::*;
 use approx::assert_relative_eq;
 use squid_n_core::ids::SectionId;
-use squid_n_material::Bilinear;
+use squid_n_core::model::{Material, Section};
+use squid_n_material::{Bilinear, Concrete, UniaxialMaterial};
 use squid_n_section::fiber::rect_fiber_section;
 
 fn make_section(w: f64, d: f64) -> Section {

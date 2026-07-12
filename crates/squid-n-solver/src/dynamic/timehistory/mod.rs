@@ -1259,21 +1259,19 @@ pub fn nonlinear_time_history_analysis(
     // 初期変位を要素状態に反映
     {
         let u_free_init = reducer.expand_u(&u);
-        let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
-        for (_elem, b) in model.elements.iter().zip(behaviors.iter_mut()) {
+        let model_ref: &Model = model;
+        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
             let gdofs = b.global_dofs(dofmap);
             let mut du_elem = LocalVec {
-                data: SmallVec::from_elem(0.0, 12),
+                data: SmallVec::from_elem(0.0, gdofs.len()),
             };
             for (i, &g) in gdofs.iter().enumerate() {
                 if g != usize::MAX && g < u_free_init.len() {
                     du_elem.data[i] = u_free_init[g];
                 }
             }
-            let dummy_ctx = Ctx {
-                model: unsafe { &*model_ptr },
-            };
-            b.update_state(&du_elem, false, &dummy_ctx);
+            let ctx = Ctx { model: model_ref };
+            b.update_state(&du_elem, false, &ctx);
         }
         for b in behaviors.iter_mut() {
             b.commit_state();
@@ -1390,8 +1388,6 @@ pub fn nonlinear_time_history_analysis(
         let mut du_total = vec![0.0; n_indep];
         let mut converged = false;
 
-        let model_ptr = std::ptr::addr_of_mut!(*model) as *const Model;
-
         for _iter in 0..max_iter {
             // 接線剛性
             let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
@@ -1462,20 +1458,19 @@ pub fn nonlinear_time_history_analysis(
             }
 
             // 要素状態を trial 更新
-            for (_elem, b) in model.elements.iter().zip(behaviors.iter_mut()) {
+            let model_ref: &Model = model;
+            for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
                 let gdofs = b.global_dofs(dofmap);
                 let mut du_elem = LocalVec {
-                    data: SmallVec::from_elem(0.0, 12),
+                    data: SmallVec::from_elem(0.0, gdofs.len()),
                 };
                 for (i, &g) in gdofs.iter().enumerate() {
                     if g != usize::MAX && g < du_free.len() {
                         du_elem.data[i] = du_free[g];
                     }
                 }
-                let dummy_ctx = Ctx {
-                    model: unsafe { &*model_ptr },
-                };
-                b.update_state(&du_elem, false, &dummy_ctx);
+                let ctx = Ctx { model: model_ref };
+                b.update_state(&du_elem, false, &ctx);
             }
         }
 
