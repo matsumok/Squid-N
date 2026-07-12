@@ -1,10 +1,11 @@
 use crate::app::App;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, HysteresisModel, LocalAxis,
+    DamperProps, ElementData, ElementKind, EndCondition, ForceRegime, HysteresisModel, LocalAxis,
 };
 use squid_n_edit::{
-    AddMember, DeleteMember, SetElementMaterial, SetElementSection, SetMemberHysteresis,
+    AddDamper, AddMember, DeleteMember, SetDamperProps, SetElementMaterial, SetElementSection,
+    SetMemberHysteresis,
 };
 
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
@@ -30,6 +31,8 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         let mut do_add = false;
         // 免震支承材の作成フォームは仕様策定中のためプレースホルダ（押すと未実装通知）。
         let mut do_isolator_notice = false;
+        // 制振ダンパー（マクスウェル要素）の追加（既定諸元で作成し、下部の一覧で編集する）。
+        let mut do_add_damper = false;
 
         ui.horizontal(|ui| {
             ui.label("梁追加:");
@@ -88,6 +91,14 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             {
                 do_isolator_notice = true;
             }
+            // 制振ダンパー（マクスウェル要素）を選択2節点間に追加（既定諸元。下部一覧で編集）。
+            if ui
+                .add_enabled(enabled, egui::Button::new("+ 制振ダンパー追加"))
+                .on_hover_text("マクスウェル型の制振ダンパーを追加（諸元は下部の一覧で編集）")
+                .clicked()
+            {
+                do_add_damper = true;
+            }
         });
 
         // クロージャ終了後に一時メモリ更新（借用の競合を避ける）
@@ -121,6 +132,37 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         // 免震支承材の作成フォームは未実装（仕様策定中）。ステータスバーに通知のみ。
         if do_isolator_notice {
             app.last_error = Some("免震支承材の作成フォームは未実装です（仕様策定中）".to_string());
+        }
+
+        // 制振ダンパー追加（要素＋既定諸元を原子的に作成）。
+        if do_add_damper {
+            if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
+                let new_id = ElemId(app.model.elements.len() as u32);
+                let elem = ElementData {
+                    id: new_id,
+                    kind: ElementKind::Damper,
+                    nodes: [i_node, j_node].into_iter().collect(),
+                    section: None,
+                    material: None,
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                    spring: None,
+                };
+                app.undo.run(
+                    &mut app.model,
+                    Box::new(AddDamper {
+                        elem,
+                        props: DamperProps::default(),
+                    }),
+                );
+                app.nav.focus_member = Some(new_id);
+                app.staleness.mark_edited();
+            }
         }
     }
     ui.separator();
@@ -332,6 +374,153 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 
     // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
     if had_pending {
+        app.staleness.mark_edited();
+    }
+
+    // ── 制振ダンパー一覧（Kd/C0/α の編集・削除）─────────────────────
+    dampers_table(ui, app);
+}
+
+/// 制振ダンパー要素（`ElementKind::Damper`）の諸元編集・削除の一覧
+/// （RESP-D「07 非線形解析（動的解析）」制振要素）。マクスウェル要素の
+/// バネ剛性 Kd・粘性係数 C0・速度指数 α を編集する。
+fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
+    use egui_extras::{Column, TableBuilder};
+
+    let dampers: Vec<(ElemId, DamperProps)> = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::Damper)
+        .map(|e| (e.id, app.model.damper_props(e.id).unwrap_or_default()))
+        .collect();
+    if dampers.is_empty() {
+        return;
+    }
+
+    ui.separator();
+    ui.strong("制振ダンパー（マクスウェル要素）");
+    ui.label(
+        egui::RichText::new("Kd [kN/mm]・C0 [kN·(s/mm)^α]・α（1.0 で線形粘性）")
+            .color(crate::theme::GRAY_600)
+            .small(),
+    );
+
+    // 変更・削除は借用衝突を避けて確定処理へ回す。
+    let mut pending_props: Vec<(ElemId, DamperProps)> = Vec::new();
+    let mut pending_del: Option<ElemId> = None;
+
+    TableBuilder::new(ui)
+        .id_salt("dampers_table")
+        .striped(true)
+        .column(Column::auto())
+        .column(Column::auto())
+        .column(Column::initial(90.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(70.0))
+        .column(Column::auto())
+        .header(20.0, |mut h| {
+            for t in &["ID", "節点", "Kd", "C0", "α", ""] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|mut body| {
+            for (elem_id, props) in &dampers {
+                let elem_id = *elem_id;
+                let mut props = *props;
+                body.row(22.0, |mut row| {
+                    row.col(|ui| {
+                        ui.label(elem_id.0.to_string());
+                    });
+                    row.col(|ui| {
+                        let nodes = app
+                            .model
+                            .elements
+                            .iter()
+                            .find(|e| e.id == elem_id)
+                            .map(|e| {
+                                e.nodes
+                                    .iter()
+                                    .map(|n| n.0.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
+                        ui.label(nodes);
+                    });
+                    // Kd は kN/mm 単位で編集（内部は N/mm）。
+                    row.col(|ui| {
+                        let mut kd_kn = props.kd / 1000.0;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut kd_kn)
+                                    .speed(1.0)
+                                    .range(0.0..=1.0e9),
+                            )
+                            .changed()
+                        {
+                            props.kd = kd_kn * 1000.0;
+                            pending_props.push((elem_id, props));
+                        }
+                    });
+                    row.col(|ui| {
+                        let mut c0_kn = props.c0 / 1000.0;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut c0_kn)
+                                    .speed(0.1)
+                                    .range(0.0..=1.0e9),
+                            )
+                            .changed()
+                        {
+                            props.c0 = c0_kn * 1000.0;
+                            pending_props.push((elem_id, props));
+                        }
+                    });
+                    row.col(|ui| {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut props.alpha)
+                                    .speed(0.01)
+                                    .range(0.05..=2.0),
+                            )
+                            .changed()
+                        {
+                            pending_props.push((elem_id, props));
+                        }
+                    });
+                    row.col(|ui| {
+                        if ui.button("🗑").on_hover_text("制振ダンパーを削除").clicked()
+                        {
+                            pending_del = Some(elem_id);
+                        }
+                    });
+                });
+            }
+        });
+
+    let mut changed = false;
+    for (elem_id, props) in pending_props {
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetDamperProps {
+                elem: elem_id,
+                props: Some(props),
+            }),
+        );
+        changed = true;
+    }
+    if let Some(elem_id) = pending_del {
+        app.undo
+            .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
+        if app.nav.focus_member == Some(elem_id) {
+            app.nav.focus_member = None;
+        }
+        changed = true;
+    }
+    if changed {
         app.staleness.mark_edited();
     }
 }

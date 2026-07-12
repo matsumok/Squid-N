@@ -740,6 +740,67 @@ fn test_lumped_mass_model_from_pushover() {
     }
 }
 
+/// 制振ダンパーの作成→諸元変更→削除を app の undo スタック経由で確認する
+/// （部材表 UI が発行する編集コマンドの統合確認）。
+#[test]
+fn test_damper_create_edit_delete_via_undo() {
+    use squid_n_core::model::{
+        DamperProps, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
+    };
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    let n = app.model.nodes.len();
+    assert!(n >= 2);
+    let (i_node, j_node) = (app.model.nodes[0].id, app.model.nodes[1].id);
+    let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
+    let elem = ElementData {
+        id: new_id,
+        kind: ElementKind::Damper,
+        nodes: [i_node, j_node].into_iter().collect(),
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    // 作成。
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddDamper {
+            elem,
+            props: DamperProps::default(),
+        }),
+    );
+    assert_eq!(app.model.damper_props(new_id), Some(DamperProps::default()));
+    // 諸元変更。
+    let edited = DamperProps {
+        kd: 150_000.0,
+        c0: 3_000.0,
+        alpha: 0.35,
+        ..Default::default()
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetDamperProps {
+            elem: new_id,
+            props: Some(edited),
+        }),
+    );
+    assert_eq!(app.model.damper_props(new_id), Some(edited));
+    // 削除（要素も特性も消える）。
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::DeleteMember { id: new_id }),
+    );
+    assert_eq!(app.model.damper_props(new_id), None);
+    assert!(app.model.elements.iter().all(|e| e.id != new_id));
+}
+
 /// `poll_job` が完了するまで待つ（タイムアウト5秒でパニック、10ms 間隔でポーリング）。
 fn wait_for_job(app: &mut App) {
     let start = std::time::Instant::now();

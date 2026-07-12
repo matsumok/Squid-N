@@ -129,6 +129,20 @@ pub struct MemberHysteresisAttr {
     pub rule: HysteresisModel,
 }
 
+/// 1 つの要素に紐づく側テーブル属性のスナップショット。要素の削除・挿入
+/// （[`Model::take_elem_attrs`] / [`Model::restore_elem_attrs`]）で属性の
+/// 退避・復元に用いる（undo 用の一時保持。直列化はしない）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElemAttrs {
+    pub wall: Option<WallAttr>,
+    pub steel_design: Option<SteelDesignAttr>,
+    pub brb: Option<BrbAttr>,
+    pub pca: Option<PcaBeamAttr>,
+    pub isolator: Option<IsolatorAttr>,
+    pub hysteresis: Option<MemberHysteresisAttr>,
+    pub damper: Option<DamperAttr>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LocalAxis {
     pub ref_vector: [f64; 3],
@@ -709,6 +723,100 @@ impl Model {
             .iter()
             .find(|a| a.elem == elem)
             .map(|a| a.props)
+    }
+
+    /// ダンパー要素の特性を設定／解除する。`None` を渡すと指定を解除する。
+    /// 戻り値は変更前の指定（undo 用）。
+    pub fn set_damper_props(
+        &mut self,
+        elem: ElemId,
+        props: Option<DamperProps>,
+    ) -> Option<DamperProps> {
+        let old = self.damper_props(elem);
+        self.damper_attrs.retain(|a| a.elem != elem);
+        if let Some(p) = props {
+            self.damper_attrs.push(DamperAttr { elem, props: p });
+        }
+        old
+    }
+
+    /// 要素に紐づく全ての側テーブル属性（壁・鉄骨・BRB・PCa・免震・履歴則・ダンパー）の
+    /// `elem` 参照に `f` を適用する。要素の追加・削除に伴う ID 繰上げ／繰下げで、
+    /// 側テーブルの参照整合を保つために用いる。
+    pub fn shift_elem_attr_refs(&mut self, mut f: impl FnMut(&mut ElemId)) {
+        for a in &mut self.wall_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.steel_design_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.brb_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.pca_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.isolator_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.member_hysteresis_attrs {
+            f(&mut a.elem);
+        }
+        for a in &mut self.damper_attrs {
+            f(&mut a.elem);
+        }
+    }
+
+    /// 指定要素に紐づく全ての側テーブル属性を取り外して返す（要素削除時の退避用）。
+    pub fn take_elem_attrs(&mut self, elem: ElemId) -> ElemAttrs {
+        /// `elem` フィールドが一致する最初の要素を取り外して返す。
+        fn take_first<T>(v: &mut Vec<T>, get: impl Fn(&T) -> ElemId, elem: ElemId) -> Option<T> {
+            v.iter()
+                .position(|a| get(a) == elem)
+                .map(|pos| v.remove(pos))
+        }
+        ElemAttrs {
+            wall: take_first(&mut self.wall_attrs, |a| a.elem, elem),
+            steel_design: take_first(&mut self.steel_design_attrs, |a| a.elem, elem),
+            brb: take_first(&mut self.brb_attrs, |a| a.elem, elem),
+            pca: take_first(&mut self.pca_attrs, |a| a.elem, elem),
+            isolator: take_first(&mut self.isolator_attrs, |a| a.elem, elem),
+            hysteresis: take_first(&mut self.member_hysteresis_attrs, |a| a.elem, elem),
+            damper: take_first(&mut self.damper_attrs, |a| a.elem, elem),
+        }
+    }
+
+    /// 取り外した側テーブル属性を、指定要素 ID へ紐づけ直して復元する
+    /// （要素削除の undo 用）。各属性の `elem` は `elem` へ上書きする。
+    pub fn restore_elem_attrs(&mut self, elem: ElemId, attrs: ElemAttrs) {
+        if let Some(mut a) = attrs.wall {
+            a.elem = elem;
+            self.wall_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.steel_design {
+            a.elem = elem;
+            self.steel_design_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.brb {
+            a.elem = elem;
+            self.brb_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.pca {
+            a.elem = elem;
+            self.pca_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.isolator {
+            a.elem = elem;
+            self.isolator_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.hysteresis {
+            a.elem = elem;
+            self.member_hysteresis_attrs.push(a);
+        }
+        if let Some(mut a) = attrs.damper {
+            a.elem = elem;
+            self.damper_attrs.push(a);
+        }
     }
 
     /// 部材に指定された履歴則を返す（未指定は `None`＝既定に従う）。
