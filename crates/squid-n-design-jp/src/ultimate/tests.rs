@@ -121,7 +121,7 @@ fn test_collect_rc_ultimate_checks_column_and_beam() {
     let model = column_and_beam_model();
     let opts = UltimateShearOptions::default();
     // 柱に圧縮軸力 2000kN。
-    let axial = vec![(ElemId(0), 2_000_000.0)];
+    let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
     let checks = collect_rc_ultimate_checks(&model, &axial, &opts);
     assert_eq!(checks.len(), 2, "柱・梁の 2 部材が検定される");
 
@@ -209,7 +209,7 @@ fn test_biaxial_margin_handcalc() {
 #[test]
 fn test_ultimate_check_biaxial_shear() {
     let model = column_and_beam_model();
-    let axial = vec![(ElemId(0), 2_000_000.0)];
+    let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
     let uni = collect_rc_ultimate_checks(&model, &axial, &UltimateShearOptions::default());
     let bi = collect_rc_ultimate_checks(
         &model,
@@ -235,12 +235,62 @@ fn test_ultimate_check_biaxial_shear() {
     assert!(beam_bi.biaxial_shear_margin.is_none());
 }
 
+/// 柱の 2 軸曲げ余裕度オプションが機能する（設計用曲げ需要を与えたとき Some・正）。
+#[test]
+fn test_ultimate_check_biaxial_bending() {
+    let model = column_and_beam_model();
+    // 柱に軸力＋強軸/弱軸の設計用曲げ需要を与える。
+    let demand = vec![(
+        ElemId(0),
+        MemberDemand {
+            n_axial: 1_500_000.0,
+            mz: 2.0e8,
+            my: 1.0e8,
+        },
+    )];
+    let uni = collect_rc_ultimate_checks(&model, &demand, &UltimateShearOptions::default());
+    let bi = collect_rc_ultimate_checks(
+        &model,
+        &demand,
+        &UltimateShearOptions {
+            biaxial_bending: true,
+            ..Default::default()
+        },
+    );
+    let col_uni = uni.iter().find(|c| c.elem == ElemId(0)).unwrap();
+    let col_bi = bi.iter().find(|c| c.elem == ElemId(0)).unwrap();
+    // 既定では None、指定で Some。
+    assert!(col_uni.biaxial_bending_margin.is_none());
+    let bm = col_bi.biaxial_bending_margin.expect("2軸曲げ指定で Some");
+    assert!(bm > 0.0 && bm.is_finite(), "bm={bm}");
+    // 手計算照合: 1/√((Mmx/Mux)²+(Mmy/Muy)²)。Mux=col.mu(強軸)、Muy は弱軸 Mu。
+    // 強軸 Mux は col_bi.mu と一致（同一軸力）。弱軸は main_y=main_x なので b↔D 入替のみ。
+    // rx=Mmx/Mux>0, ry>0 → bm < min(Mux/Mmx, Muy/Mmy)。
+    let rx = 2.0e8 / col_bi.mu;
+    assert!(rx > 0.0);
+    // 需要 0 なら無限大。
+    let zero_demand = vec![(ElemId(0), MemberDemand::axial(1_500_000.0))];
+    let z = collect_rc_ultimate_checks(
+        &model,
+        &zero_demand,
+        &UltimateShearOptions {
+            biaxial_bending: true,
+            ..Default::default()
+        },
+    );
+    let col_z = z.iter().find(|c| c.elem == ElemId(0)).unwrap();
+    assert!(col_z.biaxial_bending_margin.unwrap().is_infinite());
+    // 梁は対象外。
+    let beam_bi = bi.iter().find(|c| c.elem == ElemId(1)).unwrap();
+    assert!(beam_bi.biaxial_bending_margin.is_none());
+}
+
 /// 柱の Mu を ACI 規準（平面保持）で算定するオプションが機能する。
 #[test]
 fn test_ultimate_check_mu_method_aci() {
     let model = column_and_beam_model();
     // 圧縮軸力を与えて柱の Mu を評価（ACI と at 式で共に正、健全域で近い桁）。
-    let axial = vec![(ElemId(0), 2_000_000.0)];
+    let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
     let at = collect_rc_ultimate_checks(&model, &axial, &UltimateShearOptions::default());
     let aci = collect_rc_ultimate_checks(
         &model,

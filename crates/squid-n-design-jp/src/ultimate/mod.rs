@@ -57,6 +57,29 @@ pub use rc_shear::{
     RcBondSplitInput, RcPlasticShearInput,
 };
 
+/// 部材の設計用需要（終局検定の入力）。**圧縮を正**とする軸力と、強軸・弱軸まわりの
+/// 設計用曲げモーメント（応答値。二軸曲げ余裕度に用いる）。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MemberDemand {
+    /// 設計軸力 [N]（**圧縮正**）。柱の Mu・軸余裕度に用いる。
+    pub n_axial: f64,
+    /// 強軸（せい方向）まわりの設計用曲げモーメント Mmx [N·mm]（符号は内部で abs）。
+    pub mz: f64,
+    /// 弱軸（幅方向）まわりの設計用曲げモーメント Mmy [N·mm]（符号は内部で abs）。
+    pub my: f64,
+}
+
+impl MemberDemand {
+    /// 軸力のみ（曲げ需要 0）の需要を作る。
+    pub fn axial(n_axial: f64) -> Self {
+        Self {
+            n_axial,
+            mz: 0.0,
+            my: 0.0,
+        }
+    }
+}
+
 /// 柱の曲げ終局強度 Mu の算定方法（RESP-D「06 終局検定」柱 a)）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MuMethod {
@@ -87,6 +110,11 @@ pub struct UltimateShearOptions {
     /// 採用応力：RC のみ指定により 2 軸せん断）。両軸の Qmu/Qsu を相互作用式
     /// `1/((Qmx/Qux)^αx+(Qmy/Quy)^αy)^(1/α)`（RC は α=2.0）で合成する。
     pub biaxial_shear: bool,
+    /// 柱の曲げを 2 軸曲げとして検定する場合 true（RESP-D「06 終局検定」採用応力）。
+    /// 両軸の設計用曲げ Mm と終局曲げ強度 Mu を相互作用式
+    /// `1/((Mmx/Mux)^αx+(Mmy/Muy)^αy)^(1/α)`（RC は α=2.0）で合成する。
+    /// 設計用曲げ需要 Mmx/Mmy は [`MemberDemand`] の mz/my を用いる。
+    pub biaxial_bending: bool,
 }
 
 impl Default for UltimateShearOptions {
@@ -99,6 +127,7 @@ impl Default for UltimateShearOptions {
             include_bond: true,
             mu_method: MuMethod::default(),
             biaxial_shear: false,
+            biaxial_bending: false,
         }
     }
 }
@@ -142,6 +171,9 @@ pub struct UltimateCheck {
     /// 2 軸せん断余裕度（柱かつ `biaxial_shear=true` のとき Some）。
     /// `1/((Qmx/Qsux)^2+(Qmy/Qsuy)^2)^(1/2)`。
     pub biaxial_shear_margin: Option<f64>,
+    /// 2 軸曲げ余裕度（柱かつ `biaxial_bending=true` のとき Some）。
+    /// `1/((Mmx/Mux)^2+(Mmy/Muy)^2)^(1/2)`。設計用曲げ需要が 0 なら `f64::INFINITY`。
+    pub biaxial_bending_margin: Option<f64>,
     /// 付着余裕度 Qbu/Qmu（`include_bond=false` なら `f64::INFINITY`）。
     pub bond_margin: f64,
     /// 軸終局耐力（柱のみ Some）。
@@ -279,13 +311,60 @@ fn column_axis_shear(
     (qsu, qmu)
 }
 
+/// 柱の曲げ終局強度 Mu [N·mm]（`mu_method` に応じて at 式 / ACI 平面保持）。
+/// `b_dir`=幅, `d_dir`=せい, `dt`=引張縁〜引張筋距離, `at`=引張側主筋, `ag`=全主筋。
+#[allow(clippy::too_many_arguments)]
+fn column_mu(
+    b_dir: f64,
+    d_dir: f64,
+    dt: f64,
+    at: f64,
+    ag: f64,
+    sigma_y: f64,
+    fc: f64,
+    n_axial: f64,
+    mu_method: MuMethod,
+) -> f64 {
+    match mu_method {
+        MuMethod::Aci => {
+            let layers = [(dt, at), (d_dir - dt, at)];
+            rc_column_mu_aci(
+                &AciColumnInput {
+                    b: b_dir,
+                    d_full: d_dir,
+                    fc,
+                    sigma_y,
+                    es: 205000.0,
+                },
+                &layers,
+                n_axial,
+            )
+        }
+        MuMethod::AtFormula => {
+            let cap = RcCapacityInput {
+                b: b_dir,
+                d: d_dir,
+                at,
+                d_eff: (d_dir - dt).max(1.0),
+                sigma_y,
+                fc,
+                pw: 0.0,
+                sigma_wy: 0.0,
+                clear_span: 1.0,
+                sigma_0: 0.0,
+            };
+            rc_column_mu_simple(&cap, ag, n_axial)
+        }
+    }
+}
+
 /// 1 部材の終局検定を実行する（`RcRect` 以外・Fc 未設定は `None`）。
 fn check_member(
     elem: &ElementData,
     sec: &Section,
     mat: &Material,
     model: &Model,
-    n_axial: f64,
+    demand: MemberDemand,
     opts: &UltimateShearOptions,
 ) -> Option<UltimateCheck> {
     let SectionShape::RcRect { b, d, rebar } = sec.shape.as_ref()? else {
@@ -310,8 +389,9 @@ fn check_member(
     let at = bar_set_area(&rebar.main_x) / 2.0;
     let ag = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
     let pw = hoop_pw(rebar, b);
+    let n_axial = demand.n_axial;
 
-    // 曲げ終局強度 Mu（柱は軸力考慮、梁は軸力なし）。
+    // 曲げ終局強度 Mu（柱は軸力考慮・mu_method 対応、梁は軸力なし）。
     let cap = RcCapacityInput {
         b,
         d,
@@ -325,24 +405,7 @@ fn check_member(
         sigma_0: 0.0,
     };
     let mu = match kind {
-        MemberKind::Column => match opts.mu_method {
-            MuMethod::Aci => {
-                // 平面保持解析用の主筋段（上下対称配筋: 圧縮縁 dt に ac、反対縁 D−dt に at）。
-                let layers = [(dt, at), (d - dt, at)];
-                rc_column_mu_aci(
-                    &AciColumnInput {
-                        b,
-                        d_full: d,
-                        fc,
-                        sigma_y,
-                        es: 205000.0,
-                    },
-                    &layers,
-                    n_axial,
-                )
-            }
-            MuMethod::AtFormula => rc_column_mu_simple(&cap, ag, n_axial),
-        },
+        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial, opts.mu_method),
         _ => rc_mu_simple(&cap),
     };
 
@@ -436,6 +499,32 @@ fn check_member(
         None
     };
 
+    // 2 軸曲げ余裕度（柱のみ、指定時）。強軸 Mux（=mu）・弱軸 Muy（main_y, b↔D 入替）の
+    // 終局曲げ強度と設計用曲げ需要 Mmx=|mz|, Mmy=|my| を相互作用式で合成する。
+    let biaxial_bending_margin = if kind == MemberKind::Column && opts.biaxial_bending {
+        let dt_y = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
+        let at_y = bar_set_area(&rebar.main_y) / 2.0;
+        let mux = mu;
+        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial, opts.mu_method);
+        let rx = if mux > 0.0 {
+            demand.mz.abs() / mux
+        } else if demand.mz.abs() > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+        let ry = if muy > 0.0 {
+            demand.my.abs() / muy
+        } else if demand.my.abs() > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+        Some(biaxial_margin(rx, ry, 2.0))
+    } else {
+        None
+    };
+
     let axial = if kind == MemberKind::Column {
         Some(rc_column_axial_ultimate(b, d, fc, ag, sigma_y))
     } else {
@@ -447,7 +536,9 @@ fn check_member(
         Some(m) => m >= 1.0,
         None => shear_margin >= 1.0,
     };
-    let ok = effective_shear_ok && bond_margin >= 1.0;
+    // 2 軸曲げ指定時は曲げ余裕度も判定に加える。
+    let bending_ok = biaxial_bending_margin.map(|m| m >= 1.0).unwrap_or(true);
+    let ok = effective_shear_ok && bond_margin >= 1.0 && bending_ok;
 
     let basis = match kind {
         MemberKind::Column => "RC柱 終局検定（塑性理論式 Qsu/Qbu）".to_string(),
@@ -457,10 +548,26 @@ fn check_member(
         Some(m) => format!(", 2軸せん断余裕度={m:.3}"),
         None => String::new(),
     };
+    let bend_str = match biaxial_bending_margin {
+        Some(m) => format!(", 2軸曲げ余裕度={m:.3}"),
+        None => String::new(),
+    };
     let detail = format!(
         "Mu={:.0} N·mm, Qmu={:.0} N, Qsu={:.0} N, Qbu={:.0} N, τbu={:.3} N/mm², \
-         Qsu/Qmu={:.3}, Qbu/Qmu={:.3}{}, pw={:.5}, jt={:.1} mm, L={:.0} mm, Rp={:.4}",
-        mu, qmu, qsu, qbu, tau_bu, shear_margin, bond_margin, biaxial_str, pw, jt, l_clear, opts.rp
+         Qsu/Qmu={:.3}, Qbu/Qmu={:.3}{}{}, pw={:.5}, jt={:.1} mm, L={:.0} mm, Rp={:.4}",
+        mu,
+        qmu,
+        qsu,
+        qbu,
+        tau_bu,
+        shear_margin,
+        bond_margin,
+        biaxial_str,
+        bend_str,
+        pw,
+        jt,
+        l_clear,
+        opts.rp
     );
 
     Some(UltimateCheck {
@@ -472,6 +579,7 @@ fn check_member(
         qbu,
         shear_margin,
         biaxial_shear_margin,
+        biaxial_bending_margin,
         bond_margin,
         axial,
         ok,
@@ -482,14 +590,15 @@ fn check_member(
 
 /// モデルの RC 矩形部材について終局検定（塑性理論式）を一括実行する。
 ///
-/// - `axial_by_elem`: 部材の設計軸力 [N]（**圧縮正**）。柱の曲げ終局強度 Mu・
-///   軸余裕度に用いる。該当 ID が無い部材は軸力 0（安全側）で評価する。
-///   通常は長期（G+P）静的解析の軸力を渡す。
+/// - `demand_by_elem`: 部材の設計用需要（[`MemberDemand`]：圧縮正の軸力と強軸/弱軸の
+///   設計用曲げモーメント）。柱の Mu・軸余裕度・2 軸曲げ余裕度に用いる。該当 ID が無い
+///   部材は需要 0（安全側）で評価する。軸力は長期（G+P）静的、曲げ需要は当該組合せの
+///   応答値を渡すことを想定する。
 /// - 対象外（`RcRect` 以外・断面/材料未解決・Fc 未設定・有効せい ≤ 0）の部材は
 ///   結果に含めない。
 pub fn collect_rc_ultimate_checks(
     model: &Model,
-    axial_by_elem: &[(ElemId, f64)],
+    demand_by_elem: &[(ElemId, MemberDemand)],
     opts: &UltimateShearOptions,
 ) -> Vec<UltimateCheck> {
     let mut out = Vec::new();
@@ -503,12 +612,12 @@ pub fn collect_rc_ultimate_checks(
         else {
             continue;
         };
-        let n_axial = axial_by_elem
+        let demand = demand_by_elem
             .iter()
             .find(|(id, _)| *id == elem.id)
-            .map(|(_, n)| *n)
-            .unwrap_or(0.0);
-        if let Some(check) = check_member(elem, sec, mat, model, n_axial, opts) {
+            .map(|(_, d)| *d)
+            .unwrap_or_default();
+        if let Some(check) = check_member(elem, sec, mat, model, demand, opts) {
             out.push(check);
         }
     }

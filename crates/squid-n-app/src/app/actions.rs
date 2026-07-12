@@ -462,7 +462,7 @@ impl App {
         // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
         self.apply_rigid_zones_for_analysis();
 
-        let axial = self.ultimate_axial_by_elem();
+        let demand = self.ultimate_demand_by_elem();
 
         let opts = squid_n_design_jp::ultimate::UltimateShearOptions {
             rp: self.ultimate_rp.max(0.0),
@@ -476,9 +476,10 @@ impl App {
                 squid_n_design_jp::ultimate::MuMethod::AtFormula
             },
             biaxial_shear: self.ultimate_biaxial_shear,
+            biaxial_bending: self.ultimate_biaxial_bending,
         };
         let checks =
-            squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &axial, &opts);
+            squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &demand, &opts);
 
         // RC 矩形部材が無い場合の案内。
         let has_rc_rect = self.model.elements.iter().any(|e| {
@@ -504,10 +505,14 @@ impl App {
         Ok(checks)
     }
 
-    /// 終局検定用の部材設計軸力 [N]（**圧縮正**）。先頭重力ケース（G+P 相当）の
-    /// 静的解析結果を優先し、無ければ最後に実行した静的解析結果の各部材始端軸力を
-    /// 用いる。静的解析結果が無ければ空（＝軸力 0）。
-    fn ultimate_axial_by_elem(&self) -> Vec<(ElemId, f64)> {
+    /// 終局検定用の部材需要（軸力 [N]圧縮正・強軸/弱軸の設計用曲げ [N·mm]）。
+    /// 先頭重力ケース（G+P 相当）の静的解析結果を優先し、無ければ最後に実行した
+    /// 静的解析結果を用いる。軸力は始端値、曲げは部材内の最大絶対値（各方向）。
+    /// 2 軸曲げ余裕度の需要曲げも本結果を用いるため、地震時の相関を評価するには
+    /// 該当する組合せ／地震静的を最後に実行しておくこと（簡略化）。
+    /// 静的解析結果が無ければ空（＝需要 0）。
+    fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
+        use squid_n_design_jp::ultimate::MemberDemand;
         let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
             .first()
             .copied();
@@ -524,7 +529,12 @@ impl App {
                     .unwrap_or(r.member_forces.as_slice());
                 member_forces
                     .iter()
-                    .filter_map(|(id, mf)| mf.at.first().map(|(_, f)| (*id, f[0])))
+                    .filter_map(|(id, mf)| {
+                        let n_axial = mf.at.first().map(|(_, f)| f[0])?;
+                        let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
+                        let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
+                        Some((*id, MemberDemand { n_axial, mz, my }))
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -538,7 +548,12 @@ impl App {
         &mut self,
     ) -> Result<Vec<squid_n_design_jp::ultimate::CftUltimateCheck>, String> {
         self.apply_rigid_zones_for_analysis();
-        let axial = self.ultimate_axial_by_elem();
+        // CFT の軸終局検定は軸力のみを用いる（MemberDemand から軸力を取り出す）。
+        let axial: Vec<(ElemId, f64)> = self
+            .ultimate_demand_by_elem()
+            .into_iter()
+            .map(|(id, d)| (id, d.n_axial))
+            .collect();
         let checks = squid_n_design_jp::ultimate::collect_cft_ultimate_checks(&self.model, &axial);
         if checks.is_empty() {
             return Err(

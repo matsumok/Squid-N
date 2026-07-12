@@ -650,15 +650,29 @@ fn compute_ultimate_check_job(model: &Model, load_case: Option<u32>) -> Result<J
         .linear_static(lc.id)
         .map_err(|e| format!("solve failed: {e}"))?;
 
-    // 部材軸力（圧縮正）: 各部材の始端（pos=0.0）の N（f[0] は圧縮正）。
-    let axial: Vec<(squid_n_core::ids::ElemId, f64)> = result
+    // 部材需要（軸力[圧縮正、始端]・強軸/弱軸の設計用曲げ[部材内最大絶対値]）。
+    let demand: Vec<(
+        squid_n_core::ids::ElemId,
+        squid_n_design_jp::ultimate::MemberDemand,
+    )> = result
         .member_forces
         .iter()
-        .filter_map(|(id, mf)| mf.at.first().map(|(_, f)| (*id, f[0])))
+        .filter_map(|(id, mf)| {
+            let n_axial = mf.at.first().map(|(_, f)| f[0])?;
+            let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
+            let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
+            Some((
+                *id,
+                squid_n_design_jp::ultimate::MemberDemand { n_axial, mz, my },
+            ))
+        })
         .collect();
+    // CFT の軸終局検定は軸力のみを用いる。
+    let axial: Vec<(squid_n_core::ids::ElemId, f64)> =
+        demand.iter().map(|(id, d)| (*id, d.n_axial)).collect();
 
     let opts = squid_n_design_jp::ultimate::UltimateShearOptions::default();
-    let checks = squid_n_design_jp::ultimate::collect_rc_ultimate_checks(model, &axial, &opts);
+    let checks = squid_n_design_jp::ultimate::collect_rc_ultimate_checks(model, &demand, &opts);
     // CFT 柱の軸終局検定も同時に算定する。
     let cft_checks = squid_n_design_jp::ultimate::collect_cft_ultimate_checks(model, &axial);
 

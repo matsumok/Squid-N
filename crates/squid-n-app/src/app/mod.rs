@@ -327,6 +327,8 @@ pub struct App {
     pub ultimate_mu_aci: bool,
     /// 終局検定で柱のせん断を 2 軸せん断として検定するか（RC 柱の 2 軸せん断余裕度）。
     pub ultimate_biaxial_shear: bool,
+    /// 終局検定で柱の曲げを 2 軸曲げとして検定するか（RC 柱の 2 軸曲げ余裕度）。
+    pub ultimate_biaxial_bending: bool,
     /// 左ペインの幅（px）。ドラッグで調整可能（180–520 にクランプ）。
     #[cfg(feature = "gui")]
     pub left_panel_width: f32,
@@ -454,6 +456,7 @@ impl Default for App {
             ultimate_upper_factor: 1.0,
             ultimate_mu_aci: false,
             ultimate_biaxial_shear: false,
+            ultimate_biaxial_bending: false,
             #[cfg(feature = "gui")]
             left_panel_width: 280.0,
             #[cfg(feature = "gui")]

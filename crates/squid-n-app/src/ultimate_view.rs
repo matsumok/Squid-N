@@ -75,6 +75,11 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 "RC 柱のせん断余裕度を 2 軸せん断 1/((Qmx/Qux)²+(Qmy/Quy)²)^(1/2) として\
                  検定します（採用応力）。Qsu/Qmu 列は 2 軸合成値を表示します。",
             );
+        ui.checkbox(&mut app.ultimate_biaxial_bending, "柱を2軸曲げで検定")
+            .on_hover_text(
+                "RC 柱の曲げ余裕度を 2 軸曲げ 1/((Mmx/Mux)²+(Mmy/Muy)²)^(1/2) として検定します\
+                 （採用応力）。需要曲げは最後に実行した静的解析の応答値を用います。",
+            );
     });
     ui.separator();
 
