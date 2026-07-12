@@ -62,6 +62,21 @@ cargo fmt --all -- --check
 
 GPU や ML を無効化しても解析機能は CPU で動作する。
 
+## ドキュメント
+
+設計仕様（`specs/`）・検証（`docs/v_and_v/`）・開発ドキュメントは、
+[mdBook](https://rust-lang.github.io/mdBook/) で構築したドキュメントサイトに集約している。
+`main` への push で GitHub Pages に自動デプロイされる。
+
+```bash
+# ローカルでプレビュー（http://localhost:3000）
+cargo install mdbook
+mdbook serve --open
+```
+
+ソースは `docs/`、目次は `docs/SUMMARY.md`、設定は `book.toml`。
+`docs/specs` は `specs/` へのシンボリックリンクで、仕様書を移動せずサイトへ取り込んでいる。
+
 ## V&V
 
 各要素・設計式の検証状況は `docs/v_and_v/README.md` を参照。

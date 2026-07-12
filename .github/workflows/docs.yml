@@ -1,0 +1,57 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages へのデプロイに必要な権限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に 1 つのデプロイのみ実行
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.4.52"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          cargo install mdbook --version "${MDBOOK_VERSION}" --locked
+
+      - name: Build book
+        run: mdbook build
+
+      - name: Build API docs (rustdoc)
+        run: |
+          cargo doc --workspace --no-deps
+          # rustdoc 出力を book/api へ配置し、/api へアクセスで core クレートへリダイレクト
+          mkdir -p book/api
+          cp -r target/doc/. book/api/
+          echo '<meta http-equiv="refresh" content="0; url=squid_n_core/index.html">' > book/api/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

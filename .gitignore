@@ -24,3 +24,6 @@ rustc-ice-*.txt
 #.idea/
 
 opencode.json
+
+# mdBook ドキュメントサイトのビルド出力
+/book
