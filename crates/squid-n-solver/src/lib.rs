@@ -15,6 +15,7 @@
 //! 下記の再エクスポートにより従来どおり利用できる。
 
 mod common;
+pub mod damage;
 mod dynamic;
 mod nonlinear;
 mod statics;

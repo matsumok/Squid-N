@@ -80,6 +80,21 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
     let peak = series.iter().cloned().fold(0.0f64, |m, v| m.max(v.abs()));
     ui.label(format!("最大絶対値: {:.4e}", peak));
 
+    // レインフロー計数（RESP-D「07 非線形解析（動的解析）」その他の解析機能の
+    // 累積損傷度計算で用いる ASTM E1049 3 点法）。表示中の代表応答に対する
+    // 等価繰返し数・最大振れ幅を参考表示する（累積損傷度 D の梁端 μ 収集は今後の拡張）。
+    let cycles = squid_n_solver::damage::rainflow_cycles(series);
+    let neq: f64 = cycles.iter().map(|c| c.count).sum();
+    let max_range = cycles.iter().map(|c| c.range).fold(0.0f64, f64::max);
+    ui.label(format!(
+        "レインフロー(代表応答): 等価繰返し数 {:.1} 回 / 最大振れ幅 {:.4e}",
+        neq, max_range
+    ))
+    .on_hover_text(
+        "累積損傷度計算(レインフロー法)の基礎計数。梁端曲げ塑性率 μ の時刻歴収集による\
+         梁端累積損傷度 D の算定は今後の拡張。",
+    );
+
     let plot = egui_plot::Plot::new("time_history_plot")
         .legend(egui_plot::Legend::default())
         .x_axis_label("時間 [s]")
