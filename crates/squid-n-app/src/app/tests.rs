@@ -422,7 +422,14 @@ fn test_seismic_flow_requires_then_uses_stories() {
     app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
-    // undo で階定義が戻る
+    // undo で自重(自動)の同期 → 階定義の順に戻る
+    // （run_linear_static が自重(自動)ケースの同期を undo 履歴に積むため 2 回）
+    app.undo.undo(&mut app.model);
+    assert!(app
+        .model
+        .load_cases
+        .iter()
+        .all(|lc| lc.name != SELF_WEIGHT_AUTO_LOAD_CASE_NAME));
     app.undo.undo(&mut app.model);
     assert!(app.model.stories.is_empty());
 }

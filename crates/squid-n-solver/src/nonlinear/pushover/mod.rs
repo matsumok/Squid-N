@@ -1,4 +1,6 @@
-use crate::analysis::{distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir};
+use crate::analysis::{
+    building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
+};
 use crate::arc_length::ArcLengthSolver;
 use crate::constraint::Reducer;
 use crate::transaction::{StateSnapshot, StatefulModel};
@@ -360,9 +362,10 @@ pub fn pushover_analysis_recording(
     if stories.is_empty() {
         return Err("no stories defined".into());
     }
-    let height_m = stories.last().map(|s| s.elevation).unwrap_or(0.0) / 1000.0;
-    // 略算周期の鉄骨造比 α（レビュー §1.5）。steel_height_ratio は analysis.rs の
+    // h は建築物の高さ（GL〜PH 階を除く最上階。令88条・告示1793号）。
+    // steel_height_ratio / building_height_mm は analysis.rs の
     // seismic_static_with と共有する実装。
+    let height_m = building_height_mm(model) / 1000.0;
     let steel_ratio = steel_height_ratio(model);
     let t = squid_n_load::ai::approx_t(height_m, steel_ratio);
     let z = 1.0;
