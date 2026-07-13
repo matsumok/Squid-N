@@ -549,12 +549,16 @@ impl App {
                         let n_axial = mf.at.first().map(|(_, f)| f[0])?;
                         let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
                         let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
+                        // 長期せん断力 QL（余裕率の分子控除 (Qsu−QL)/Qmu 用）。
+                        // このケース自体が重力（長期）ケースのため、そのまま採用する。
+                        let ql = mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max);
                         Some((
                             *id,
                             MemberDemand {
                                 n_axial,
                                 mz,
                                 my,
+                                q_long: Some(ql),
                                 ..Default::default()
                             },
                         ))
@@ -578,21 +582,41 @@ impl App {
         if po.member_response.is_empty() {
             return None;
         }
+        // 長期せん断力 QL（余裕率の分子控除用）を重力ケースの静的結果から引く。
+        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+            .first()
+            .copied();
+        let long_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> = self
+            .results
+            .as_ref()
+            .and_then(|res| {
+                gravity_lc.and_then(|lc| {
+                    res.statics
+                        .iter()
+                        .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                })
+            })
+            .map(|(_, s)| s.member_forces.as_slice());
+        let ql_of = |elem: ElemId| -> Option<f64> {
+            long_forces?
+                .iter()
+                .find(|(id, _)| *id == elem)
+                .map(|(_, mf)| mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max))
+        };
         Some(
             po.member_response
                 .iter()
                 .map(|r| {
-                    (
-                        r.elem,
-                        MemberDemand::from_pushover(
-                            r.axial,
-                            r.m_strong,
-                            r.m_weak,
-                            r.shear_strong,
-                            r.shear_weak,
-                            r.rp,
-                        ),
-                    )
+                    let mut d = MemberDemand::from_pushover(
+                        r.axial,
+                        r.m_strong,
+                        r.m_weak,
+                        r.shear_strong,
+                        r.shear_weak,
+                        r.rp,
+                    );
+                    d.q_long = ql_of(r.elem);
+                    (r.elem, d)
                 })
                 .collect(),
         )

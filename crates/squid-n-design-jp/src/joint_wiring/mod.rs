@@ -608,10 +608,12 @@ pub fn collect_joint_checks_with_long(
             };
             out.push((nid, "接合部(RC)".to_string(), rc_joint_shear_check(&inp)));
 
-            // ── RC 柱梁接合部の終局検定（RESP-D「06 終局検定」Vju/Qdu）───────
-            // 接合部有効幅 bj = bb + 2·bai（許容応力度検定と同じ算定、bai=max(bi/2,D/4)）。
+            // ── RC 柱梁接合部の終局検定（Vju/Qdu）───────
+            // 接合部有効幅 bj = bb + 2·bai。終局検定の bai は bi/2 と D/4 の
+            // **小さい方**（許容応力度検定の「大きい方」とは規定が異なる。
+            // 終局は靭性保証型指針系の有効幅で、小さい方が安全側）。
             let bi = (col.sec.width - beam0.sec.width) / 2.0;
-            let bai = (bi / 2.0).max(col.sec.depth / 4.0).max(0.0);
+            let bai = (bi / 2.0).min(col.sec.depth / 4.0).max(0.0);
             let bj = beam0.sec.width + 2.0 * bai;
             // 上端・下端鉄筋引張力 T・T′。梁の main_x（せい方向主筋）を上下対称配筋
             // と仮定し、片側（総断面積の半分）が降伏引張力を負担するとみなす。
