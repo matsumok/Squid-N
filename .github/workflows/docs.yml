@@ -9,10 +9,7 @@ on:
 #   CLOUDFLARE_API_TOKEN : Pages の編集権限を持つ API トークン
 #   CLOUDFLARE_ACCOUNT_ID: Cloudflare アカウント ID
 # また、Cloudflare ダッシュボード（または wrangler）で
-# プロジェクト名 `squid-n-docs` を事前作成しておくこと。
-
-env:
-  MDBOOK_VERSION: "0.4.52"
+# projectName と同名のプロジェクトを事前作成しておくこと。
 
 permissions:
   contents: read
@@ -23,9 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 事前ビルド済みバイナリを取得（cargo install より高速）
       - name: Install mdBook
-        run: |
-          cargo install mdbook --version "${MDBOOK_VERSION}" --locked
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.4.52"
+
+      # cargo doc の再コンパイルを回避
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
 
       - name: Build book
         run: mdbook build
@@ -60,7 +63,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: squid-n-docs
+          projectName: squidn-docs
           directory: book
           branch: main
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
