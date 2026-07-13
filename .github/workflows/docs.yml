@@ -5,19 +5,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# GitHub Pages へのデプロイに必要な権限
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-# 同時に 1 つのデプロイのみ実行
-concurrency:
-  group: pages
-  cancel-in-progress: false
+# Cloudflare Pages へのデプロイには以下のリポジトリシークレットが必要:
+#   CLOUDFLARE_API_TOKEN : Pages の編集権限を持つ API トークン
+#   CLOUDFLARE_ACCOUNT_ID: Cloudflare アカウント ID
+# また、Cloudflare ダッシュボード（または wrangler）で
+# プロジェクト名 `squid-n-docs` を事前作成しておくこと。
 
 env:
   MDBOOK_VERSION: "0.4.52"
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -40,18 +38,29 @@ jobs:
           cp -r target/doc/. book/api/
           echo '<meta http-equiv="refresh" content="0; url=squid_n_core/index.html">' > book/api/index.html
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: book
           path: book
+          if-no-files-found: error
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: book
+          path: book
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: squid-n-docs
+          directory: book
+          branch: main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
