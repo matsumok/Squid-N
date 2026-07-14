@@ -1,6 +1,6 @@
 [book]
 title = "Squid-N ドキュメント"
-description = "日本の建築構造計算一貫プログラム Squid-N の設計仕様・検証(V&V)・開発ドキュメント"
+description = "日本の建築構造計算一貫プログラム Squid-N の利用者向けドキュメント（計算根拠・理論・出典）"
 authors = ["Squid-N contributors"]
 language = "ja"
 src = "docs"
@@ -14,6 +14,7 @@ default-theme = "rust"
 preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/hrntsm/squid-n"
 edit-url-template = "https://github.com/hrntsm/squid-n/edit/main/docs/{path}"
+mathjax-support = true
 
 [output.html.fold]
 enable = true

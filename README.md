@@ -31,12 +31,13 @@ cargo build --workspace
 
 ## ドキュメント
 
-設計仕様・検証（V&V）・開発ドキュメントは、
+利用者向けドキュメント（計算根拠・理論・出典）は、
 [mdBook](https://rust-lang.github.io/mdBook/) で構築したドキュメントサイトに集約している
 （`main` への push で GitHub Pages に自動デプロイ）。ローカルでのプレビュー手順は
 [CONTRIBUTING.md](CONTRIBUTING.md#ドキュメントサイトmdbook) を参照。
 
-各要素・設計式の検証状況は `docs/v_and_v/README.md` を参照。
+各要素・設計式の検証状況は `v_and_v/README.md` を参照（開発者向け。設計仕様は `specs/`、
+開発運用ドキュメントは `dev_docs/`。いずれもドキュメントサイトには含めない）。
 
 ## ライセンス
 
