@@ -337,7 +337,7 @@ impl App {
                             continue;
                         };
                         // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
-                        // （RESP-D マニュアル 04 断面検定「幅厚比の検討」）。
+                        // （鋼構造設計規準「幅厚比の検討」）。
                         // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
                         // フォールバックする。
                         let member_use = match member_kind_of(elem, &self.model) {
@@ -449,7 +449,7 @@ impl App {
         Ok((result, story_ranks))
     }
 
-    /// 終局検定（RESP-D「06 終局検定」）: RC 矩形部材の終局せん断強度（塑性
+    /// 終局検定（靭性保証型耐震設計指針）: RC 矩形部材の終局せん断強度（塑性
     /// 理論式）・付着割裂耐力・軸終局耐力に対する余裕度を算定する。
     ///
     /// 柱の曲げ終局強度 Mu・軸余裕度に用いる設計軸力は、長期（G+P 相当）静的
@@ -632,7 +632,7 @@ impl App {
         )
     }
 
-    /// CFT 柱の軸終局検定（RESP-D「06 終局検定」CFT）: CftBox/CftPipe 柱の
+    /// CFT 柱の軸終局検定（CFT指針）: CftBox/CftPipe 柱の
     /// 軸圧縮終局耐力 Ncu・軸引張終局耐力 Ntu に対する軸余裕度を算定する。
     ///
     /// 対象 CFT 柱が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
@@ -957,7 +957,7 @@ impl App {
     /// 線形時刻歴応答解析の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_time_history_job`）からも呼び出せる。
     /// 減衰モデル・積分法は `cfg` に従う（剛性比例／Rayleigh、Newmark-β／HHT-α）。
-    /// 位相差入力（ねじれ加振）を `wave` へ付加する（RESP-D「07」位相差入力解析）。
+    /// 位相差入力（ねじれ加振）を `wave` へ付加する（構造動力学の位相差入力解析）。
     /// `phase_diff_enabled` が false なら `wave` をそのまま返す。位相遅れ時間
     /// `t=(L·sinθ)/Vs` を求め、位相遅れ方向の並進波からねじれ地動加速度を生成する。
     fn apply_phase_diff(
@@ -991,7 +991,7 @@ impl App {
         wave: squid_n_solver::timehistory::GroundMotion,
     ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
         let mut model = model;
-        // 位相差入力（ねじれ加振）を指定時に付加する（RESP-D「07」位相差入力解析）。
+        // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
         let wave = Self::apply_phase_diff(&cfg, wave);
         // 解析前に剛域を自動算定（設計書 §6.2.1、標準実装）。
         squid_n_element::beam::apply_auto_rigid_zones(
@@ -1263,7 +1263,7 @@ impl App {
 
     /// T7: 解析結果の member_forces から検定結果を生成する。
     /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力に対し、
-    /// 材種・部材種別に応じた検定を適用する（RESP-D マニュアル 04 断面検定準拠）。
+    /// 材種・部材種別に応じた検定を適用する（令82条・各構造設計規準準拠）。
     /// 節点芯は剛域が有る場合は検定対象外（節点芯の応力をそのまま使わない、
     /// 設計書 §6.2.3）。
     ///
@@ -1368,8 +1368,8 @@ impl App {
                 None
             };
             // 一本部材グループに属する梁は、部材長・端部/中央モーメント・せん断
-            // スパン比代表値をグループ合成値に置き換える（RESP-D マニュアル 04
-            // 「採用応力 ■一本部材指定時の採用応力」）。
+            // スパン比代表値をグループ合成値に置き換える（断面検定の採用応力。
+            // 一本部材指定時の採用応力）。
             let group = if kind == squid_n_design_jp::MemberKind::Beam {
                 group_overrides.get(elem_id)
             } else {
@@ -1450,7 +1450,7 @@ impl App {
                     mz: forces[5],
                 };
                 // BRB 属性が登録された部材はメーカー許容値による BRB 検定に
-                // 差し替える（RESP-D マニュアル 04 座屈補剛ブレースの断面検定）。
+                // 差し替える（座屈補剛ブレースの断面検定）。
                 let cr = if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id)
                 {
                     squid_n_design_jp::brb::brb_check(

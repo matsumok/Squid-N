@@ -1,5 +1,5 @@
 //! コンクリート充填鋼管（CFT）柱の**N-M 相互作用（曲げを伴う終局耐力）**
-//! （RESP-D マニュアル「計算編 06 終局検定」CFT 柱の終局耐力 (3)A/B/C）。
+//! （コンクリート充填鋼管構造設計指針（CFT 指針）に基づく）。
 //!
 //! # 位置付け
 //! [`super::cft`] が軸方向終局耐力（Ncu/Ntu）を扱うのに対し、本モジュールは軸方向力と
@@ -91,7 +91,7 @@ fn nu_mu_at(inp: &CftBendingInput, p: f64) -> (f64, f64) {
     }
 }
 
-/// CFT **短柱**の N-M 相互作用による終局曲げ耐力 `Mu` [N·mm]（RESP-D「06 終局検定」）。
+/// CFT **短柱**の N-M 相互作用による終局曲げ耐力 `Mu` [N·mm]（CFT 指針）。
 ///
 /// `n_design`: 設計軸力 [N]（**圧縮正**）。`ncu1`: 短柱の軸圧縮終局耐力 [N]、
 /// `ntu`: 軸引張終局耐力の**大きさ** [N]（引張は −ntu に対応）。
@@ -139,7 +139,7 @@ pub fn cft_short_column_mu(inp: &CftBendingInput, n_design: f64, ncu1: f64, ntu:
     }
 }
 
-/// 座屈補助軸力 `Nk = π²·(cE'·cI/5 + sE·sI)/lk²`（RESP-D「06 終局検定」CFT 長柱）。
+/// 座屈補助軸力 `Nk = π²·(cE'·cI/5 + sE·sI)/lk²`（CFT 指針、長柱）。
 /// `cE' = (3.32·√Fc + 6.90)×10³`。`lk ≤ 0` は `f64::INFINITY`（座屈しない）。
 pub fn cft_nk(c_inertia: f64, s_inertia: f64, s_young: f64, fc: f64, lk: f64) -> f64 {
     if lk <= 0.0 {
@@ -150,7 +150,7 @@ pub fn cft_nk(c_inertia: f64, s_inertia: f64, s_young: f64, fc: f64, lk: f64) ->
         / (lk * lk)
 }
 
-/// CFT **中柱・長柱**の N-M 相互作用の算定入力（RESP-D「06 終局検定」CFT (3)B/C）。
+/// CFT **中柱・長柱**の N-M 相互作用の算定入力（CFT 指針、中柱・長柱）。
 #[derive(Clone, Copy, Debug)]
 pub struct CftLongMediumInput {
     /// 短柱 N-M と同じ断面諸元。
@@ -170,7 +170,7 @@ pub struct CftLongMediumInput {
 }
 
 /// CFT **中柱・長柱**の N-M 相互作用による終局曲げ耐力 `Mu` [N·mm]
-/// （RESP-D「06 終局検定」CFT (3)B 長柱 / (3)C 中柱）。
+/// （CFT 指針、長柱 / 中柱）。
 ///
 /// ```text
 /// R    = (1 − cNcu/Nk)^(1/CM)         （CM=1、長柱の曲げ低減。0 未満は 0）

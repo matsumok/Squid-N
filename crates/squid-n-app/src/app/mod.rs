@@ -49,7 +49,7 @@ pub enum ResultsView {
 pub enum DesignView {
     #[default]
     Table,
-    /// 終局検定（RESP-D「06 終局検定」塑性理論式による終局せん断・付着余裕度）。
+    /// 終局検定（靭性保証型耐震設計指針による終局せん断・付着余裕度）。
     Ultimate,
     MnSurface,
 }
@@ -164,7 +164,7 @@ pub struct AnalysisSettings {
     pub push_dir: SeismicDir,
     pub push_steps: usize,
     pub push_max_disp: f64,
-    /// プッシュオーバー: 塑性率（ductility）の算定方式（RESP-D「05 非線形モデル」）。
+    /// プッシュオーバー: 塑性率（ductility）の算定方式（構造力学）。
     pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
@@ -184,7 +184,7 @@ pub struct AnalysisSettings {
     pub th_h2: f64,
     /// 時刻歴の積分法
     pub th_integrator: ThIntegrator,
-    /// 位相差入力（ねじれ加振）を考慮する（RESP-D「07」位相差入力解析）。
+    /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
     pub phase_diff_enabled: bool,
     /// せん断波速度 Vs [m/s]。
     pub phase_diff_vs: f64,
@@ -203,7 +203,7 @@ pub struct AnalysisSettings {
     /// 同 δ3（地震時 G+P+δ3・S±K。既定 0.35）。
     pub snow_delta3: f64,
     /// RC 短期許容せん断力の「損傷制御のための検討」（false=安全確保のための検討）。
-    /// RESP-D マニュアル 04「断面算定条件 RC造」に対応。
+    /// RC規準・令82条（断面算定条件 RC造）に対応。
     pub rc_damage_control: bool,
     /// 地震時短期の設計用せん断力 QD の決定方法（QD1/QD2/min）。
     pub qd_method: squid_n_design_jp::QdMethod,
@@ -225,7 +225,7 @@ pub enum ThDir {
     Xy,
 }
 
-/// 時刻歴の減衰モデル選択（UI 用）。RESP-D「07 非線形解析（動的解析）」減衰マトリクス。
+/// 時刻歴の減衰モデル選択（UI 用）。構造動力学の減衰マトリクス。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThDampingModel {
     /// 初期剛性比例（C=2h/ω1·Ke）。
@@ -346,7 +346,7 @@ pub struct App {
     /// `s_member_rank` で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
-    /// 終局検定（RESP-D「06 終局検定」）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
+    /// 終局検定（靭性保証型耐震設計指針）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
     pub ultimate_rp: f64,
     /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
     pub ultimate_lightweight: bool,
@@ -984,8 +984,8 @@ fn elem_geometric_length(
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-/// 一本部材グループ 1 本分の検定文脈（RESP-D マニュアル 04 断面検定
-/// 「採用応力 ■一本部材指定時の採用応力」）。
+/// 一本部材グループ 1 本分の検定文脈（断面検定の採用応力。
+/// 一本部材指定時の採用応力）。
 struct BeamGroupOverride {
     /// 一本部材の全長 L [mm]（分割部材長の総和）。
     length: f64,

@@ -10,7 +10,7 @@ use std::any::Any;
 /// ゼロにすると特異になり得るため、数値安定用に EA/L の 1e-6 倍を残す。
 const NONLINEAR_COMPRESSION_FACTOR: f64 = 1e-6;
 
-/// 一般ブレース要素（RESP-D マニュアル計算編02「剛性計算」§一般ブレースの剛性）。
+/// 一般ブレース要素（材料力学。トラス要素の軸剛性 KB = E·A/L）。
 ///
 /// 剛性 KB = factor·E·A/L（L: 芯々間の長さ、A: 降伏部の断面積）。
 /// 軸剛性のみを持ち、曲げ・せん断・ねじりはゼロ（トラス要素）。
@@ -139,8 +139,8 @@ impl TrussElement {
         }
     }
 
-    /// 引張専用ブレースの弾塑性解析用コンストラクタ（RESP-D マニュアル計算編02
-    /// 「一般ブレースの剛性」）。弾塑性解析では初期剛性を1倍（factor=1.0）とし、
+    /// 引張専用ブレースの弾塑性解析用コンストラクタ（材料力学・トラス要素の
+    /// 軸剛性）。弾塑性解析では初期剛性を1倍（factor=1.0）とし、
     /// 圧縮側では軸力を負担しない非線形挙動（真のスラック挙動）を持たせる。
     pub fn new_tension_only_nonlinear(data: &ElementData, model: &Model) -> Self {
         let mut elem = Self::new(data, model, 1.0);
@@ -149,7 +149,7 @@ impl TrussElement {
     }
 
     /// 局所座標系での 12×12 剛性行列。軸方向（ux, ux_j）成分のみ非ゼロ。
-    /// k = factor·E·A/L（RESP-D マニュアル計算編02「一般ブレースの剛性」KB = E·A/L）。
+    /// k = factor·E·A/L（材料力学。トラス要素の軸剛性 KB = E·A/L）。
     pub fn local_stiffness(&self) -> LocalMat {
         self.local_stiffness_with_factor(self.factor)
     }

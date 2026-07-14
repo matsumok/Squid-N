@@ -1,4 +1,4 @@
-//! フレーム内雑壁（RESP-D マニュアル計算編 02「フレーム内雑壁のモデル化」）。
+//! フレーム内雑壁（RC規準の耐震壁規定。フレーム内雑壁のモデル化）。
 //!
 //! 壁が開口等により耐震壁にならなかった場合、壁は壁エレメントとしてではなく
 //! 周辺の RC/SRC 部材（柱の袖壁・梁の腰壁/垂壁）の断面性能として考慮される。
@@ -13,7 +13,7 @@ use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementData, ElementKind, Model};
 use squid_n_core::section_shape::SectionShape;
 
-/// 耐震壁の成立判定（RESP-D 計算編 02「RC耐震壁の判定」）。
+/// 耐震壁の成立判定（RC規準・耐震壁の判定）。
 ///
 /// - スリット（三方スリット）がないこと
 /// - 壁厚が 120mm 以上であること

@@ -1,5 +1,5 @@
-//! SRC 造の断面検定（RESP-D マニュアル「計算編 04 断面検定
-//! （許容応力度検定）」の SRC 梁・SRC 柱部分に準拠）。
+//! SRC 造の断面検定（許容応力度検定。SRC 規準 1987 の
+//! SRC 梁・SRC 柱部分に準拠）。
 //!
 //! SRC = 鉄骨鉄筋コンクリート造（Steel Reinforced Concrete）。ディレクトリ名を
 //! `src` ではなく `srrc` としているのは、Rust の慣例的なソースルート
@@ -43,7 +43,7 @@
 //! 4. SRC 柱のせん断は強軸・弱軸を対称的に扱うため、RC 柱検定（`rc/`）と
 //!    同様に「b/D 入れ替え」の近似を用いる。
 //!
-//! # モジュール構成（RESP-D マニュアル「04 断面検定」の章立てに対応）
+//! # モジュール構成（断面検定の項目に対応）
 //! - 本ファイル（`srrc/mod.rs`）: 共通の断面諸元抽出・せん断の鉄骨/RC
 //!   弾性分担・地震時短期の設計用せん断力（構造規定方式）・`SrcDesign`
 //!   （`DesignCheck` 実装、梁/柱への振り分け）。
@@ -57,7 +57,7 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 mod beam;
 /// 鉄骨鉄筋コンクリート造梁のせん断終局強度（非線形解析のせん断ばね終局耐力）。
-/// RESP-D「05 非線形モデル」の SRC 梁せん断復元力特性。
+/// SRC 梁せん断復元力特性（構造関係技術基準解説書・SRC 規準）。
 pub mod beam_nonlinear;
 mod column;
 pub mod panel_zone;
@@ -208,8 +208,8 @@ struct SrcSeismicCtx<'a> {
     r_mu: f64,
 }
 
-/// SRC 梁・柱の地震時短期の設計用せん断力（構造規定方式、RESP-D マニュアル
-/// 「04 断面検定」）。`seismic.ctx.seismic_qd` が None、または長期内力に
+/// SRC 梁・柱の地震時短期の設計用せん断力（構造規定方式、SRC 規準 1987）。
+/// `seismic.ctx.seismic_qd` が None、または長期内力に
 /// 同一評価位置が見つからない場合は None を返す（呼び出し側は従来の弾性
 /// 分担にフォールバックする）。
 ///

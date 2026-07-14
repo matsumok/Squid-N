@@ -16,7 +16,7 @@ impl Default for RigidZoneRule {
     }
 }
 
-/// 部材の構造種別（RESP-D マニュアル「剛域の計算」の RC/SRC 系・S 系区分）。
+/// 部材の構造種別（技術基準解説書「剛域の計算」の RC/SRC 系・S 系区分）。
 /// 剛域長の算定式（後述 `auto_rigid_zones`）を部材種別で切り替えるための分類。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemberKind {

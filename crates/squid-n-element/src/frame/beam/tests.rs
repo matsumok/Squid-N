@@ -29,7 +29,7 @@ fn make_test_beam() -> BeamElement {
     }
 }
 
-/// SRC/CFT の複合換算が要素生成へ配線されていること（RESP-D 計算編 02）。
+/// SRC/CFT の複合換算が要素生成へ配線されていること（SRC規準の考え方・ヤング係数比による等価換算）。
 #[test]
 fn test_beam_new_src_cft_composite_props() {
     use squid_n_core::dof::Dof6Mask;
@@ -161,7 +161,7 @@ fn test_beam_new_src_cft_composite_props() {
     assert!((src_fallback.iy - model.sections[0].iy).abs() < 1e-6);
 }
 
-/// スラブ協力幅による強軸剛性増大（RESP-D 計算編 02「RC大梁」・RC規準8条）。
+/// スラブ協力幅による強軸剛性増大（RC規準8条）。
 #[test]
 fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     use squid_n_core::dof::Dof6Mask;
@@ -1307,7 +1307,7 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
     );
 }
 
-/// 壁エレメントモデルの上下大梁の剛性倍率（RESP-D 計算編 02「上下大梁の断面性能」）。
+/// 壁エレメントモデルの上下大梁の剛性倍率（壁エレメント置換モデルの上下大梁の断面性能）。
 /// 4節点 Wall 要素の下辺2節点を結ぶ水平梁は iy/a が既定倍率（100倍）になる。
 #[test]
 fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
@@ -1606,8 +1606,8 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
     );
 }
 
-/// フレーム内雑壁（耐震壁不成立）の柱への袖壁算入（RESP-D 計算編 02
-/// 「フレーム内雑壁のモデル化」）。大開口(r0=√(3.6e6/12e6)=0.548>0.4)の壁は
+/// フレーム内雑壁（耐震壁不成立）の柱への袖壁算入（RC規準の耐震壁規定・
+/// フレーム内雑壁のモデル化）。大開口(r0=√(3.6e6/12e6)=0.548>0.4)の壁は
 /// 耐震壁不成立となり、側柱（左辺=節点0-3）に袖壁として断面性能算入される。
 /// 面内（iz・as_y）は平行軸の定理による合成値と一致し、面外（iy・as_z）は不変。
 #[test]
