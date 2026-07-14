@@ -15,8 +15,6 @@
 **実装**：`holding_capacity::{stiffness_ratios, fs}` が算定する。剛性率用の層間変位には重心変位 δg
 （`secondary::stiffness_ratio::cog_story_drifts`）を用いる。
 
-**整合性**：Fs 式は[原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/specs/原典照合リスト.md)に告示1792号として登録している（☐）。
-
 ## 7.4.2 偏心率 Re・Fe
 
 建築基準法施行令 第82条の6 と告示第1792号に基づき、偏心率 Re（規定は \\( R_e \le 0.15 \\)）から Fe を算定する。
@@ -51,10 +49,6 @@ D 値（一般階）:
 \\[ F_e = \begin{cases} 1.0 & (R_e \le 0.15) \\\\ \min(1.0 + 0.5(R_e - 0.15)/0.15, 1.5) & (R_e > 0.15) \end{cases} \\]
 
 **実装**：`secondary::eccentricity`（D 値法略算）と `secondary::eccentricity_analysis`（応力解析結果からの精算層。剛心は解析剛性、重心は長期軸力による）、および `holding_capacity::fe` が算定する。
-
-**整合性**：doc に令82条の6、告示1792号、武藤 D 値法を明記している。
-Fe の上限を 1.5 で頭打ちにする扱いは[原典照合リスト 優先度3](https://github.com/hrntsm/squid-n/blob/main/specs/原典照合リスト.md#優先度3fes形状係数の頭打ち挙動)で要照合である（☐）。
-偏心率は弾性剛性（弾性解析結果）に基づいて算定する（令82条の6 の運用に基づく実務的取扱い）。
 
 ## 7.4.3 形状係数 Fes
 

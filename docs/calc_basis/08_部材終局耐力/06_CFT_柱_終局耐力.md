@@ -10,6 +10,3 @@ CFT 柱の終局耐力を柱分類に応じて算定する。
 - N-M 相互作用（角形・円形の (Nu, Mu) 曲面）を用いる。中柱と長柱は座屈低減 R を乗じる。
 
 **実装**：`ultimate::{cft, cft_nm}`、統括は `ultimate::mod::collect_cft_ultimate_checks`。
-
-**整合性**：CFT 指針を doc に明記している。
-sNcr 分岐条件、β2、角形 sMu の Fy 採用など一部は要原典照合として doc に明記した（OCR 誤りと判断した箇所は、その根拠も記載している）。

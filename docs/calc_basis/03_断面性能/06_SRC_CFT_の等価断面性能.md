@@ -36,6 +36,3 @@ CFT（充填コンクリートを鋼基準へ換算）:
 
 **実装**：`section_shape::{src_equivalent_props, cft_equivalent_props}` が算定する。
 ns の暫定既定は N_S_EQ = 15 とする。
-
-**整合性**：SRC の複合ねじり換算 \\( J = {}_c J + ({}_s G/{}_c G) \cdot {}_s J \\) は上式のとおり実装済みである。
-ns はまず材料から \\( E_s/E_c \\) を算定し、算定できない場合のみ暫定既定 `N_S_EQ = 15` にフォールバックする（値は[原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/specs/原典照合リスト.md)で要照合）。

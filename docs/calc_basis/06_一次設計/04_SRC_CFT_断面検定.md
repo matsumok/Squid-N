@@ -53,6 +53,3 @@ CFT 柱の地震時設計用せん断:
 
 **実装**：`srrc::{beam, column, panel_zone}`、`cft::mod` が検定する。
 SRC パネルゾーンは \\( {}\_c V \cdot j\delta \cdot f_s \cdot (1+\beta) \ge (h'/h)({}\_B M_1 + {}\_B M_2) \\)。
-
-**整合性**：SRC パネルゾーン検定式・jδ は原典図と照合済み（cVe → cV、h/h' → h'/h へ修正、[原典照合リスト](https://github.com/hrntsm/squid-n/blob/main/specs/原典照合リスト.md)☑）。
-CFT の残る簡略化（円形柱 N-M の数値積分等）は実装 doc に明記している。
