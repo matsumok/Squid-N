@@ -64,8 +64,10 @@ cargo fmt --all -- --check
 
 ## ドキュメントサイト（mdBook）
 
-設計仕様（`specs/`）・検証（`docs/v_and_v/`）・開発ドキュメントは
-[mdBook](https://rust-lang.github.io/mdBook/) のドキュメントサイトに集約しています。
+ドキュメントサイトは**アプリケーション利用者向け**（計算根拠・理論・出典）です。
+[mdBook](https://rust-lang.github.io/mdBook/) で構築しています。
+開発者向けの設計仕様（`specs/`）・検証（`v_and_v/`）・開発運用ドキュメント
+（`dev_docs/`）はサイトに含めず、リポジトリ内で直接参照してください。
 
 ```bash
 # mdBook の導入（初回のみ）
@@ -78,11 +80,11 @@ mdbook serve --open
 mdbook build
 ```
 
-- ソース: `docs/`
+- ソース: `docs/`（利用者向けコンテンツのみを置く）
 - 目次: `docs/SUMMARY.md`（ページを追加・削除したらここも更新する）
-- 設定: `book.toml`
-- `docs/specs` は `specs/` へのシンボリックリンクです。仕様書を移動せずサイトへ
-  取り込むための仕組みなので、実体は `specs/` を編集してください
+- 設定: `book.toml`（数式は `mathjax-support` により `\\(...\\)`／`\\[...\\]` で記述）
+- 計算根拠（`docs/calc_basis/`）は章ディレクトリ＋小項目ページの構成です。
+  小項目を追加したら章の `README.md` の一覧と `docs/SUMMARY.md` に追記してください
 
 `main` への push で GitHub Pages に自動デプロイされます
 （`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
