@@ -117,6 +117,147 @@ pub fn linear_static_once(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, S
         .unwrap_or_default();
     let model_cow = apply_long_axial_cut(model, lc_kind);
     let model: &Model = &model_cow;
+
+    // 引張専用ブレースの反復（active-set 法）: 計算条件で有効化されており、かつ
+    // 引張専用ブレースが存在する場合のみ、圧縮側に入ったブレースを無効化しながら
+    // 収束するまで再解析する。無効時は従来どおり弾性剛性 1/2 の一括解析
+    // （build_behavior の factor=0.5）で1回だけ解く。
+    if model.stress_cfg.tension_only_iteration && has_tension_only_brace(model) {
+        return solve_tension_only_iterative(model, lc);
+    }
+    solve_once_inner(model, lc)
+}
+
+/// 引張専用ブレースの active-set 反復の最大回数。通常はブレース本数程度で収束するが、
+/// 無効化・再活性が振動（チャタリング）する病的ケースに備えて上限を設ける。
+const TENSION_ONLY_MAX_ITER: usize = 50;
+
+/// モデルに引張専用ブレース（`ElementKind::Brace { tension_only: true }`）が
+/// 少なくとも1本存在するか。
+fn has_tension_only_brace(model: &Model) -> bool {
+    model
+        .elements
+        .iter()
+        .any(|e| matches!(e.kind, ElementKind::Brace { tension_only: true }))
+}
+
+/// 指定した要素 index のブレースについて、参照断面を複製し軸剛性用の断面積を
+/// [`AXIAL_DISABLE_FACTOR`] 倍に縮小したモデルを返す（apply_long_axial_cut と同じ
+/// 手法。無効化対象が空なら元のモデルをそのまま借用する）。同じ断面 ID を共有する
+/// active なブレースへは影響しない。
+fn reduce_brace_axial<'a>(model: &'a Model, disabled: &[usize]) -> Cow<'a, Model> {
+    if disabled.is_empty() {
+        return Cow::Borrowed(model);
+    }
+    let mut m = model.clone();
+    for &i in disabled {
+        let Some(sid) = m.elements[i].section else {
+            continue;
+        };
+        let Some(orig) = m.sections.get(sid.index()) else {
+            continue;
+        };
+        let mut reduced = orig.clone();
+        reduced.area *= AXIAL_DISABLE_FACTOR;
+        // 合成断面（SRC/CFT）でも軸剛性カットが効くよう shape を外す（apply_long_axial_cut 参照）。
+        reduced.shape = None;
+        reduced.id = squid_n_core::ids::SectionId(m.sections.len() as u32);
+        m.elements[i].section = Some(reduced.id);
+        m.sections.push(reduced);
+    }
+    Cow::Owned(m)
+}
+
+/// active-set 反復で追跡する引張専用ブレース1本の情報。
+struct ToBrace {
+    /// `model.elements` 内の要素 index。
+    elem: usize,
+    /// i 端・j 端の節点 index。
+    ni: usize,
+    nj: usize,
+    /// 部材軸単位ベクトル（i→j）。軸伸び δ = t·(u_j − u_i) の判定に用いる。
+    t: [f64; 3],
+}
+
+/// 引張専用ブレースを active-set 法で反復解析する（真の引張専用解析）。
+///
+/// ブレース（軸剛性 E·A/L）を各反復で解き、圧縮側（軸伸び<0）に入った引張専用
+/// ブレースの軸剛性を縮小して無効化する。無効化されたブレースの節点変位から
+/// 求めた軸伸びが引張側へ転じれば再び active に戻す。active 集合が前回と一致した
+/// 時点で収束とみなす。
+///
+/// 収束後の部材内力は、active な引張ブレースが EA/L·伸び を負担し、無効化された
+/// 圧縮ブレースはほぼ 0（EA×1e-6 相当）となる。
+fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
+    // 追跡対象の引張専用ブレースを収集する。幾何が退化した（節点不足・零長）ブレースは
+    // 軸剛性が実質ゼロで軸力を負担しないため除外する。
+    let mut braces: Vec<ToBrace> = Vec::new();
+    for (i, e) in model.elements.iter().enumerate() {
+        if !matches!(e.kind, ElementKind::Brace { tension_only: true }) || e.nodes.len() < 2 {
+            continue;
+        }
+        let (ni, nj) = (e.nodes[0].index(), e.nodes[1].index());
+        let (Some(n0), Some(n1)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
+            continue;
+        };
+        let d = [
+            n1.coord[0] - n0.coord[0],
+            n1.coord[1] - n0.coord[1],
+            n1.coord[2] - n0.coord[2],
+        ];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if l < 1e-12 {
+            continue;
+        }
+        braces.push(ToBrace {
+            elem: i,
+            ni,
+            nj,
+            t: [d[0] / l, d[1] / l, d[2] / l],
+        });
+    }
+
+    // active[k] = k 番目の引張専用ブレースが軸力を負担する（引張側）か。初期は全 active。
+    let mut active = vec![true; braces.len()];
+    let mut last: Option<StaticOnce> = None;
+    for _ in 0..TENSION_ONLY_MAX_ITER {
+        let disabled: Vec<usize> = braces
+            .iter()
+            .zip(&active)
+            .filter(|(_, &a)| !a)
+            .map(|(b, _)| b.elem)
+            .collect();
+        let solve_model = reduce_brace_axial(model, &disabled);
+        let res = solve_once_inner(&solve_model, lc)?;
+
+        // 各ブレースの軸伸び δ = t·(u_j − u_i) から次の active 集合を判定する。
+        // δ≥0（引張）なら active、δ<0（圧縮・スラック）なら無効化。
+        let new_active: Vec<bool> = braces
+            .iter()
+            .map(|b| {
+                let du = [
+                    res.disp[b.nj][0] - res.disp[b.ni][0],
+                    res.disp[b.nj][1] - res.disp[b.ni][1],
+                    res.disp[b.nj][2] - res.disp[b.ni][2],
+                ];
+                b.t[0] * du[0] + b.t[1] * du[1] + b.t[2] * du[2] >= 0.0
+            })
+            .collect();
+
+        if new_active == active {
+            return Ok(res);
+        }
+        active = new_active;
+        last = Some(res);
+    }
+    // 収束しなかった（active 集合が振動した）場合は最後の結果を返す。
+    match last {
+        Some(res) => Ok(res),
+        None => solve_once_inner(model, lc),
+    }
+}
+
+fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
     let dofmap = DofMap::build(model);
     let n_active = dofmap.n_active();
 

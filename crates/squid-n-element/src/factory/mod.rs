@@ -112,15 +112,13 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
                 }
             }
         }
-        // 一般ブレース：KB = factor·E·A/L（材料力学・トラス要素）。
-        // 引張専用ブレースは弾性解析で剛性を1/2にモデル化する（factor=0.5）。
-        ElementKind::Brace { tension_only } => {
-            let factor = if tension_only { 0.5 } else { 1.0 };
-            (
-                Box::new(crate::truss::TrussElement::new(data, model, factor)),
-                ElemState::default(),
-            )
-        }
+        // 一般ブレース：KB = E·A/L（材料力学・トラス要素）。引張専用ブレースは
+        // 要素側では特別扱いせず、線形応力解析の active-set 反復
+        // （squid-n-solver の solve_tension_only_iterative）で圧縮側を無効化して扱う。
+        ElementKind::Brace { .. } => (
+            Box::new(crate::truss::TrussElement::new(data, model)),
+            ElemState::default(),
+        ),
         // 節点バネ：構造力学（部材の変形と自由度）。
         // 局所軸ごとに独立な弾性バネ（軸・せん断・曲げ回転。ねじりは既定 0）。
         ElementKind::NodalSpring => (
@@ -197,16 +195,12 @@ pub fn build_nonlinear_behavior(
             Box::new(crate::ms::MsElement::new(data, model)),
             ElemState::default(),
         ),
-        // 一般ブレース(弾塑性): 初期剛性1倍(材料力学・トラス要素)。引張専用は
-        // 圧縮側の剛性・軸力を実質ゼロとするスラック挙動でモデル化する。
-        ElementKind::Brace { tension_only } => {
-            let truss = if tension_only {
-                crate::truss::TrussElement::new_tension_only_nonlinear(data, model)
-            } else {
-                crate::truss::TrussElement::new(data, model, 1.0)
-            };
-            (Box::new(truss), ElemState::default())
-        }
+        // 一般ブレース(弾塑性): E·A/L の弾性トラス要素（材料力学）。引張専用ブレースの
+        // 圧縮無効化は線形応力解析の active-set 反復で扱うため、要素側は特別扱いしない。
+        ElementKind::Brace { .. } => (
+            Box::new(crate::truss::TrussElement::new(data, model)),
+            ElemState::default(),
+        ),
         // PanelZone / Shell / Wall / NodalSpring は現状の挙動（弾性ベース）を踏襲。
         // 節点バネは非線形解析でも常に弾性のまま（スケルトン未対応）。
         _ => build_behavior(data, model),

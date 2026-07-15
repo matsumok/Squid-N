@@ -1702,3 +1702,207 @@ fn test_axial_cut_applies_to_composite_src_column() {
         "荷重はブレースが全量負担するはず: {cut_brace}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 引張専用ブレースの active-set 反復（真の引張専用解析）
+// ---------------------------------------------------------------------------
+
+/// 引張専用ブレース検証用の1スパン門型フレーム。
+///
+/// - N0[0,0,0]・N1[L,0,0]: 基部固定
+/// - N2[0,0,H]・N3[L,0,H]: 頂部自由
+/// - e0/e1: 柱（鉛直 Beam, Fixed-Fixed）… ブレース無効化時の水平抵抗（曲げ）経路
+/// - e2: 頂部大梁（Beam）
+/// - e3: 対角ブレース N0→N3（`tension_only` は引数指定）
+///
+/// 頂部2節点に水平力 `fx`（+x）を与える。ブレース軸 t=(L,0,H)/len に対し、
+/// +x のスウェイで N3 が N0 から離れる → 軸伸び δ>0（引張）。-x なら δ<0（圧縮）。
+fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
+    let l = 4000.0_f64;
+    let h = 3000.0_f64;
+    let node = |id: u32, coord: [f64; 3], fixed: bool| Node {
+        id: NodeId(id),
+        coord,
+        restraint: if fixed {
+            Dof6Mask::FIXED
+        } else {
+            Dof6Mask::FREE
+        },
+        mass: None,
+        story: None,
+    };
+    let sec = Section {
+        id: SectionId(0),
+        name: "steel".into(),
+        area: 6000.0,
+        iy: 8.0e7,
+        iz: 8.0e7,
+        j: 1.0e6,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 5000.0,
+        as_z: 5000.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    };
+    let mat = Material {
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "steel".into(),
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: Some(235.0),
+    };
+    let column = |id: u32, n0: u32, n1: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    Model {
+        nodes: vec![
+            node(0, [0.0, 0.0, 0.0], true),
+            node(1, [l, 0.0, 0.0], true),
+            node(2, [0.0, 0.0, h], false),
+            node(3, [l, 0.0, h], false),
+        ],
+        elements: vec![
+            column(0, 0, 2),
+            column(1, 1, 3),
+            // e2: 頂部大梁
+            ElementData {
+                id: ElemId(2),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![NodeId(2), NodeId(3)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            },
+            // e3: 対角ブレース N0→N3
+            ElementData {
+                id: ElemId(3),
+                kind: ElementKind::Brace { tension_only },
+                nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            },
+        ],
+        sections: vec![sec],
+        materials: vec![mat],
+        load_cases: vec![LoadCase {
+            id: LoadCaseId(1),
+            name: "wind".into(),
+            nodal: vec![
+                NodalLoad {
+                    node: NodeId(2),
+                    values: [fx, 0.0, 0.0, 0.0, 0.0, 0.0],
+                },
+                NodalLoad {
+                    node: NodeId(3),
+                    values: [fx, 0.0, 0.0, 0.0, 0.0, 0.0],
+                },
+            ],
+            member: vec![],
+            kind: squid_n_core::model::LoadCaseKind::Seismic,
+        }],
+        stress_cfg: squid_n_core::model::StressAnalysisCfg::default(),
+        ..Default::default()
+    }
+}
+
+/// 引張側の荷重（+x スウェイ）では、反復 ON の引張専用ブレースが全剛性の
+/// 一般ブレース（`tension_only: false`）と厳密に一致する軸力を負担すること。
+/// active なブレースは E·A/L の一般ブレースそのものになる、という等価性の検証。
+#[test]
+fn test_tension_only_iteration_tension_side_matches_full_brace() {
+    // 参照: 一般（全剛性）ブレース
+    let full = tension_only_portal(1.0e4, false);
+    let ref_res = linear_static_once(&full, LoadCaseId(1)).unwrap();
+    let ref_brace = axial_force(&ref_res, ElemId(3));
+    assert!(
+        ref_brace.abs() > 1.0,
+        "参照ブレース軸力が有意であること: {ref_brace}"
+    );
+
+    // 引張専用 + 反復 ON
+    let mut model = tension_only_portal(1.0e4, true);
+    model.stress_cfg.tension_only_iteration = true;
+    let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+    let brace = axial_force(&res, ElemId(3));
+
+    assert!(
+        (brace - ref_brace).abs() / ref_brace.abs() < 1e-6,
+        "引張側では全剛性ブレースと一致するはず: full={ref_brace} to={brace}"
+    );
+}
+
+/// 圧縮側の荷重（−x スウェイ）では、反復 ON の引張専用ブレースが無効化され
+/// 軸力がほぼ0になること。一方、反復 OFF（一括解析）では全剛性 E·A/L のまま
+/// 圧縮の軸力を負担すること。
+#[test]
+fn test_tension_only_iteration_compression_side_is_slack() {
+    // 反復 OFF（一括解析）: 全剛性 E·A/L で圧縮を負担する
+    let base = tension_only_portal(-1.0e4, true);
+    let base_res = linear_static_once(&base, LoadCaseId(1)).unwrap();
+    let base_brace = axial_force(&base_res, ElemId(3));
+    assert!(
+        base_brace.abs() > 1.0,
+        "反復 OFF では圧縮軸力が有意であること: {base_brace}"
+    );
+    assert!(base_brace < 0.0, "圧縮（負）であること: {base_brace}");
+
+    // 反復 ON: 圧縮ブレースは無効化され軸力ほぼ0
+    let mut model = tension_only_portal(-1.0e4, true);
+    model.stress_cfg.tension_only_iteration = true;
+    let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+    let brace = axial_force(&res, ElemId(3));
+
+    assert!(
+        brace.abs() <= base_brace.abs() * 1e-3,
+        "圧縮側では軸力が0へ落ちるはず: base={base_brace} to={brace}"
+    );
+}
+
+/// 反復が既定（OFF）のとき、引張専用ブレースは一括解析で全剛性 E·A/L のまま
+/// 圧縮軸力を負担すること（フラグ ON/OFF で挙動が切り替わること）。
+#[test]
+fn test_tension_only_iteration_flag_off_is_default_full_stiffness() {
+    let model = tension_only_portal(-1.0e4, true);
+    assert!(!model.stress_cfg.tension_only_iteration);
+    let off = linear_static_once(&model, LoadCaseId(1)).unwrap();
+    let off_brace = axial_force(&off, ElemId(3));
+
+    // フラグ OFF のときは圧縮でも全剛性で軸力を負担する。
+    assert!(
+        off_brace < 0.0 && off_brace.abs() > 1.0,
+        "OFF では従来どおり圧縮軸力を負担するはず: {off_brace}"
+    );
+}
