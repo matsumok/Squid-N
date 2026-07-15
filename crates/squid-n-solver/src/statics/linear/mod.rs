@@ -170,7 +170,7 @@ fn reduce_brace_axial<'a>(model: &'a Model, disabled: &[usize]) -> Cow<'a, Model
 
 /// active-set 反復で追跡する引張専用ブレース1本の情報。
 struct ToBrace {
-    /// `work.elements` 内の要素 index。
+    /// `model.elements` 内の要素 index。
     elem: usize,
     /// i 端・j 端の節点 index。
     ni: usize,
@@ -181,37 +181,23 @@ struct ToBrace {
 
 /// 引張専用ブレースを active-set 法で反復解析する（真の引張専用解析）。
 ///
-/// 引張専用ブレースを全剛性の一般ブレース（`tension_only: false`、factor=1.0）に
-/// 読み替えた作業モデルを作り、各反復で圧縮側（軸伸び<0）に入ったブレースの軸剛性を
-/// 縮小して無効化する。無効化されたブレースの節点変位から求めた軸伸びが引張側へ
-/// 転じれば再び active に戻す。active 集合が前回と一致した時点で収束とみなす。
+/// ブレース（軸剛性 E·A/L）を各反復で解き、圧縮側（軸伸び<0）に入った引張専用
+/// ブレースの軸剛性を縮小して無効化する。無効化されたブレースの節点変位から
+/// 求めた軸伸びが引張側へ転じれば再び active に戻す。active 集合が前回と一致した
+/// 時点で収束とみなす。
 ///
 /// 収束後の部材内力は、active な引張ブレースが EA/L·伸び を負担し、無効化された
 /// 圧縮ブレースはほぼ 0（EA×1e-6 相当）となる。
 fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
-    // 引張専用ブレースを全剛性の一般ブレースへ読み替えた作業モデル。active-set 反復では
-    // 圧縮側に入ったブレースのみ EA を縮小して無効化する。
-    let mut work = model.clone();
+    // 追跡対象の引張専用ブレースを収集する。幾何が退化した（節点不足・零長）ブレースは
+    // 軸剛性が実質ゼロで軸力を負担しないため除外する。
     let mut braces: Vec<ToBrace> = Vec::new();
-    for i in 0..work.elements.len() {
-        if !matches!(
-            work.elements[i].kind,
-            ElementKind::Brace { tension_only: true }
-        ) {
-            continue;
-        }
-        // 全剛性の一般ブレースへ読み替え（build_behavior の factor=1.0）。
-        work.elements[i].kind = ElementKind::Brace {
-            tension_only: false,
-        };
-        // 幾何が退化した（節点不足・零長）ブレースは軸剛性が実質ゼロで軸力を
-        // 負担しないため、追跡対象から除外する（読み替えのみ行う）。
-        let e = &work.elements[i];
-        if e.nodes.len() < 2 {
+    for (i, e) in model.elements.iter().enumerate() {
+        if !matches!(e.kind, ElementKind::Brace { tension_only: true }) || e.nodes.len() < 2 {
             continue;
         }
         let (ni, nj) = (e.nodes[0].index(), e.nodes[1].index());
-        let (Some(n0), Some(n1)) = (work.nodes.get(ni), work.nodes.get(nj)) else {
+        let (Some(n0), Some(n1)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
             continue;
         };
         let d = [
@@ -241,7 +227,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
             .filter(|(_, &a)| !a)
             .map(|(b, _)| b.elem)
             .collect();
-        let solve_model = reduce_brace_axial(&work, &disabled);
+        let solve_model = reduce_brace_axial(model, &disabled);
         let res = solve_once_inner(&solve_model, lc)?;
 
         // 各ブレースの軸伸び δ = t·(u_j − u_i) から次の active 集合を判定する。
@@ -267,7 +253,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
     // 収束しなかった（active 集合が振動した）場合は最後の結果を返す。
     match last {
         Some(res) => Ok(res),
-        None => solve_once_inner(&work, lc),
+        None => solve_once_inner(model, lc),
     }
 }
 

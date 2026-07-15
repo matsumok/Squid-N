@@ -343,24 +343,20 @@ fn test_build_behavior_brace_normal_full_stiffness() {
     assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
 
-/// 引張専用ブレース: 弾性解析（build_behavior）では剛性を1/2にモデル化する
-/// （引張と圧縮が対で存在するとみなし、弾性解析では剛性を1/2）。
+/// 引張専用ブレース: 要素側では特別扱いせず、build_behavior は全剛性 E·A/L の
+/// TrussElement を生成する（圧縮側の無効化は線形応力解析の active-set 反復で扱う）。
 #[test]
-fn test_build_behavior_brace_tension_only_half_stiffness() {
+fn test_build_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
     let (behavior, state) = build_behavior(&elem, &model);
     let ctx = crate::behavior::Ctx { model: &model };
     let k = behavior.tangent_stiffness(&state, &ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;
-    assert!(
-        (k.get(0, 0) - 0.5 * ea_l).abs() < 1e-6,
-        "k00={}",
-        k.get(0, 0)
-    );
+    assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
 
-/// 引張専用ブレース: 弾塑性解析（build_nonlinear_behavior）では初期剛性を
-/// 1倍とする（弾塑性解析の場合は初期剛性は1倍とする）。
+/// 引張専用ブレース: 弾塑性解析（build_nonlinear_behavior）でも全剛性 E·A/L の
+/// TrussElement を生成する（要素側では特別扱いしない）。
 #[test]
 fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);

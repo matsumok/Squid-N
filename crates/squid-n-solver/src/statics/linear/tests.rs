@@ -1840,7 +1840,7 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
 
 /// 引張側の荷重（+x スウェイ）では、反復 ON の引張専用ブレースが全剛性の
 /// 一般ブレース（`tension_only: false`）と厳密に一致する軸力を負担すること。
-/// active なブレースは factor=1.0 の一般ブレースそのものになる、という等価性の検証。
+/// active なブレースは E·A/L の一般ブレースそのものになる、という等価性の検証。
 #[test]
 fn test_tension_only_iteration_tension_side_matches_full_brace() {
     // 参照: 一般（全剛性）ブレース
@@ -1865,11 +1865,11 @@ fn test_tension_only_iteration_tension_side_matches_full_brace() {
 }
 
 /// 圧縮側の荷重（−x スウェイ）では、反復 ON の引張専用ブレースが無効化され
-/// 軸力がほぼ0になること。一方、反復 OFF（従来の factor=0.5 一括解析）では
+/// 軸力がほぼ0になること。一方、反復 OFF（一括解析）では全剛性 E·A/L のまま
 /// 圧縮の軸力を負担すること。
 #[test]
 fn test_tension_only_iteration_compression_side_is_slack() {
-    // 反復 OFF（従来挙動）: factor=0.5 で圧縮を負担する
+    // 反復 OFF（一括解析）: 全剛性 E·A/L で圧縮を負担する
     let base = tension_only_portal(-1.0e4, true);
     let base_res = linear_static_once(&base, LoadCaseId(1)).unwrap();
     let base_brace = axial_force(&base_res, ElemId(3));
@@ -1891,16 +1891,16 @@ fn test_tension_only_iteration_compression_side_is_slack() {
     );
 }
 
-/// 反復が既定（OFF）のとき、`linear_static_once` の結果が従来の一括解析
-/// （factor=0.5）と一致し、フラグ ON/OFF で挙動が切り替わること。
+/// 反復が既定（OFF）のとき、引張専用ブレースは一括解析で全剛性 E·A/L のまま
+/// 圧縮軸力を負担すること（フラグ ON/OFF で挙動が切り替わること）。
 #[test]
-fn test_tension_only_iteration_flag_off_is_legacy_behavior() {
+fn test_tension_only_iteration_flag_off_is_default_full_stiffness() {
     let model = tension_only_portal(-1.0e4, true);
     assert!(!model.stress_cfg.tension_only_iteration);
     let off = linear_static_once(&model, LoadCaseId(1)).unwrap();
     let off_brace = axial_force(&off, ElemId(3));
 
-    // フラグ OFF のときは圧縮でも軸力を負担する（従来の factor=0.5）。
+    // フラグ OFF のときは圧縮でも全剛性で軸力を負担する。
     assert!(
         off_brace < 0.0 && off_brace.abs() > 1.0,
         "OFF では従来どおり圧縮軸力を負担するはず: {off_brace}"
