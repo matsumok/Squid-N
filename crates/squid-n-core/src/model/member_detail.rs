@@ -110,9 +110,7 @@ impl MemberDetailAttr {
         }
         if let Some(h) = &self.haunch_j {
             if h.length > 0.0 {
-                xs.push(
-                    (1.0 - (rigid_zone.face_j + h.length) / geom_len).clamp(0.5 + 1e-9, 1.0),
-                );
+                xs.push((1.0 - (rigid_zone.face_j + h.length) / geom_len).clamp(0.5 + 1e-9, 1.0));
             }
         }
         for j in &self.joints {
