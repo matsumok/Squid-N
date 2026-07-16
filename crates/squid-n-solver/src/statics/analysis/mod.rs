@@ -191,9 +191,11 @@ impl<'m> Analysis<'m> {
 
     /// バッチ API の共通経路。並列設定時は項目単位に rayon で並列実行する。
     ///
-    /// ケース並列中はソルバ内部（faer）の並列を逐次へ一時的に固定する。
-    /// ケース並列と faer のネスト並列は同一 rayon プールを奪い合い、実測で
-    /// ケース並列のみより遅くなるため（`examples/parallel_bench` 参照）。
+    /// ケース並列（outer）とソルバ内部＝faer の並列（inner）の合計要求が
+    /// コア数を超えるとスレッドを奪い合って逆に遅くなるため
+    /// （`examples/parallel_bench` で実測）、総枠 `effective_threads()` を
+    /// 両者へ自動配分する: ケース数がコア数以上なら inner=1（ケース並列のみ）、
+    /// ケース数が少ないときは余りコア（cores/outer）を faer の内部並列へ回す。
     /// 終了後は設定値（`squid_n_math::parallelism`）を faer へ再適用して戻す。
     fn run_batch<T: Sync, R: Send>(
         &self,
@@ -201,12 +203,20 @@ impl<'m> Analysis<'m> {
         f: impl Fn(&T) -> R + Send + Sync,
     ) -> Vec<R> {
         use rayon::prelude::*;
-        if squid_n_math::parallelism::is_parallel() {
-            faer::set_global_parallelism(faer::Par::Seq);
+        if squid_n_math::parallelism::is_parallel() && items.len() > 1 {
+            let cores = squid_n_math::parallelism::effective_threads();
+            let outer = items.len().min(cores);
+            let inner = (cores / outer).max(1);
+            if inner == 1 {
+                faer::set_global_parallelism(faer::Par::Seq);
+            } else {
+                faer::set_global_parallelism(faer::Par::rayon(inner));
+            }
             let out = squid_n_math::parallelism::run(|| items.par_iter().map(f).collect());
             squid_n_math::parallelism::apply_to_faer();
             out
         } else {
+            // 1 件のみのバッチは逐次経路（設定どおりの faer 並列で 1 件を解く）
             items.iter().map(f).collect()
         }
     }

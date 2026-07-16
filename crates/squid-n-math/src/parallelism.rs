@@ -70,6 +70,19 @@ pub fn is_parallel() -> bool {
     !matches!(parallelism(), Parallelism::Deterministic)
 }
 
+/// 現在の設定で使うスレッド数の実効値を返す。
+/// `Auto` は使用可能な並列数（`available_parallelism`）に解決する。
+/// バッチ API がケース並列とソルバ内部並列へスレッドを配分する際の総枠になる。
+pub fn effective_threads() -> usize {
+    match parallelism() {
+        Parallelism::Deterministic => 1,
+        Parallelism::Auto => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+        Parallelism::Threads(n) => n.max(1),
+    }
+}
+
 /// 現在の設定を faer のグローバル並列設定へ反映する。
 /// ソルバの各エントリポイントの先頭で呼ぶ（従来の
 /// `faer::set_global_parallelism(faer::Par::Seq)` 固定呼び出しの置き換え）。

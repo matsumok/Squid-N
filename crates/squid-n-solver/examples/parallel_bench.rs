@@ -164,7 +164,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
     }
 }
 
-fn bench(label: &str, p: Parallelism, model: &Model) -> (f64, f64) {
+fn bench(label: &str, p: Parallelism, model: &Model) -> (f64, f64, f64) {
     set_parallelism(p);
     let t0 = Instant::now();
     let analysis = Analysis::prepare(model).expect("解析準備に失敗");
@@ -174,11 +174,18 @@ fn bench(label: &str, p: Parallelism, model: &Model) -> (f64, f64) {
     let results = analysis.linear_combination_batch(&model.combinations);
     let t_batch = t1.elapsed().as_secs_f64();
     let n_ok = results.iter().filter(|r| r.is_ok()).count();
+
+    // ケース数 < コア数のときの自動配分（余りコアを faer 内部並列へ）の確認用
+    let t2 = Instant::now();
+    let small = analysis.linear_combination_batch(&model.combinations[..2]);
+    let t_small = t2.elapsed().as_secs_f64();
+    let small_ok = small.iter().filter(|r| r.is_ok()).count();
+
     println!(
-        "{label:<24} prepare(K組立+分解): {t_prepare:8.3}s  組合せ{}件一括: {t_batch:8.3}s (成功 {n_ok})",
+        "{label:<24} prepare(K組立+分解): {t_prepare:8.3}s  組合せ{}件一括: {t_batch:8.3}s (成功 {n_ok})  組合せ2件のみ: {t_small:8.3}s (成功 {small_ok})",
         results.len(),
     );
-    (t_prepare, t_batch)
+    (t_prepare, t_batch, t_small)
 }
 
 fn main() {
@@ -204,12 +211,14 @@ fn main() {
     let _ = bench("(ウォームアップ)", Parallelism::Deterministic, &model);
     println!();
 
-    let (p_seq, b_seq) = bench("単一スレッド(既定)", Parallelism::Deterministic, &model);
-    let (p_par, b_par) = bench("並列(Auto=全コア)", Parallelism::Auto, &model);
+    let (p_seq, b_seq, s_seq) = bench("単一スレッド(既定)", Parallelism::Deterministic, &model);
+    let (p_par, b_par, s_par) = bench("並列(Auto=全コア)", Parallelism::Auto, &model);
     println!();
     println!(
-        "速度比: prepare ×{:.2}  組合せ一括 ×{:.2}",
+        "速度比: prepare ×{:.2}  組合せ{}件一括 ×{:.2}  組合せ2件のみ ×{:.2}",
         p_seq / p_par,
+        model.combinations.len(),
         b_seq / b_par,
+        s_seq / s_par,
     );
 }
