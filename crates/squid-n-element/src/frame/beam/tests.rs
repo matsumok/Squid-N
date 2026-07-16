@@ -495,6 +495,39 @@ fn test_pinned_end_releases_moment() {
 }
 
 #[test]
+fn test_fixed_ends_exact_equals_raw() {
+    // 両端剛接は raw 剛性そのもの（ペナルティばね近似を用いない厳密な扱い）。
+    // 剛域なし・両端固定なので local_stiffness は raw と厳密に一致する。
+    let beam = make_test_beam();
+    let k = beam.local_stiffness();
+    let raw = beam.local_stiffness_raw();
+    for i in 0..12 {
+        for j in 0..12 {
+            assert!(
+                (k.get(i, j) - raw.get(i, j)).abs() < 1e-9,
+                "K[{i},{j}] {} != raw {}",
+                k.get(i, j),
+                raw.get(i, j)
+            );
+        }
+    }
+}
+
+#[test]
+fn test_pinned_end_rotation_stiffness_exactly_zero() {
+    // ピン端の節点回転への当要素の寄与は「厳密に 0」（従来のペナルティでは ~1e-8 残っていた）。
+    let mut beam = make_test_beam();
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    let k = beam.local_stiffness();
+    for r in [3usize, 4, 5] {
+        for c in 0..12 {
+            assert_eq!(k.get(r, c), 0.0, "released rot DOF {r} row must be exactly 0 at col {c}");
+            assert_eq!(k.get(c, r), 0.0, "released rot DOF {r} col must be exactly 0 at row {c}");
+        }
+    }
+}
+
+#[test]
 fn test_auto_rigid_zone_standard_formula() {
     // 柱せい 600, 梁せい 700 の T 字接合
     // 梁端 λ = 柱せい/2 - 梁せい/4 = 300 - 175 = 125
