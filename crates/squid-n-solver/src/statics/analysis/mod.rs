@@ -44,7 +44,7 @@ impl<'m> Analysis<'m> {
     /// 解析前にモデルの静的検証（参照整合・拘束・断面/材料割当・孤立節点）を行い、
     /// 問題があればユーザー向けの日本語診断メッセージ付きでエラーを返す。
     pub fn prepare(model: &'m Model) -> Result<Self, SolveError> {
-        faer::set_global_parallelism(faer::Par::Seq);
+        squid_n_math::parallelism::apply_to_faer();
         model
             .validate()
             .map_err(|e| SolveError::InvalidInput(format!("モデル検証エラー: {:?}", e)))?;
@@ -167,6 +167,48 @@ impl<'m> Analysis<'m> {
     /// Solve eigenvalue problem (subspace iteration) for n_modes lowest modes.
     pub fn eigen(&self, n_modes: usize) -> Result<ModalResult, SolveError> {
         eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, n_modes)
+    }
+
+    /// 複数の荷重ケースを一括で解く（分解済み K を共有）。
+    ///
+    /// 並列度設定（[`squid_n_math::parallelism`]）が並列（`Auto`/`Threads`）の
+    /// 場合は荷重ケース単位に rayon で並列実行する。各ケースの計算はケース間で
+    /// 可変状態を共有しない（`&self` のみ）ため実行順に依存せず、結果の順序は
+    /// 入力 `lcs` の順で固定される。`Deterministic`（既定）では従来どおり
+    /// 逐次実行し、`linear_static` を順に呼んだ場合とビット一致する。
+    pub fn linear_static_batch(&self, lcs: &[LoadCaseId]) -> Vec<Result<StaticOnce, SolveError>> {
+        self.run_batch(lcs, |lc| self.linear_static(*lc))
+    }
+
+    /// 複数の荷重組合せを一括で解く（分解済み K を共有）。
+    /// 並列実行の考え方は [`Self::linear_static_batch`] と同じ。
+    pub fn linear_combination_batch(
+        &self,
+        combos: &[LoadCombination],
+    ) -> Vec<Result<StaticOnce, SolveError>> {
+        self.run_batch(combos, |c| self.linear_combination(c))
+    }
+
+    /// バッチ API の共通経路。並列設定時は項目単位に rayon で並列実行する。
+    ///
+    /// ケース並列中はソルバ内部（faer）の並列を逐次へ一時的に固定する。
+    /// ケース並列と faer のネスト並列は同一 rayon プールを奪い合い、実測で
+    /// ケース並列のみより遅くなるため（`examples/parallel_bench` 参照）。
+    /// 終了後は設定値（`squid_n_math::parallelism`）を faer へ再適用して戻す。
+    fn run_batch<T: Sync, R: Send>(
+        &self,
+        items: &[T],
+        f: impl Fn(&T) -> R + Send + Sync,
+    ) -> Vec<R> {
+        use rayon::prelude::*;
+        if squid_n_math::parallelism::is_parallel() {
+            faer::set_global_parallelism(faer::Par::Seq);
+            let out = squid_n_math::parallelism::run(|| items.par_iter().map(f).collect());
+            squid_n_math::parallelism::apply_to_faer();
+            out
+        } else {
+            items.iter().map(f).collect()
+        }
     }
 
     /// Solve a load combination by assembling the weighted sum of load case
