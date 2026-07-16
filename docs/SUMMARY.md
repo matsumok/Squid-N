@@ -5,6 +5,7 @@
 # 概要
 
 - [アーキテクチャ](./architecture.md)
+- [ST-Bridge 連携（モデル入出力）](./stbridge.md)
 - [MCP サーバ](./mcp_server.md)
 
 # 計算根拠（理論・出典）
