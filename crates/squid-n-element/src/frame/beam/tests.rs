@@ -483,6 +483,55 @@ fn test_beam_torsion_stiffness() {
 }
 
 #[test]
+fn test_torsion_not_stiffened_by_rigid_zone() {
+    // ねじりは剛域で増大させない（軸剛性と同じく節点間長 L 基準 GJ/L）。
+    // 剛域を入れても剛性は GJ/l_flex ではなく GJ/L のまま。
+    let mut beam = make_test_beam();
+    beam.j = 5.0e8;
+    beam.rigid = RigidZone {
+        length_i: 300.0,
+        length_j: 300.0,
+        ..Default::default()
+    };
+    let k = beam.local_stiffness();
+    let gj_l = beam.g * beam.j / beam.length; // 全長 3000 基準（可撓長 2400 ではない）
+    assert!(
+        (k.get(3, 3) - gj_l).abs() / gj_l < 1e-9,
+        "ねじりは GJ/L: got {}, want {}",
+        k.get(3, 3),
+        gj_l
+    );
+    assert!((k.get(3, 9) + gj_l).abs() / gj_l < 1e-9);
+}
+
+#[test]
+fn test_geometric_stiffness_consistent_with_rigid_zone() {
+    use crate::behavior::ElementBehavior;
+    let n = 1000.0;
+    // 剛域なし: 従来どおり全長 L 基準（回帰なしを確認）。
+    let kg = make_test_beam().geometric_stiffness(n);
+    let expected_full = n / 3000.0 * 6.0 / 5.0;
+    assert!((kg.get(1, 1) - expected_full).abs() / expected_full < 1e-9);
+
+    // 剛域あり: 可撓長基準となり弾性剛性と整合（並進対角 N/l_flex·6/5 が増える）。
+    let mut beam_rz = make_test_beam();
+    beam_rz.rigid = RigidZone {
+        length_i: 300.0,
+        length_j: 300.0,
+        ..Default::default()
+    };
+    let kg_rz = beam_rz.geometric_stiffness(n);
+    let expected_flex = n / 2400.0 * 6.0 / 5.0; // 可撓長 2400
+    assert!(
+        (kg_rz.get(1, 1) - expected_flex).abs() / expected_flex < 1e-9,
+        "剛域ありは可撓長基準: got {}, want {}",
+        kg_rz.get(1, 1),
+        expected_flex
+    );
+    assert!(kg_rz.get(1, 1) > kg.get(1, 1));
+}
+
+#[test]
 fn test_pinned_end_releases_moment() {
     // i端をピンにすると、i端回転行/列がほぼゼロになり剛性が低下
     let mut beam = make_test_beam();

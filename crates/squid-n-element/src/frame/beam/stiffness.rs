@@ -249,10 +249,12 @@ impl BeamElement {
             let mut beam = self.clone();
             beam.length = l_flex;
             beam.end_cond = [EndCondition::Fixed, EndCondition::Fixed];
-            // 軸剛性は剛域で増大させない（軸断面積の l0/l 補正）。可撓長 l0 で
-            // 組み立てるため A·(l0/l) を用いると軸剛性が EA/l（節点間長基準）と
-            // なり、曲げのみ剛域変換で剛とする扱いに揃う。剛域なしでは補正 1。
+            // 軸・ねじり剛性は剛域で増大させない（断面性能の l0/l 補正）。可撓長 l0 で
+            // 組み立てるため A·(l0/l)・J·(l0/l) を用いると EA/l・GJ/l（いずれも節点間長
+            // 基準）となり、曲げ（せん断を含む）のみ剛域変換で剛とする扱いに揃う。
+            // 剛域なしでは補正 1。
             beam.a = self.a * (l_flex / self.length);
+            beam.j = self.j * (l_flex / self.length);
             beam.local_stiffness_raw()
         } else {
             LocalMat::zeros(12)
