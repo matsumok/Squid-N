@@ -77,6 +77,7 @@
 | 24 | ST-Bridge 入出力 | squid-n-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
 | 25 | 編集トランザクション（EditCommand/Undo） | squid-n-edit | lib.rs | `test_*` | P3/P8 | ✅ |
 | 26 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M・柱 Mu の ACI） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,rc_column_aci,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_rc_column_mu_aci_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
+| 27 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
 
@@ -96,6 +97,10 @@
 > #13: 断面検定（許容応力度検定）の 参照実装マニュアル照合結果は
 > `v_and_v/断面検定_参照実装照合.md` を参照（対象: rc.rs/steel.rs/src_cft.rs/
 > joint.rs/joint_wiring.rs/combo.rs）。
+> #27: 数量積算（部位別の概算数量集計）の 参照実装マニュアル照合結果は
+> `v_and_v/数量積算_参照実装照合.md` を参照（対象: quantity/{mod,member,rebar}.rs、
+> quantity_view.rs/summary.rs/mcp）。式は手計算照合済みだがモデル制約による残置項目
+> （ハンチ・フーチング・多断面配筋・壁配筋詳細等）があるため 🔶。
 > P4（材料・断面）の監査結果は `v_and_v/p4_review.md` を参照。
 > #19: 包絡線（軟化・接線符号・連続性）・ひび割れ判定・MP 反転検知/ξ 更新を修正し、単軸履歴則 insta スナップショット追加で ✅。
 > #20: 武田・原点指向・スリップに `UniaxialMaterial`(trial/commit/revert) を実装。武田内側ルール（ポリゴン則）・TakedaDegrading（ピーク劣化）を本格化。insta スナップショットでループ固定し ✅。
