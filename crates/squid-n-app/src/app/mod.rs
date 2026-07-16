@@ -1243,13 +1243,23 @@ impl eframe::App for App {
                     ui.close();
                 }
                 if ui
-                    .button("📤 ST-Bridge 書出…")
+                    .button("📤 ST-Bridge 書出（物性）…")
                     .on_hover_text(
-                        "ST-Bridge 2.0 サブセット（節点・部材・断面・材料・節点荷重）。支点・部材荷重・組合せは含まれません",
+                        "断面を物性直持ち（StbSecRaw）で書き出す。Squid-N 同士の受け渡し向け（読込で往復可能）。支点・部材荷重・組合せは含まれません",
                     )
                     .clicked()
                 {
-                    self.export_stbridge_dialog();
+                    self.export_stbridge_dialog(squid_n_io::stbridge::SectionExportMode::Raw);
+                    ui.close();
+                }
+                if ui
+                    .button("📤 ST-Bridge 書出（断面形状）…")
+                    .on_hover_text(
+                        "断面を ST-Bridge 標準要素（StbSecColumn_S 等）＋形鋼ライブラリで書き出す。BIM・他ソフト向け。形状の無い断面や SRC/CFT/耐震壁は物性直持ちにフォールバックします",
+                    )
+                    .clicked()
+                {
+                    self.export_stbridge_dialog(squid_n_io::stbridge::SectionExportMode::Standard);
                     ui.close();
                 }
             });

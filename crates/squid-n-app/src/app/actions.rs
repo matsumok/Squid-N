@@ -71,9 +71,14 @@ impl App {
     }
 
     /// モデルを ST-Bridge（XML, サブセット）として指定パスへ書き出す。
-    pub fn export_stbridge_to(&mut self, path: std::path::PathBuf) {
+    /// `mode` で断面表現（Raw＝物性直持ち／Standard＝標準断面要素＋形鋼ライブラリ）を選ぶ。
+    pub fn export_stbridge_to(
+        &mut self,
+        path: std::path::PathBuf,
+        mode: squid_n_io::stbridge::SectionExportMode,
+    ) {
         self.last_error = None;
-        match squid_n_io::stbridge::export_stbridge(&self.model) {
+        match squid_n_io::stbridge::export_stbridge_with(&self.model, mode) {
             Ok(xml) => {
                 if let Err(e) = std::fs::write(&path, xml) {
                     self.last_error = Some(format!("ST-Bridge書出エラー: {}", e));

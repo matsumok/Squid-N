@@ -74,10 +74,12 @@ let model = load_scz(Path::new("model.scz"))?;
 | メニュー | 動作 |
 |---|---|
 | 📥 **ST-Bridge 読込…** | `.stb`（または `.xml`）ファイルを選び、内部モデルへ取り込む。取り込んだモデルは検証（`validate`）を通ってから現在のモデルと差し替わる |
-| 📤 **ST-Bridge 書出…** | 現在のモデルを ST-Bridge XML として `.stb` ファイルに書き出す |
+| 📤 **ST-Bridge 書出（物性）…** | 断面を物性直持ち（`StbSecRaw`）で書き出す。Squid-N 同士の受け渡し向け（読込で往復可能） |
+| 📤 **ST-Bridge 書出（断面形状）…** | 断面を ST-Bridge 標準要素＋形鋼ライブラリで書き出す。BIM・他ソフト向け |
 
 - ファイル選択ダイアログの拡張子フィルタは `.stb` / `.xml`。
 - ST-Bridge 読込は `.scz` プロジェクトとは別系統であり、読み込んでもプロジェクトの保存先パスは設定されない（新規モデルとして開く扱い）。上書き保存するとネイティブの `.scz` として保存される。
+- 書き出しは 2 つの**断面表現モード**から選べる（下記「断面表現モード」を参照）。
 
 ### 対応バージョン
 
@@ -106,22 +108,48 @@ let model = load_scz(Path::new("model.scz"))?;
 - 部材荷重・荷重組合せ。
 - 床（スラブ）・ブレース・剛域・端部接合などの詳細。
 
-### 断面表現に関する注意
+### 断面表現モード（書き出し）
 
-断面は、実 ST-Bridge の形鋼ライブラリ参照（`StbSecColumn_S` 等）ではなく、内部モデルの物性をそのまま持つ独自要素 `StbSecRaw` として入出力する。これは「正準モデル（内部モデル）を唯一の真実とする」方針によるもので、Squid-N 同士の受け渡しでは物性が完全に往復する。一方、他社ソフトとの完全な相互運用には断面形状名のマッピングが必要であり、これは将来の課題である。
+書き出し時、断面の表現方法を 2 つのモードから選べる。用途に応じて使い分ける。
+
+| モード | 断面の表現 | 主な用途 | 往復（再読込） |
+|---|---|---|---|
+| **物性**（`Raw`, 既定） | 物性を独自要素 `StbSecRaw`（面積・断面二次モーメント等）で直接持つ | Squid-N 同士の受け渡し | **可能**（Squid-N が読み戻せる） |
+| **断面形状**（`Standard`） | ST-Bridge 標準の断面要素（`StbSecColumn_S` 等）＋形鋼ライブラリ（`StbSecSteel`）で表す | BIM・他社ソフトへの受け渡し | 不可（Squid-N の読込は標準要素を解釈しない） |
+
+**物性モード**は「正準モデル（内部モデル）を唯一の真実とする」方針に沿い、Squid-N 同士なら物性が完全に往復する。一方、他社ソフトや BIM ツールは ST-Bridge 標準の断面要素を期待することがあるため、**断面形状モード**を用意している。
+
+#### 断面形状モードの対応
+
+内部モデルが持つパラメトリック断面形状（`Section.shape`）を、対応する ST-Bridge 要素へ写像する。
+
+| 内部形状 | 書き出し先 |
+|---|---|
+| H形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T形鋼 | 形鋼ライブラリ `StbSecSteel`（`StbSecRoll-H`/`-BOX`/`StbSecPipe` 等）＋ `StbSecColumn_S` / `StbSecBeam_S` |
+| RC 矩形・円形 | `StbSecColumn_RC` / `StbSecBeam_RC`（断面の幾何。配筋は本モードでは書き出さない） |
+| 上記以外（SRC・CFT・耐震壁・形状未定義） | `StbSecRaw`（物性）へフォールバック |
+
+補足:
+
+- ST-Bridge では断面が柱用（`StbSecColumn_*`）と梁用（`StbSecBeam_*`）に型分けされる。内部モデルで 1 つの断面を柱と梁の両方が共有している場合、書き出し時に柱用・梁用の 2 要素へ分割し、梁用へ新しい断面 id を割り当てる（各部材の断面参照は自動で張り替える）。
+- 断面形状モードは他ソフトへの受け渡し（outbound）専用である。Squid-N での往復が必要なら物性モードを使う。
 
 ### ライブラリからの利用
 
 ```rust
-use squid_n_io::stbridge::{import_stbridge, export_stbridge};
+use squid_n_io::stbridge::{import_stbridge, export_stbridge, export_stbridge_with, SectionExportMode};
 
 // 読み込み: ST-Bridge XML 文字列 → 内部モデル
 let xml = std::fs::read_to_string("model.stb")?;
 let model = import_stbridge(&xml)?;
 
-// 書き出し: 内部モデル → ST-Bridge XML 文字列
+// 書き出し（物性モード / 既定）: 内部モデル → ST-Bridge XML 文字列
 let xml = export_stbridge(&model)?;
 std::fs::write("model.stb", xml)?;
+
+// 書き出し（断面形状モード）: BIM・他ソフト向け
+let xml = export_stbridge_with(&model, SectionExportMode::Standard)?;
+std::fs::write("model_std.stb", xml)?;
 ```
 
 ---
