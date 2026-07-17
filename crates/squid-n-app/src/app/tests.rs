@@ -976,7 +976,7 @@ fn test_export_and_import_stbridge_roundtrip() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     let original = app.model.clone();
-    app.export_stbridge_to(path.clone());
+    app.export_stbridge_to(path.clone(), squid_n_io::stbridge::SectionExportMode::Raw);
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
     let mut app2 = App::default();
@@ -998,6 +998,72 @@ fn test_export_and_import_stbridge_roundtrip() {
         assert_eq!(a.coord, b.coord);
     }
     assert_eq!(app2.model.elements, original.elements);
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn test_export_stbridge_standard_mode_writes_steel_library() {
+    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("standard.stb");
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.export_stbridge_to(
+        path.clone(),
+        squid_n_io::stbridge::SectionExportMode::Standard,
+    );
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let xml = std::fs::read_to_string(&path).unwrap();
+    // 門型ラーメンのサンプルは鋼 H 断面（柱・梁）を持つため、標準モードでは
+    // 標準断面要素と形鋼ライブラリが書き出される。
+    assert!(xml.contains("<StbSecColumn_S "), "鋼柱は StbSecColumn_S");
+    assert!(xml.contains("<StbSecBeam_S "), "鋼梁は StbSecBeam_S");
+    assert!(xml.contains("<StbSecSteel>"), "形鋼ライブラリを出す");
+    assert!(
+        !xml.contains("<StbSecRaw "),
+        "形状を持つ断面は Raw にしない"
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn test_stbridge_standard_mode_roundtrip_through_app() {
+    // 断面形状モードで書き出したファイルを GUI 経路（import_stbridge_from）で
+    // 読み戻せる（検証エラーなくモデルが差し替わり、断面形状が復元される）。
+    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std_rt");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("standard_rt.stb");
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    let n_sections = app.model.sections.len();
+    app.export_stbridge_to(
+        path.clone(),
+        squid_n_io::stbridge::SectionExportMode::Standard,
+    );
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut app2 = App::default();
+    app2.import_stbridge_from(path.clone());
+    assert!(
+        app2.last_error.is_none(),
+        "標準モードのファイルを読み戻せる: {:?}",
+        app2.last_error
+    );
+    assert!(app2.model.validate().is_ok());
+    assert_eq!(app2.model.sections.len(), n_sections);
+    // サンプルは鋼 H 断面のみ。読み戻した断面も H 形鋼として復元される。
+    assert!(
+        app2.model.sections.iter().all(|s| matches!(
+            s.shape,
+            Some(squid_n_core::section_shape::SectionShape::SteelH { .. })
+        )),
+        "断面形状が H 形鋼として復元される"
+    );
 
     std::fs::remove_file(&path).ok();
 }

@@ -1,15 +1,37 @@
 //! ST-Bridge 直列化（Export）。設計書 §12.5。
 //!
-//! - [`export_stbridge`] — 内部モデルを ST-Bridge 2.0（subset）XML 文字列へ出力する。
-//! - [`fmt`] — 整数値は小数点なし、それ以外は既定の f64 表記で整形する（priv）。
+//! - [`export_stbridge`] — 内部モデルを ST-Bridge 2.0（subset）XML 文字列へ出力する（既定＝Raw）。
+//! - [`export_stbridge_with`] — 断面表現モードを指定して出力する。
+//! - [`fmt`] — 整数値は小数点なし、それ以外は既定の f64 表記で整形する（`pub(super)`）。
 //! - [`opt`] — `Option<f64>` を空文字列または [`fmt`] で整形する（priv）。
-//! - [`esc`] — XML 特殊文字をエスケープする（priv）。
+//! - [`esc`] — XML 特殊文字をエスケープする（`pub(super)`）。
 
-use super::{StbError, STB_VERSION};
+use super::section_std::standard_sections;
+use super::{SectionExportMode, StbError, STB_VERSION};
 use squid_n_core::model::{ElementKind, Model};
+use std::collections::HashMap;
 
-/// 内部モデルを ST-Bridge 2.0（subset）XML 文字列へ出力する。
+/// 内部モデルを ST-Bridge 2.0（subset）XML 文字列へ出力する（断面は既定の
+/// [`SectionExportMode::Raw`]＝`StbSecRaw` 物性直持ち）。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
+    export_stbridge_with(model, SectionExportMode::Raw)
+}
+
+/// 断面表現モードを指定して ST-Bridge 2.0（subset）XML を出力する。
+///
+/// - [`SectionExportMode::Raw`]: 物性を `StbSecRaw` で直接持つ（import 往復可能）。
+/// - [`SectionExportMode::Standard`]: ST-Bridge 標準の断面要素＋形鋼ライブラリで書き出す
+///   （BIM/他ソフト向け。柱/梁で共有する断面は分割され、部材の `id_section` を張り替える）。
+pub fn export_stbridge_with(model: &Model, mode: SectionExportMode) -> Result<String, StbError> {
+    // 断面ブロックと、部材参照（id_section）の張り替えマップをモードごとに用意する。
+    let (sections_body, col_map, beam_map) = match mode {
+        SectionExportMode::Raw => raw_sections(model),
+        SectionExportMode::Standard => {
+            let std = standard_sections(model);
+            (std.sections_xml, std.col_map, std.beam_map)
+        }
+    };
+
     let mut s = String::new();
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str(&format!("<ST_BRIDGE version=\"{STB_VERSION}\">\n"));
@@ -59,17 +81,9 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     }
     s.push_str("    </StbMaterials>\n");
 
-    // 断面（subset: 物性を直接保持）
+    // 断面（モードに応じて Raw / Standard を切り替え。上で生成済み）
     s.push_str("    <StbSections>\n");
-    for sec in &model.sections {
-        s.push_str(&format!(
-            "      <StbSecRaw id=\"{}\" name=\"{}\" area=\"{}\" iy=\"{}\" iz=\"{}\" j=\"{}\" depth=\"{}\" width=\"{}\"/>\n",
-            sec.id.0,
-            esc(&sec.name),
-            fmt(sec.area), fmt(sec.iy), fmt(sec.iz), fmt(sec.j),
-            fmt(sec.depth), fmt(sec.width),
-        ));
-    }
+    s.push_str(&sections_body);
     s.push_str("    </StbSections>\n");
 
     // 部材（柱＝鉛直／大梁＝水平）
@@ -85,7 +99,13 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
         let dy = n1.coord[1] - n0.coord[1];
         let len = (dx * dx + dy * dy + dz * dz).sqrt();
         let is_col = len > 1e-12 && dz / len > 0.707;
-        let sec = e.section.map(|s| s.0 as i64).unwrap_or(-1);
+        // 断面 id は柱／梁で分割され得るため、役割ごとの張り替えマップを引く
+        // （見つからなければ内部 id をそのまま使う）。
+        let role_map = if is_col { &col_map } else { &beam_map };
+        let sec = e
+            .section
+            .map(|s| role_map.get(&s.0).copied().unwrap_or(s.0) as i64)
+            .unwrap_or(-1);
         let mat = e.material.map(|m| m.0 as i64).unwrap_or(-1);
         let r = e.local_axis.ref_vector;
         if is_col {
@@ -132,7 +152,25 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     Ok(s)
 }
 
-fn fmt(x: f64) -> String {
+/// 既定（Raw）モードの `<StbSections>` 本体を生成する。断面は物性を直接持つ
+/// `StbSecRaw` として書き出し、id マップは恒等（柱・梁とも内部 id をそのまま参照）。
+fn raw_sections(model: &Model) -> (String, HashMap<u32, u32>, HashMap<u32, u32>) {
+    let mut body = String::new();
+    let mut map: HashMap<u32, u32> = HashMap::new();
+    for sec in &model.sections {
+        body.push_str(&format!(
+            "      <StbSecRaw id=\"{}\" name=\"{}\" area=\"{}\" iy=\"{}\" iz=\"{}\" j=\"{}\" depth=\"{}\" width=\"{}\"/>\n",
+            sec.id.0,
+            esc(&sec.name),
+            fmt(sec.area), fmt(sec.iy), fmt(sec.iz), fmt(sec.j),
+            fmt(sec.depth), fmt(sec.width),
+        ));
+        map.insert(sec.id.0, sec.id.0);
+    }
+    (body, map.clone(), map)
+}
+
+pub(super) fn fmt(x: f64) -> String {
     // 整数値は小数点なしで、それ以外は既定の f64 表記で（往復で値が保たれる）。
     if x == x.trunc() && x.is_finite() {
         format!("{}", x as i64)
@@ -148,7 +186,7 @@ fn opt(x: Option<f64>) -> String {
     }
 }
 
-fn esc(s: &str) -> String {
+pub(super) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

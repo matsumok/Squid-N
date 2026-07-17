@@ -1,0 +1,404 @@
+//! ST-Bridge 標準フォーマットに沿った断面書き出し（[`SectionExportMode::Standard`]）。
+//!
+//! 既定の [`StbSecRaw`](super::export) は内部物性を直接持つ独自要素で往復に強い一方、
+//! BIM や他社ソフトは ST-Bridge 標準の断面要素（`StbSecColumn_S` 等）＋形鋼ライブラリ
+//! （`StbSecSteel`）を期待することがある。本モジュールは `Section.shape`
+//! （[`SectionShape`]）から標準要素を生成する。
+//!
+//! # 対応形状
+//! - 鋼: H形鋼／角形鋼管／鋼管／山形鋼／溝形鋼／T形鋼（`StbSecSteel` 参照）。
+//! - RC: 矩形・円形（幾何のみ。配筋は本モードでは書き出さない）。
+//! - 上記以外（SRC・CFT・耐震壁・形状未定義）は `StbSecRaw` へフォールバックする。
+//!
+//! # 柱／梁の型分けと id 再割当て
+//! ST-Bridge では断面が柱用（`StbSecColumn_*`）と梁用（`StbSecBeam_*`）に型分けされ、
+//! 部材はその断面 id を参照する。内部モデルは 1 断面を柱・梁で共有し得るため、
+//! 共有断面は柱用・梁用の 2 要素へ分割し、梁用へ新しい id を割り当てる。
+//! 呼び出し側（[`super::export`]）は返り値の id マップで部材の `id_section` を張り替える。
+//!
+//! # 往復について
+//! 本モードは outbound（他ソフトへの受け渡し）専用で、`import_stbridge` は標準断面要素を
+//! 解釈しない（フォールバックした `StbSecRaw` のみ再取り込みできる）。往復が必要な場合は
+//! [`SectionExportMode::Raw`] を使う。
+
+use super::export::{esc, fmt as num};
+use squid_n_core::model::{ElementKind, Model, Section};
+use squid_n_core::section_shape::SectionShape;
+use std::collections::HashMap;
+
+/// 標準モードで生成した断面ブロックと、部材参照の張り替え用 id マップ。
+pub(super) struct StandardSections {
+    /// `<StbSections>` の中身（断面要素群 ＋ 末尾の `<StbSecSteel>` ライブラリ）。
+    pub sections_xml: String,
+    /// 内部断面 id → 柱部材が参照すべき ST-Bridge 断面 id。
+    pub col_map: HashMap<u32, u32>,
+    /// 内部断面 id → 梁部材が参照すべき ST-Bridge 断面 id。
+    pub beam_map: HashMap<u32, u32>,
+}
+
+/// 各断面が柱／梁のどちらに使われているかを集計する。
+/// 返り値は 内部断面 id → (柱で使用, 梁で使用)。
+fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
+    let mut roles: HashMap<u32, (bool, bool)> = HashMap::new();
+    for e in &model.elements {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let Some(sec) = e.section else { continue };
+        let n0 = &model.nodes[e.nodes[0].index()];
+        let n1 = &model.nodes[e.nodes[1].index()];
+        let dz = (n1.coord[2] - n0.coord[2]).abs();
+        let dx = n1.coord[0] - n0.coord[0];
+        let dy = n1.coord[1] - n0.coord[1];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let is_col = len > 1e-12 && dz / len > 0.707;
+        let ent = roles.entry(sec.0).or_insert((false, false));
+        if is_col {
+            ent.0 = true;
+        } else {
+            ent.1 = true;
+        }
+    }
+    roles
+}
+
+/// 形鋼ライブラリ（`StbSecSteel`）。図形名で重複排除しつつ挿入順を保つ。
+#[derive(Default)]
+struct SteelLibrary {
+    names: std::collections::HashSet<String>,
+    entries: Vec<String>,
+}
+
+impl SteelLibrary {
+    fn add(&mut self, name: &str, entry: String) {
+        if self.names.insert(name.to_string()) {
+            self.entries.push(entry);
+        }
+    }
+    fn render(&self) -> String {
+        if self.entries.is_empty() {
+            return String::new();
+        }
+        let mut s = String::from("      <StbSecSteel>\n");
+        for e in &self.entries {
+            s.push_str("        ");
+            s.push_str(e);
+            s.push('\n');
+        }
+        s.push_str("      </StbSecSteel>\n");
+        s
+    }
+}
+
+/// 鋼断面 → 形鋼図形名 と `StbSecSteel` エントリ。対応しない形状は `None`。
+fn steel_figure(shape: &SectionShape) -> Option<(String, String)> {
+    let e = |name: &str, body: String| (name.to_string(), body);
+    match *shape {
+        SectionShape::SteelH {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        } => {
+            let name = format!(
+                "H-{}x{}x{}x{}",
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            let body = format!(
+                "<StbSecRoll-H name=\"{}\" type=\"H\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r=\"0\"/>",
+                esc(&name),
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelBox {
+            height,
+            width,
+            thick,
+        } => {
+            let name = format!("BOX-{}x{}x{}", num(height), num(width), num(thick));
+            let body = format!(
+                "<StbSecRoll-BOX name=\"{}\" type=\"BOX\" A=\"{}\" B=\"{}\" t=\"{}\" r=\"0\"/>",
+                esc(&name),
+                num(height),
+                num(width),
+                num(thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelPipe { outer_dia, thick } => {
+            let name = format!("P-{}x{}", num(outer_dia), num(thick));
+            let body = format!(
+                "<StbSecPipe name=\"{}\" D=\"{}\" t=\"{}\"/>",
+                esc(&name),
+                num(outer_dia),
+                num(thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelAngle {
+            leg_a,
+            leg_b,
+            thick,
+        } => {
+            let name = format!("L-{}x{}x{}", num(leg_a), num(leg_b), num(thick));
+            let body = format!(
+                "<StbSecRoll-L name=\"{}\" type=\"L\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r1=\"0\" r2=\"0\"/>",
+                esc(&name),
+                num(leg_a),
+                num(leg_b),
+                num(thick),
+                num(thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelChannel {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        } => {
+            let name = format!(
+                "C-{}x{}x{}x{}",
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            let body = format!(
+                "<StbSecRoll-C name=\"{}\" type=\"C\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r1=\"0\" r2=\"0\"/>",
+                esc(&name),
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelTee {
+            height,
+            width,
+            web_thick,
+            flange_thick,
+        } => {
+            let name = format!(
+                "T-{}x{}x{}x{}",
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            let body = format!(
+                "<StbSecRoll-T name=\"{}\" type=\"T\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r1=\"0\" r2=\"0\"/>",
+                esc(&name),
+                num(height),
+                num(width),
+                num(web_thick),
+                num(flange_thick)
+            );
+            Some(e(&name, body))
+        }
+        _ => None,
+    }
+}
+
+/// 鋼柱断面 `StbSecColumn_S`。
+fn steel_column(id: u32, sec: &Section, figure: &str) -> String {
+    format!(
+        "      <StbSecColumn_S id=\"{}\" name=\"{}\" kind_column=\"COLUMN\">\n\
+         \x20       <StbSecSteelFigureColumn_S>\n\
+         \x20         <StbSecSteelColumn_S_Same shape=\"{}\"/>\n\
+         \x20       </StbSecSteelFigureColumn_S>\n\
+         \x20     </StbSecColumn_S>\n",
+        id,
+        esc(&sec.name),
+        esc(figure)
+    )
+}
+
+/// 鋼梁断面 `StbSecBeam_S`。
+fn steel_beam(id: u32, sec: &Section, figure: &str) -> String {
+    format!(
+        "      <StbSecBeam_S id=\"{}\" name=\"{}\" kind_beam=\"GIRDER\">\n\
+         \x20       <StbSecSteelFigureBeam_S>\n\
+         \x20         <StbSecSteelBeam_S_Straight shape=\"{}\"/>\n\
+         \x20       </StbSecSteelFigureBeam_S>\n\
+         \x20     </StbSecBeam_S>\n",
+        id,
+        esc(&sec.name),
+        esc(figure)
+    )
+}
+
+/// RC 図形 `StbSecFigureColumn_RC` の中身（矩形／円形）。対応しない形状は `None`。
+fn rc_column_figure(shape: &SectionShape) -> Option<String> {
+    match *shape {
+        SectionShape::RcRect { b, d, .. } => Some(format!(
+            "<StbSecColumn_RC_Rect width_X=\"{}\" width_Y=\"{}\"/>",
+            num(b),
+            num(d)
+        )),
+        SectionShape::RcCircle { d, .. } => {
+            Some(format!("<StbSecColumn_RC_Circle D=\"{}\"/>", num(d)))
+        }
+        _ => None,
+    }
+}
+
+/// RC 梁図形 `StbSecFigureBeam_RC` の中身（矩形のみ）。対応しない形状は `None`。
+fn rc_beam_figure(shape: &SectionShape) -> Option<String> {
+    match *shape {
+        SectionShape::RcRect { b, d, .. } => Some(format!(
+            "<StbSecBeam_RC_Straight width=\"{}\" depth=\"{}\"/>",
+            num(b),
+            num(d)
+        )),
+        _ => None,
+    }
+}
+
+/// RC 柱断面 `StbSecColumn_RC`。
+fn rc_column(id: u32, sec: &Section, figure_body: &str) -> String {
+    format!(
+        "      <StbSecColumn_RC id=\"{}\" name=\"{}\">\n\
+         \x20       <StbSecFigureColumn_RC>\n\
+         \x20         {}\n\
+         \x20       </StbSecFigureColumn_RC>\n\
+         \x20     </StbSecColumn_RC>\n",
+        id,
+        esc(&sec.name),
+        figure_body
+    )
+}
+
+/// RC 梁断面 `StbSecBeam_RC`。
+fn rc_beam(id: u32, sec: &Section, figure_body: &str) -> String {
+    format!(
+        "      <StbSecBeam_RC id=\"{}\" name=\"{}\">\n\
+         \x20       <StbSecFigureBeam_RC>\n\
+         \x20         {}\n\
+         \x20       </StbSecFigureBeam_RC>\n\
+         \x20     </StbSecBeam_RC>\n",
+        id,
+        esc(&sec.name),
+        figure_body
+    )
+}
+
+/// `StbSecRaw` フォールバック（既定モードと同一形式）。
+fn raw(id: u32, sec: &Section) -> String {
+    format!(
+        "      <StbSecRaw id=\"{}\" name=\"{}\" area=\"{}\" iy=\"{}\" iz=\"{}\" j=\"{}\" depth=\"{}\" width=\"{}\"/>\n",
+        id,
+        esc(&sec.name),
+        num(sec.area),
+        num(sec.iy),
+        num(sec.iz),
+        num(sec.j),
+        num(sec.depth),
+        num(sec.width),
+    )
+}
+
+/// 標準モードの `<StbSections>` 本体と、部材参照の張り替え用 id マップを生成する。
+pub(super) fn standard_sections(model: &Model) -> StandardSections {
+    let roles = section_roles(model);
+    // 梁用の分割断面へ割り当てる追加 id は、既存 id の最大値の次から採番する。
+    let mut next_id = model.sections.iter().map(|s| s.id.0).max().unwrap_or(0) + 1;
+    let mut alloc = || {
+        let v = next_id;
+        next_id += 1;
+        v
+    };
+
+    let mut steel = SteelLibrary::default();
+    let mut body = String::new();
+    let mut col_map: HashMap<u32, u32> = HashMap::new();
+    let mut beam_map: HashMap<u32, u32> = HashMap::new();
+
+    for sec in &model.sections {
+        let base = sec.id.0;
+        let (used_col, used_beam) = roles.get(&base).copied().unwrap_or((false, false));
+        // どの部材からも参照されない断面も出力に残す（既定で柱扱い）。
+        let need_col = used_col || !used_beam;
+        let need_beam = used_beam;
+
+        // 形状から標準要素を試み、不可なら StbSecRaw へフォールバック。
+        let steel_fig = sec.shape.as_ref().and_then(steel_figure);
+        if let Some((fig_name, fig_body)) = steel_fig {
+            steel.add(&fig_name, fig_body);
+            if need_col {
+                body.push_str(&steel_column(base, sec, &fig_name));
+                col_map.insert(base, base);
+            }
+            if need_beam {
+                let bid = if need_col { alloc() } else { base };
+                body.push_str(&steel_beam(bid, sec, &fig_name));
+                beam_map.insert(base, bid);
+            }
+            continue;
+        }
+
+        let rc_col_fig = sec.shape.as_ref().and_then(rc_column_figure);
+        let rc_beam_fig = sec.shape.as_ref().and_then(rc_beam_figure);
+        if rc_col_fig.is_some() || rc_beam_fig.is_some() {
+            if need_col {
+                // 円形など梁図形が無い場合も柱としては出力できる。
+                if let Some(fig) = &rc_col_fig {
+                    body.push_str(&rc_column(base, sec, fig));
+                    col_map.insert(base, base);
+                }
+            }
+            if need_beam {
+                if let Some(fig) = &rc_beam_fig {
+                    let bid = if col_map.contains_key(&base) {
+                        alloc()
+                    } else {
+                        base
+                    };
+                    body.push_str(&rc_beam(bid, sec, fig));
+                    beam_map.insert(base, bid);
+                } else {
+                    // 梁で使われるが梁図形に落ちない形状（例: RC 円形）は Raw で残す。
+                    let bid = if col_map.contains_key(&base) {
+                        alloc()
+                    } else {
+                        base
+                    };
+                    body.push_str(&raw(bid, sec));
+                    beam_map.insert(base, bid);
+                }
+            }
+            // 柱でも梁でも使われない RC 断面は need_col で拾えているが、
+            // 梁図形しか無い（RcRect を柱に使わない）ケースでも need_col=true のとき
+            // rc_col_fig=Some なので出力済み。念のため未出力なら Raw で残す。
+            if !col_map.contains_key(&base) && !beam_map.contains_key(&base) {
+                body.push_str(&raw(base, sec));
+                col_map.insert(base, base);
+                beam_map.insert(base, base);
+            }
+            continue;
+        }
+
+        // フォールバック: SRC・CFT・耐震壁・形状未定義。Raw は柱/梁で型分けされないため
+        // 両者とも同一 id を参照する。
+        body.push_str(&raw(base, sec));
+        col_map.insert(base, base);
+        beam_map.insert(base, base);
+    }
+
+    let mut sections_xml = body;
+    sections_xml.push_str(&steel.render());
+
+    StandardSections {
+        sections_xml,
+        col_map,
+        beam_map,
+    }
+}
