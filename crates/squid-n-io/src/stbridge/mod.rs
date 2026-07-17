@@ -717,6 +717,155 @@ mod tests {
         assert_eq!(back.elements[1].section, Some(SectionId(1)));
     }
 
+    /// 柱・梁で共有する RC 矩形断面が、配筋ごと 2 断面へ分割・復元される。
+    #[test]
+    fn test_standard_roundtrip_shared_rc_rect_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 500.0,
+            d: 800.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "RC1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+        m.elements.push(member(1, false, 0)); // 梁（共有）
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(back.sections.len(), 2, "共有 RC 断面は 2 断面へ分割される");
+        // 分割された両断面とも、元の形状・配筋が保存されている。
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+        assert_eq!(back.sections[1].shape, m.sections[0].shape);
+    }
+
+    /// grade=None の配筋も完全一致で往復する（strength_band 属性を出力しない経路）。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_grade_none() {
+        let mut m = frame_nodes();
+        let mut r = rebar_distinct();
+        r.shear.grade = None;
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    }
+
+    /// 非整数の径・ピッチ・かぶりも桁落ちなく往復する。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_non_integer() {
+        let mut m = frame_nodes();
+        let r = RcRebar {
+            main_x: BarSet {
+                count: 6,
+                dia: 12.7,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 9.53,
+                layers: 2,
+            },
+            cover: 40.5,
+            shear: ShearBar {
+                dia: 6.35,
+                pitch: 133.3,
+                legs: 2,
+                grade: Some("SD295".into()),
+            },
+        };
+        let shape = SectionShape::RcRect {
+            b: 450.0,
+            d: 650.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    }
+
+    /// 帯筋グレードにタブ等の制御空白が含まれても往復で保存される（esc の制御文字対策）。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_grade_with_control_chars() {
+        let mut m = frame_nodes();
+        let mut r = rebar_distinct();
+        r.shear.grade = Some("KH\t785\nX".into());
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "制御空白を含む grade が往復で保存される"
+        );
+    }
+
+    /// 円形 RC を梁に使うと（ST-Bridge に円形梁図形が無いため）StbSecRaw へフォールバックし、
+    /// 形状・配筋は失われるが物性は残り、検証は通る（ドキュメント化された既知の挙動）。
+    #[test]
+    fn test_standard_rc_circle_beam_falls_back_to_raw() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcCircle {
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "CB1".into()));
+        m.elements.push(member(0, false, 0)); // 梁（水平材）で円形を使う
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecRaw "), "円形梁は Raw にフォールバック");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        // 形状・配筋は失われる（shape=None）が、弾性物性は残る。
+        assert!(back.sections[0].shape.is_none(), "円形梁は形状が往復しない");
+        assert_eq!(back.sections[0].area, m.sections[0].area, "物性は残る");
+    }
+
+    /// 実 ST-Bridge 風の配筋属性（呼び名径 D22・標準名 D_band/N_main_X_1st）を best-effort で読む。
+    #[test]
+    fn test_import_rc_rebar_third_party_names() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C">
+      <StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="600" width_Y="600"/></StbSecFigureColumn_RC>
+      <StbSecBarArrangementColumn_RC>
+        <StbSecBarColumn_RC_RectSame N_main_X_1st="4" N_main_Y_1st="3" D_main="D22" D_band="D10" pitch_band="100"/>
+      </StbSecBarArrangementColumn_RC>
+    </StbSecColumn_RC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        match &m.sections[0].shape {
+            Some(SectionShape::RcRect { rebar, .. }) => {
+                assert_eq!(rebar.main_x.count, 4);
+                assert_eq!(rebar.main_y.count, 3);
+                assert_eq!(rebar.main_x.dia, 22.0, "呼び名 D22 → 22mm");
+                assert_eq!(rebar.shear.dia, 10.0, "呼び名 D10 → 10mm");
+                assert_eq!(rebar.shear.pitch, 100.0);
+            }
+            other => panic!("RcRect を期待: {other:?}"),
+        }
+    }
+
     /// 形鋼ライブラリが断面要素より後ろに現れても解決できる（順序非依存）。
     #[test]
     fn test_standard_import_steel_library_order_independent() {

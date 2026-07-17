@@ -622,16 +622,43 @@ fn default_rebar() -> RcRebar {
     }
 }
 
+/// 鉄筋径の文字列を mm へ解釈する。数値ならそのまま、`D22`/`D10` のような呼び名は
+/// 先頭の `D`/`d` を除いた数値を径とする（best-effort。厳密な JIS 公称径ではない）。
+fn parse_bar_dia(v: &str) -> Option<f64> {
+    if let Ok(x) = v.parse::<f64>() {
+        return Some(x);
+    }
+    let t = v.trim();
+    if let Some(rest) = t.strip_prefix(['D', 'd']) {
+        return rest.trim().parse::<f64>().ok();
+    }
+    None
+}
+
 /// `StbSecBarArrangement*` の子要素の属性から [`RcRebar`] を復元する。
-/// Squid-N の書き出し属性（`count_main_X` 等）を優先し、無ければ ST-Bridge で
-/// よく使われる別名（`dia_main`・`dia_stirrup`・`pitch_stirrup` 等）を best-effort で拾う。
-/// 欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
-/// 配筋の欠落は往復での剛性に影響しない。
+/// Squid-N の書き出し属性（`count_main_X`・`dia_main_X` 等）を優先しつつ、実 ST-Bridge で
+/// 使われる名前（`D_main`・`N_main_X_1st`・`D_band` 等）や呼び名径（`D22`）も best-effort で
+/// 拾う。欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
+/// 配筋の欠落・近似は往復での剛性に影響しない。
+///
+/// なお実 ST-Bridge の配筋スキーマ（段別本数 `N_main_X_1st`/`_2nd` の合算、呼び名→公称径の
+/// 正確な対応、段数・かぶりの詳細）への完全準拠は今後の課題。
 fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     let f = |keys: &[&str]| -> f64 {
         for k in keys {
             if let Some(v) = a.get(*k) {
                 if let Ok(x) = v.parse::<f64>() {
+                    return x;
+                }
+            }
+        }
+        0.0
+    };
+    // 径（数値 or 呼び名 `D22`）。
+    let dia = |keys: &[&str]| -> f64 {
+        for k in keys {
+            if let Some(v) = a.get(*k) {
+                if let Some(x) = parse_bar_dia(v) {
                     return x;
                 }
             }
@@ -661,23 +688,39 @@ fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     };
     RcRebar {
         main_x: BarSet {
-            count: u(&["count_main_X", "count_main_top"]),
-            dia: f(&["dia_main_X", "dia_main"]),
+            count: u(&[
+                "count_main_X",
+                "N_main_X_1st",
+                "count_main_top",
+                "N_main_top",
+            ]),
+            dia: dia(&["dia_main_X", "dia_main", "D_main"]),
             layers: layers(&["count_main_layers_X"]),
         },
         main_y: BarSet {
-            count: u(&["count_main_Y", "count_main_bottom"]),
-            dia: f(&["dia_main_Y", "dia_main"]),
+            count: u(&[
+                "count_main_Y",
+                "N_main_Y_1st",
+                "count_main_bottom",
+                "N_main_bottom",
+            ]),
+            dia: dia(&["dia_main_Y", "dia_main", "D_main"]),
             layers: layers(&["count_main_layers_Y"]),
         },
         cover: f(&["cover", "kaburi"]),
         shear: ShearBar {
-            dia: f(&["dia_band", "dia_stirrup", "dia_hoop"]),
+            dia: dia(&["dia_band", "D_band", "dia_stirrup", "dia_hoop"]),
             pitch: f(&["pitch_band", "pitch_stirrup", "pitch_hoop"]),
-            legs: u(&["count_band", "count_stirrup", "count_hoop"]),
+            legs: u(&[
+                "count_band",
+                "N_band_direction_X",
+                "count_stirrup",
+                "count_hoop",
+            ]),
             grade: a
                 .get("strength_band")
                 .or_else(|| a.get("strength_bar_band"))
+                .or_else(|| a.get("strength_main_band"))
                 .cloned(),
         },
     }

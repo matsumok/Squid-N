@@ -17,9 +17,11 @@
 //! 呼び出し側（[`super::export`]）は返り値の id マップで部材の `id_section` を張り替える。
 //!
 //! # 往復について
-//! 本モードは outbound（他ソフトへの受け渡し）専用で、`import_stbridge` は標準断面要素を
-//! 解釈しない（フォールバックした `StbSecRaw` のみ再取り込みできる）。往復が必要な場合は
-//! [`SectionExportMode::Raw`] を使う。
+//! `import_stbridge` は本モードで書き出した標準断面要素（`StbSecColumn_S`/`StbSecColumn_RC`
+//! 等）と配筋（`StbSecBarArrangement*`）を解釈して読み戻せる。ただし ST-Bridge に円形梁の
+//! 図形が無いため、**円形（`RcCircle`）を梁として使う断面は `StbSecRaw` にフォールバックし、
+//! 形状・配筋は往復しない**（物性のみ残る）。Squid-N 固有属性まで含む完全一致の往復が
+//! 要る場合は [`SectionExportMode::Raw`] を使う。
 
 use super::export::{esc, fmt as num};
 use squid_n_core::model::{ElementKind, Model, Section};
@@ -264,8 +266,10 @@ fn rc_beam_figure(shape: &SectionShape) -> Option<String> {
 }
 
 /// 配筋（[`RcRebar`]）を配筋要素の属性文字列へ整形する。
-/// 方向別（X=せい方向・Y=幅方向）に本数・径・段数を、帯筋（せん断補強筋）に径・ピッチ・
-/// 組数・材質を、加えてかぶりを持つ。標準リーダ向けに `dia_main`（単一径）も併記する。
+/// `X`/`Y` は内部モデルの `main_x`（せい方向）/`main_y`（幅方向）主筋セットに対応する
+/// ラベルであり、ST-Bridge の平面軸（`width_X`/`width_Y`）とは別概念（Squid 往復用）。
+/// 方向別に本数・径・段数を、帯筋（せん断補強筋）に径・ピッチ・組数・材質を、
+/// 加えてかぶりを持つ。標準リーダ向けに `dia_main`（単一径）も併記する。
 fn rebar_attrs(r: &RcRebar) -> String {
     let mut s = format!(
         "count_main_X=\"{}\" count_main_Y=\"{}\" count_main_layers_X=\"{}\" count_main_layers_Y=\"{}\" \

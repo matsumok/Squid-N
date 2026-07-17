@@ -187,8 +187,14 @@ fn opt(x: Option<f64>) -> String {
 }
 
 pub(super) fn esc(s: &str) -> String {
+    // & を最初に置換した後で制御空白を文字参照化する（後段で `&` を再エスケープしないため安全）。
+    // タブ/改行/CR を文字参照にしないと、XML 属性値正規化（読込側 normalized_value）で
+    // 空白 (#x20) に潰れ、属性値（例: 断面名・帯筋グレード）が往復で変化してしまう。
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\t', "&#9;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
 }

@@ -63,11 +63,22 @@ RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
 新しいモデル型は不要で、read/write を足すだけで往復可能になるもの。**「完全往復」への寄与が
 大きい順**に並べる。
 
-1. **RC 配筋の往復（最優先）**: ✅ **実装済み**（本 PR）。
+1. **RC 配筋の往復（最優先）**: ✅ **実装済み（Squid 出力どうし）**（本 PR）。
    `StbSecBarArrangementColumn_RC`（`StbSecBarColumn_RC_RectSame` / `_CircleSame`）・
    `StbSecBarArrangementBeam_RC`（`StbSecBarBeam_RC_Same`）へ主筋（方向別の本数・径・段数）・
    帯筋（径・ピッチ・組数・材質）・かぶりを read/write し、`RcRebar` を完全に往復させる。
-   配筋の無い幾何のみのファイルは無筋相当で読む。標準リーダ向けに `dia_main` も併記。
+   配筋の無い幾何のみのファイルは無筋相当で読む。
+   - **残課題（実 ST-Bridge 配筋スキーマ完全準拠）**: 書き出す属性名は Squid 独自
+     （`count_main_X`・`dia_main_X` 等）で、実 ST-Bridge の配筋属性（`D_main`・`N_main_X_1st`/
+     `_2nd` の段別本数、呼び名→公称径の対応、`kind_corner` 等）とは異なる。import は
+     `D_main`/`N_main_X_1st`/呼び名径（`D22`）を best-effort で拾うが、段別本数の合算や
+     梁の上端/下端（`N_main_top`/`_bottom`）↔ 内部 `main_x`/`main_y`（せい/幅方向）の
+     意味対応は近似。第三者ソフトとの厳密な配筋往復には実スキーマの read/write が必要。
+   - **円形梁の非対応**: ST-Bridge に円形梁図形が無いため、`RcCircle` を梁に使う断面は
+     `StbSecRaw` にフォールバックし形状・配筋が往復しない（円形柱は往復する）。
+   - **未認識図形の断面欠落**: テーパ・ハンチ等 `StbSecColumn_RC_Rect`/`_Circle`・
+     `StbSecBeam_RC_Straight` 以外の図形を持つ RC 断面は幾何を復元できず、import で断面が
+     欠落する（参照部材は断面なし）。バケット2 の断面型追加＋下記 7（未対応要素の可視化）で対応。
 2. **SRC / CFT 断面の標準要素対応**: モデルに `SrcRect` / `CftBox` / `CftPipe` があるが、
    export はフォールバック（`StbSecRaw`）・import は `StbSecColumn_SRC` / `_CFT` を無視。
    両者を標準要素（`StbSecColumn_SRC` / `StbSecColumn_CFT` ＋内蔵鉄骨/鋼管の形鋼参照）へマップ。
