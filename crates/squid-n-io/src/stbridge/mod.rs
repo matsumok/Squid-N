@@ -47,9 +47,9 @@ pub enum SectionExportMode {
     /// へフォールバックする。
     ///
     /// `import_stbridge` は本モードのファイル（および同じ断面表現の他社ファイル）を
-    /// 読み戻せる（形鋼名から形状を復元し断面性能を再算定する）。ただし RC の配筋は
-    /// 復元されず（無筋相当）、柱・梁共有断面は 2 断面に分割される。完全一致での往復が
-    /// 要るときは [`Raw`](Self::Raw) を使う。
+    /// 読み戻せる（形鋼名から形状を復元し断面性能を再算定する。RC は配筋も
+    /// `StbSecBarArrangement*` で往復する）。ただし柱・梁で共有していた断面は書き出し時に
+    /// 2 断面へ分割される。配筋を持たない（幾何のみの）他社ファイルは無筋相当で読む。
     Standard,
 }
 
@@ -568,6 +568,124 @@ mod tests {
         // 部材の断面参照が正しく張り替わる。
         assert_eq!(back.elements[0].section, Some(SectionId(0)));
         assert_eq!(back.elements[1].section, Some(SectionId(1)));
+    }
+
+    /// 方向別に異なる本数・径・段数・かぶり・帯筋を持つ配筋（往復ずれ・取り違えを検出）。
+    fn rebar_distinct() -> RcRebar {
+        RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 25.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 3,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 45.0,
+            shear: ShearBar {
+                dia: 13.0,
+                pitch: 150.0,
+                legs: 4,
+                grade: Some("KH785".into()),
+            },
+        }
+    }
+
+    /// 標準モード: RC 矩形柱の配筋（主筋・帯筋・かぶり）が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_rect_column_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarArrangementColumn_RC>"),
+            "柱配筋要素が書き出される: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        // 形状（b・d・配筋すべて）が完全一致で復元される。
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 矩形柱の配筋が往復で保存される"
+        );
+    }
+
+    /// 標準モード: RC 円形柱の配筋が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_circle_column_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcCircle {
+            d: 800.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarColumn_RC_CircleSame "),
+            "円形配筋要素: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 円形柱の配筋が往復で保存される"
+        );
+    }
+
+    /// 標準モード: RC 矩形梁の配筋が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_beam_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "G1".into()));
+        m.elements.push(member(0, false, 0)); // 梁
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarArrangementBeam_RC>"),
+            "梁配筋要素が書き出される: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 梁の配筋が往復で保存される"
+        );
+    }
+
+    /// 配筋要素の無い（幾何のみの）RC 断面ファイルも、無筋相当の既定配筋で読める。
+    #[test]
+    fn test_import_rc_without_bar_arrangement_uses_default() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C"><StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="500" width_Y="600"/></StbSecFigureColumn_RC></StbSecColumn_RC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert_eq!(m.sections.len(), 1);
+        match &m.sections[0].shape {
+            Some(SectionShape::RcRect { b, d, .. }) => {
+                assert_eq!(*b, 500.0);
+                assert_eq!(*d, 600.0);
+            }
+            other => panic!("RcRect を期待: {other:?}"),
+        }
     }
 
     /// 標準モードで柱・梁に分割された共有鋼断面が、import で 2 断面として復元され

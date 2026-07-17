@@ -63,10 +63,11 @@ RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
 新しいモデル型は不要で、read/write を足すだけで往復可能になるもの。**「完全往復」への寄与が
 大きい順**に並べる。
 
-1. **RC 配筋の往復（最優先）**: モデルに `RcRebar`（主筋・帯筋・かぶり）があるのに、
-   標準 export は配筋を書かず、import は無筋相当にしている。
-   `StbSecBarArrangementColumn_RC` / `..Beam_RC`（主筋本数・径・段、帯筋径・ピッチ・組数、
-   かぶり）を read/write して配筋を往復させる。
+1. **RC 配筋の往復（最優先）**: ✅ **実装済み**（本 PR）。
+   `StbSecBarArrangementColumn_RC`（`StbSecBarColumn_RC_RectSame` / `_CircleSame`）・
+   `StbSecBarArrangementBeam_RC`（`StbSecBarBeam_RC_Same`）へ主筋（方向別の本数・径・段数）・
+   帯筋（径・ピッチ・組数・材質）・かぶりを read/write し、`RcRebar` を完全に往復させる。
+   配筋の無い幾何のみのファイルは無筋相当で読む。標準リーダ向けに `dia_main` も併記。
 2. **SRC / CFT 断面の標準要素対応**: モデルに `SrcRect` / `CftBox` / `CftPipe` があるが、
    export はフォールバック（`StbSecRaw`）・import は `StbSecColumn_SRC` / `_CFT` を無視。
    両者を標準要素（`StbSecColumn_SRC` / `StbSecColumn_CFT` ＋内蔵鉄骨/鋼管の形鋼参照）へマップ。

@@ -7,7 +7,7 @@
 //!
 //! # 対応形状
 //! - 鋼: H形鋼／角形鋼管／鋼管／山形鋼／溝形鋼／T形鋼（`StbSecSteel` 参照）。
-//! - RC: 矩形・円形（幾何のみ。配筋は本モードでは書き出さない）。
+//! - RC: 矩形・円形（幾何＋配筋。配筋は `StbSecBarArrangement*` として書き出す）。
 //! - 上記以外（SRC・CFT・耐震壁・形状未定義）は `StbSecRaw` へフォールバックする。
 //!
 //! # 柱／梁の型分けと id 再割当て
@@ -23,7 +23,7 @@
 
 use super::export::{esc, fmt as num};
 use squid_n_core::model::{ElementKind, Model, Section};
-use squid_n_core::section_shape::SectionShape;
+use squid_n_core::section_shape::{RcRebar, SectionShape};
 use std::collections::HashMap;
 
 /// 標準モードで生成した断面ブロックと、部材参照の張り替え用 id マップ。
@@ -263,31 +263,91 @@ fn rc_beam_figure(shape: &SectionShape) -> Option<String> {
     }
 }
 
-/// RC 柱断面 `StbSecColumn_RC`。
-fn rc_column(id: u32, sec: &Section, figure_body: &str) -> String {
+/// 配筋（[`RcRebar`]）を配筋要素の属性文字列へ整形する。
+/// 方向別（X=せい方向・Y=幅方向）に本数・径・段数を、帯筋（せん断補強筋）に径・ピッチ・
+/// 組数・材質を、加えてかぶりを持つ。標準リーダ向けに `dia_main`（単一径）も併記する。
+fn rebar_attrs(r: &RcRebar) -> String {
+    let mut s = format!(
+        "count_main_X=\"{}\" count_main_Y=\"{}\" count_main_layers_X=\"{}\" count_main_layers_Y=\"{}\" \
+         dia_main_X=\"{}\" dia_main_Y=\"{}\" dia_main=\"{}\" \
+         dia_band=\"{}\" pitch_band=\"{}\" count_band=\"{}\" cover=\"{}\"",
+        r.main_x.count,
+        r.main_y.count,
+        r.main_x.layers,
+        r.main_y.layers,
+        num(r.main_x.dia),
+        num(r.main_y.dia),
+        num(r.main_x.dia),
+        num(r.shear.dia),
+        num(r.shear.pitch),
+        r.shear.legs,
+        num(r.cover),
+    );
+    if let Some(g) = &r.shear.grade {
+        s.push_str(&format!(" strength_band=\"{}\"", esc(g)));
+    }
+    s
+}
+
+/// RC 柱断面の配筋 `StbSecBarArrangementColumn_RC`（矩形/円形）。配筋の無い形状は空文字。
+fn rebar_arrangement_column(shape: &SectionShape) -> String {
+    let (child, r) = match shape {
+        SectionShape::RcRect { rebar, .. } => ("StbSecBarColumn_RC_RectSame", rebar),
+        SectionShape::RcCircle { rebar, .. } => ("StbSecBarColumn_RC_CircleSame", rebar),
+        _ => return String::new(),
+    };
+    format!(
+        "        <StbSecBarArrangementColumn_RC>\n\
+         \x20         <{} {}/>\n\
+         \x20       </StbSecBarArrangementColumn_RC>\n",
+        child,
+        rebar_attrs(r)
+    )
+}
+
+/// RC 梁断面の配筋 `StbSecBarArrangementBeam_RC`（矩形）。配筋の無い形状は空文字。
+fn rebar_arrangement_beam(shape: &SectionShape) -> String {
+    let r = match shape {
+        SectionShape::RcRect { rebar, .. } => rebar,
+        _ => return String::new(),
+    };
+    format!(
+        "        <StbSecBarArrangementBeam_RC>\n\
+         \x20         <StbSecBarBeam_RC_Same {}/>\n\
+         \x20       </StbSecBarArrangementBeam_RC>\n",
+        rebar_attrs(r)
+    )
+}
+
+/// RC 柱断面 `StbSecColumn_RC`（図形＋配筋）。
+fn rc_column(id: u32, sec: &Section, shape: &SectionShape, figure_body: &str) -> String {
     format!(
         "      <StbSecColumn_RC id=\"{}\" name=\"{}\">\n\
          \x20       <StbSecFigureColumn_RC>\n\
          \x20         {}\n\
          \x20       </StbSecFigureColumn_RC>\n\
+         {}\
          \x20     </StbSecColumn_RC>\n",
         id,
         esc(&sec.name),
-        figure_body
+        figure_body,
+        rebar_arrangement_column(shape),
     )
 }
 
-/// RC 梁断面 `StbSecBeam_RC`。
-fn rc_beam(id: u32, sec: &Section, figure_body: &str) -> String {
+/// RC 梁断面 `StbSecBeam_RC`（図形＋配筋）。
+fn rc_beam(id: u32, sec: &Section, shape: &SectionShape, figure_body: &str) -> String {
     format!(
         "      <StbSecBeam_RC id=\"{}\" name=\"{}\">\n\
          \x20       <StbSecFigureBeam_RC>\n\
          \x20         {}\n\
          \x20       </StbSecFigureBeam_RC>\n\
+         {}\
          \x20     </StbSecBeam_RC>\n",
         id,
         esc(&sec.name),
-        figure_body
+        figure_body,
+        rebar_arrangement_beam(shape),
     )
 }
 
@@ -348,10 +408,11 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         let rc_col_fig = sec.shape.as_ref().and_then(rc_column_figure);
         let rc_beam_fig = sec.shape.as_ref().and_then(rc_beam_figure);
         if rc_col_fig.is_some() || rc_beam_fig.is_some() {
+            let shape = sec.shape.as_ref().expect("RC 図形がある＝shape は Some");
             if need_col {
                 // 円形など梁図形が無い場合も柱としては出力できる。
                 if let Some(fig) = &rc_col_fig {
-                    body.push_str(&rc_column(base, sec, fig));
+                    body.push_str(&rc_column(base, sec, shape, fig));
                     col_map.insert(base, base);
                 }
             }
@@ -362,7 +423,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     } else {
                         base
                     };
-                    body.push_str(&rc_beam(bid, sec, fig));
+                    body.push_str(&rc_beam(bid, sec, shape, fig));
                     beam_map.insert(base, bid);
                 } else {
                     // 梁で使われるが梁図形に落ちない形状（例: RC 円形）は Raw で残す。

@@ -85,7 +85,13 @@ struct RawLoadCase {
     nodal: Vec<(u32, [f64; 6])>,
 }
 
-/// 現在パース中の標準断面要素（子の図形要素を集める）。
+/// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
+enum RcGeom {
+    Rect { b: f64, d: f64 },
+    Circle { d: f64 },
+}
+
+/// 現在パース中の標準断面要素（子の図形・配筋要素を集める）。
 enum CurSec {
     None,
     Steel {
@@ -96,7 +102,8 @@ enum CurSec {
     Rc {
         file_id: u32,
         name: String,
-        shape: Option<SectionShape>,
+        geom: Option<RcGeom>,
+        rebar: Option<RcRebar>,
     },
 }
 
@@ -217,38 +224,46 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         cur = CurSec::Rc {
                             file_id: get_u32(&a, "id")?,
                             name: a.get("name").cloned().unwrap_or_default(),
-                            shape: None,
+                            geom: None,
+                            rebar: None,
                         };
                     }
                     "StbSecColumn_RC_Rect" => {
-                        if let CurSec::Rc { shape, .. } = &mut cur {
-                            if shape.is_none() {
-                                *shape = Some(SectionShape::RcRect {
+                        if let CurSec::Rc { geom, .. } = &mut cur {
+                            if geom.is_none() {
+                                *geom = Some(RcGeom::Rect {
                                     b: get_f64_any(&a, &["width_X", "width_x"])?,
                                     d: get_f64_any(&a, &["width_Y", "width_y"])?,
-                                    rebar: default_rebar(),
                                 });
                             }
                         }
                     }
                     "StbSecColumn_RC_Circle" => {
-                        if let CurSec::Rc { shape, .. } = &mut cur {
-                            if shape.is_none() {
-                                *shape = Some(SectionShape::RcCircle {
+                        if let CurSec::Rc { geom, .. } = &mut cur {
+                            if geom.is_none() {
+                                *geom = Some(RcGeom::Circle {
                                     d: get_f64_any(&a, &["D", "d"])?,
-                                    rebar: default_rebar(),
                                 });
                             }
                         }
                     }
                     "StbSecBeam_RC_Straight" => {
-                        if let CurSec::Rc { shape, .. } = &mut cur {
-                            if shape.is_none() {
-                                *shape = Some(SectionShape::RcRect {
+                        if let CurSec::Rc { geom, .. } = &mut cur {
+                            if geom.is_none() {
+                                *geom = Some(RcGeom::Rect {
                                     b: get_f64_any(&a, &["width", "width_X"])?,
                                     d: get_f64_any(&a, &["depth", "width_Y"])?,
-                                    rebar: default_rebar(),
                                 });
+                            }
+                        }
+                    }
+                    // RC 配筋（StbSecBarArrangement* の子要素）。柱矩形/円形・梁で共通に読む。
+                    tag if tag.starts_with("StbSecBarColumn_RC")
+                        || tag.starts_with("StbSecBarBeam_RC") =>
+                    {
+                        if let CurSec::Rc { rebar, .. } = &mut cur {
+                            if rebar.is_none() {
+                                *rebar = Some(parse_rebar(&a));
                             }
                         }
                     }
@@ -321,9 +336,16 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         if let CurSec::Rc {
                             file_id,
                             name,
-                            shape: Some(shape),
+                            geom: Some(geom),
+                            rebar,
                         } = std::mem::replace(&mut cur, CurSec::None)
                         {
+                            // 配筋が無い（幾何のみの）ファイルは無筋相当の既定配筋で補う。
+                            let rebar = rebar.unwrap_or_else(default_rebar);
+                            let shape = match geom {
+                                RcGeom::Rect { b, d } => SectionShape::RcRect { b, d, rebar },
+                                RcGeom::Circle { d } => SectionShape::RcCircle { d, rebar },
+                            };
                             pending_secs.push(PendingSec {
                                 file_id,
                                 name,
@@ -596,6 +618,67 @@ fn default_rebar() -> RcRebar {
             pitch: 0.0,
             legs: 0,
             grade: None,
+        },
+    }
+}
+
+/// `StbSecBarArrangement*` の子要素の属性から [`RcRebar`] を復元する。
+/// Squid-N の書き出し属性（`count_main_X` 等）を優先し、無ければ ST-Bridge で
+/// よく使われる別名（`dia_main`・`dia_stirrup`・`pitch_stirrup` 等）を best-effort で拾う。
+/// 欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
+/// 配筋の欠落は往復での剛性に影響しない。
+fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
+    let f = |keys: &[&str]| -> f64 {
+        for k in keys {
+            if let Some(v) = a.get(*k) {
+                if let Ok(x) = v.parse::<f64>() {
+                    return x;
+                }
+            }
+        }
+        0.0
+    };
+    let u = |keys: &[&str]| -> u32 {
+        for k in keys {
+            if let Some(v) = a.get(*k) {
+                if let Ok(x) = v.parse::<u32>() {
+                    return x;
+                }
+            }
+        }
+        0
+    };
+    // 段数は指定が無ければ 1 段扱い（配筋自体は 0 本でも段数 1 は無害）。
+    let layers = |keys: &[&str]| -> u32 {
+        for k in keys {
+            if let Some(v) = a.get(*k) {
+                if let Ok(x) = v.parse::<u32>() {
+                    return x;
+                }
+            }
+        }
+        1
+    };
+    RcRebar {
+        main_x: BarSet {
+            count: u(&["count_main_X", "count_main_top"]),
+            dia: f(&["dia_main_X", "dia_main"]),
+            layers: layers(&["count_main_layers_X"]),
+        },
+        main_y: BarSet {
+            count: u(&["count_main_Y", "count_main_bottom"]),
+            dia: f(&["dia_main_Y", "dia_main"]),
+            layers: layers(&["count_main_layers_Y"]),
+        },
+        cover: f(&["cover", "kaburi"]),
+        shear: ShearBar {
+            dia: f(&["dia_band", "dia_stirrup", "dia_hoop"]),
+            pitch: f(&["pitch_band", "pitch_stirrup", "pitch_hoop"]),
+            legs: u(&["count_band", "count_stirrup", "count_hoop"]),
+            grade: a
+                .get("strength_band")
+                .or_else(|| a.get("strength_bar_band"))
+                .cloned(),
         },
     }
 }
