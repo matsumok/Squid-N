@@ -9,10 +9,11 @@
 //! # 非対応（仕様どおり対象外）
 //! - 解析結果・独自属性（§12.5）。
 //! - 拘束条件・質量（ST-Bridge の幾何スコープ外。import 後は既定値）。
-//! - **既定（`Raw`）の断面は実 ST-Bridge の形鋼ライブラリ参照（StbSecColumn_S 等）ではなく、
-//!   内部モデルの物性をそのまま持つ `StbSecRaw` で表現する**（正準モデルを唯一の真実とする方針）。
-//!   BIM/他ソフト向けに標準要素で書き出す `Standard` モードは下記「断面書き出しモード」を参照
-//!   （ただし import は `Raw`＝`StbSecRaw` のみ読み戻す）。
+//! - **既定（`Raw`）の書き出し断面は実 ST-Bridge の形鋼ライブラリ参照（StbSecColumn_S 等）
+//!   ではなく、内部モデルの物性をそのまま持つ `StbSecRaw` で表現する**（正準モデルを唯一の
+//!   真実とする方針）。BIM/他ソフト向けに標準要素で書き出す `Standard` モードは下記
+//!   「断面書き出しモード」を参照。import は `StbSecRaw` と標準断面要素（`StbSecColumn_S` 等）の
+//!   双方を読み取れる。
 //! - 床・ブレース・剛域・端部接合等の詳細。
 //!
 //! 一次資料: ST-Bridge 公式スキーマ（XML 2.0 系）。要素・属性名はこれに準拠（subset）。
@@ -45,10 +46,10 @@ pub enum SectionExportMode {
     /// 連携向け。形状（`Section.shape`）を持たない断面や SRC・CFT・耐震壁は `StbSecRaw`
     /// へフォールバックする。
     ///
-    /// **outbound 専用**: `import_stbridge` は標準断面要素を解釈しないため、本モードで
-    /// 書き出したファイルを読み戻すと断面が復元されず（フォールバックした `StbSecRaw` を除く）、
-    /// 部材の断面参照がダングリングになり `Model::validate` に通らない。Squid-N で再利用する
-    /// モデルは [`Raw`](Self::Raw) か `.scz` で保存すること。
+    /// `import_stbridge` は本モードのファイル（および同じ断面表現の他社ファイル）を
+    /// 読み戻せる（形鋼名から形状を復元し断面性能を再算定する）。ただし RC の配筋は
+    /// 復元されず（無筋相当）、柱・梁共有断面は 2 断面に分割される。完全一致での往復が
+    /// 要るときは [`Raw`](Self::Raw) を使う。
     Standard,
 }
 
@@ -520,5 +521,121 @@ mod tests {
             xml.contains("<StbSecRaw "),
             "形状の無い断面は Raw にフォールバック"
         );
+    }
+
+    /// 標準モードで書き出したファイルを import で読み戻せる（往復）。
+    /// 鋼 H（柱）＋ RC 矩形（梁）が形状・断面性能とも復元され、検証を通る。
+    #[test]
+    fn test_standard_import_roundtrip_steel_and_rc() {
+        let mut m = frame_nodes();
+        let h = SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 8.0,
+            flange_thick: 13.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "C1".into()));
+        let rc = SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: rebar(),
+        };
+        m.sections.push(rc.to_section(SectionId(1), "G1".into()));
+        m.elements.push(member(0, true, 0)); // 柱 → 鋼断面
+        m.elements.push(member(1, false, 1)); // 梁 → RC 断面
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+
+        assert_eq!(back.sections.len(), 2);
+        assert!(
+            matches!(back.sections[0].shape, Some(SectionShape::SteelH { .. })),
+            "鋼柱断面の形状が復元される: {:?}",
+            back.sections[0].shape
+        );
+        assert!(
+            matches!(back.sections[1].shape, Some(SectionShape::RcRect { .. })),
+            "RC 梁断面の形状が復元される: {:?}",
+            back.sections[1].shape
+        );
+        // 断面性能（弾性）は形状から再算定され、元と一致する。
+        assert_eq!(back.sections[0].area, m.sections[0].area);
+        assert_eq!(back.sections[0].iy, m.sections[0].iy);
+        assert_eq!(back.sections[0].iz, m.sections[0].iz);
+        assert_eq!(back.sections[1].area, m.sections[1].area);
+        assert_eq!(back.sections[1].iy, m.sections[1].iy);
+        // 部材の断面参照が正しく張り替わる。
+        assert_eq!(back.elements[0].section, Some(SectionId(0)));
+        assert_eq!(back.elements[1].section, Some(SectionId(1)));
+    }
+
+    /// 標準モードで柱・梁に分割された共有鋼断面が、import で 2 断面として復元され
+    /// 各部材が別 id を参照する（検証を通る）。
+    #[test]
+    fn test_standard_import_recovers_split_shared_section() {
+        let mut m = frame_nodes();
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "S1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+        m.elements.push(member(1, false, 0)); // 梁（同じ断面を共有）
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(back.sections.len(), 2, "共有断面は柱用・梁用に分割される");
+        assert!(
+            back.sections
+                .iter()
+                .all(|s| matches!(s.shape, Some(SectionShape::SteelH { .. }))),
+            "両断面とも H 形鋼として復元される"
+        );
+        assert_eq!(back.elements[0].section, Some(SectionId(0)));
+        assert_eq!(back.elements[1].section, Some(SectionId(1)));
+    }
+
+    /// 形鋼ライブラリが断面要素より後ろに現れても解決できる（順序非依存）。
+    #[test]
+    fn test_standard_import_steel_library_order_independent() {
+        // export は StbSecSteel を末尾に書き出す。これを import できることを確認する。
+        let mut m = frame_nodes();
+        let h = SectionShape::SteelH {
+            height: 350.0,
+            width: 175.0,
+            web_thick: 7.0,
+            flange_thick: 11.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        // 形鋼ライブラリが断面要素の後ろにあること（前提の確認）。
+        let steel_pos = xml.find("<StbSecSteel>").unwrap();
+        let col_pos = xml.find("<StbSecColumn_S").unwrap();
+        assert!(col_pos < steel_pos, "前提: 断面要素 → 形鋼ライブラリの順");
+
+        let back = import_stbridge(&xml).expect("import");
+        assert!(
+            matches!(back.sections[0].shape, Some(SectionShape::SteelH { .. })),
+            "後方の形鋼ライブラリを解決して形状復元"
+        );
+        assert_eq!(back.sections[0].area, m.sections[0].area);
+    }
+
+    /// ST-Bridge 標準の属性名（大文字 X/Y/Z 座標）の節点も読める。
+    #[test]
+    fn test_import_accepts_uppercase_coordinate_attrs() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes><StbNode id="0" X="1000" Y="2000" Z="3000"/></StbNodes>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert_eq!(m.nodes.len(), 1);
+        assert_eq!(m.nodes[0].coord, [1000.0, 2000.0, 3000.0]);
     }
 }
