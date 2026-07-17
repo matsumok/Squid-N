@@ -152,8 +152,46 @@ enum CurSec {
     },
 }
 
-/// ST-Bridge 2.0 XML を内部モデルへ取り込む。
+/// 取り込み時に欠落・近似した内容の報告（データ欠損を顕在化させる）。
+#[derive(Debug, Default, Clone)]
+pub struct ImportReport {
+    /// 人間可読の警告メッセージ（未対応要素のスキップ、断面欠落、参照解決失敗など）。
+    pub warnings: Vec<String>,
+}
+
+impl ImportReport {
+    /// 警告が 1 件も無い（＝取り込みで欠落が無かった）か。
+    pub fn is_clean(&self) -> bool {
+        self.warnings.is_empty()
+    }
+}
+
+/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に警告対象とするもの
+/// （構造ラッパ等は対象外。実データを欠落させる部材・断面のみ列挙する）。
+const UNSUPPORTED_ELEMENTS: &[&str] = &[
+    "StbSlab",
+    "StbWall",
+    "StbFooting",
+    "StbPile",
+    "StbFoundationColumn",
+    "StbStripFooting",
+    "StbParapet",
+    "StbSecWall_RC",
+    "StbSecSlab_RC",
+    "StbSecBrace_S",
+    "StbSecFoundation_RC",
+    "StbSecPile_RC",
+    "StbSecPile_S",
+    "StbSecParapet_RC",
+];
+
+/// ST-Bridge 2.0 XML を内部モデルへ取り込む（欠落の報告は破棄する）。
 pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
+    import_stbridge_with_report(xml).map(|(m, _)| m)
+}
+
+/// ST-Bridge 2.0 XML を内部モデルへ取り込み、[`ImportReport`]（欠落・近似の警告）も返す。
+pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), StbError> {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
 
@@ -161,6 +199,9 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
     reader.config_mut().trim_text(true);
 
     let mut version_ok = false;
+    let mut warnings: Vec<String> = Vec::new();
+    // 未対応要素はタグごとに件数を集計し、最後にまとめて 1 行の警告にする。
+    let mut unsupported: HashMap<&'static str, u32> = HashMap::new();
 
     // 全要素を一旦 file id 付きの中間表現へ集め、パース後に id を 0 始まり連番へ
     // 正規化して参照を張り替える（他社ファイルの 1 始まり・歯抜け id に対応）。
@@ -440,7 +481,12 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                             return Err(StbError::Parse("StbNodalLoad outside StbLoadCase".into()));
                         }
                     }
-                    _ => {}
+                    // 未対応の部材・断面（壁・スラブ・基礎等）はデータ欠落として集計する。
+                    other => {
+                        if let Some(&known) = UNSUPPORTED_ELEMENTS.iter().find(|&&u| u == other) {
+                            *unsupported.entry(known).or_insert(0) += 1;
+                        }
+                    }
                 }
             }
             Event::End(e) => {
@@ -467,23 +513,32 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         if let CurSec::Rc {
                             file_id,
                             name,
-                            geom: Some(geom),
+                            geom,
                             rebar,
                             mat_id,
                         } = std::mem::replace(&mut cur, CurSec::None)
                         {
-                            // 配筋が無い（幾何のみの）ファイルは無筋相当の既定配筋で補う。
-                            let rebar = rebar.unwrap_or_else(default_rebar);
-                            let shape = match geom {
-                                RcGeom::Rect { b, d } => SectionShape::RcRect { b, d, rebar },
-                                RcGeom::Circle { d } => SectionShape::RcCircle { d, rebar },
-                            };
-                            pending_secs.push(PendingSec {
-                                file_id,
-                                name,
-                                kind: PendingSecKind::Shape(shape),
-                                mat: mat_id.map(SecMatRef::Id),
-                            });
+                            match geom {
+                                Some(geom) => {
+                                    // 配筋が無い（幾何のみの）ファイルは無筋相当の既定配筋で補う。
+                                    let rebar = rebar.unwrap_or_else(default_rebar);
+                                    let shape = match geom {
+                                        RcGeom::Rect { b, d } => {
+                                            SectionShape::RcRect { b, d, rebar }
+                                        }
+                                        RcGeom::Circle { d } => SectionShape::RcCircle { d, rebar },
+                                    };
+                                    pending_secs.push(PendingSec {
+                                        file_id,
+                                        name,
+                                        kind: PendingSecKind::Shape(shape),
+                                        mat: mat_id.map(SecMatRef::Id),
+                                    });
+                                }
+                                None => warnings.push(format!(
+                                    "RC 断面 (id={file_id}, name=\"{name}\") の図形を認識できず取り込めませんでした（テーパ・ハンチ等は未対応）"
+                                )),
+                            }
                         }
                     }
                     "StbSecColumn_CFT" => {
@@ -506,25 +561,30 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
                         if let CurSec::Src {
                             file_id,
                             name,
-                            geom: Some((b, d)),
+                            geom,
                             rebar,
                             steel_name,
                             grade,
                             mat_id,
                         } = std::mem::replace(&mut cur, CurSec::None)
                         {
-                            pending_secs.push(PendingSec {
-                                file_id,
-                                name,
-                                mat: mat_id.map(SecMatRef::Id),
-                                kind: PendingSecKind::SrcRef {
-                                    b,
-                                    d,
-                                    rebar: rebar.unwrap_or_else(default_rebar),
-                                    steel_name,
-                                    grade,
-                                },
-                            });
+                            match geom {
+                                Some((b, d)) => pending_secs.push(PendingSec {
+                                    file_id,
+                                    name,
+                                    mat: mat_id.map(SecMatRef::Id),
+                                    kind: PendingSecKind::SrcRef {
+                                        b,
+                                        d,
+                                        rebar: rebar.unwrap_or_else(default_rebar),
+                                        steel_name,
+                                        grade,
+                                    },
+                                }),
+                                None => warnings.push(format!(
+                                    "SRC 断面 (id={file_id}, name=\"{name}\") の図形を認識できず取り込めませんでした"
+                                )),
+                            }
                         }
                     }
                     _ => {}
@@ -611,12 +671,14 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
         .collect();
 
     // 断面 id を整列・連番へ再割当てし、形鋼名を解決してモデルへ格納する。
-    let section_index = build_sections(&mut model, pending_secs, &steel_lib);
+    let section_index = build_sections(&mut model, pending_secs, &steel_lib, &mut warnings);
 
     // 部材を格納する（節点・断面・材料の参照を正規化後の index に張り替える）。
     // 参照先が存在しない部材はスキップし、断面/材料の欠落は None にしてダングリングを防ぐ。
+    let mut skipped_members = 0u32;
     for m in pending_members {
         let (Some(&ni), Some(&nj)) = (node_index.get(&m.n_i), node_index.get(&m.n_j)) else {
+            skipped_members += 1;
             continue;
         };
         let section = m
@@ -662,16 +724,27 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
         });
     }
 
+    if skipped_members > 0 {
+        warnings.push(format!(
+            "存在しない節点を参照する部材を {skipped_members} 件スキップしました"
+        ));
+    }
+
     // 荷重ケース（節点参照を正規化。存在しない節点への荷重は破棄）。
+    let mut dropped_loads = 0u32;
     for (i, lc) in raw_load_cases.into_iter().enumerate() {
         let nodal = lc
             .nodal
             .into_iter()
-            .filter_map(|(fid, values)| {
-                node_index.get(&fid).map(|&ni| NodalLoad {
+            .filter_map(|(fid, values)| match node_index.get(&fid) {
+                Some(&ni) => Some(NodalLoad {
                     node: NodeId(ni),
                     values,
-                })
+                }),
+                None => {
+                    dropped_loads += 1;
+                    None
+                }
             })
             .collect();
         model.load_cases.push(LoadCase {
@@ -682,8 +755,25 @@ pub fn import_stbridge(xml: &str) -> Result<Model, StbError> {
             member: vec![],
         });
     }
+    if dropped_loads > 0 {
+        warnings.push(format!(
+            "存在しない節点への節点荷重を {dropped_loads} 件破棄しました"
+        ));
+    }
 
-    Ok(model)
+    // 未対応要素の集計を 1 行の警告にまとめる（タグ名昇順で決定的に）。
+    if !unsupported.is_empty() {
+        let mut items: Vec<(&&str, &u32)> = unsupported.iter().collect();
+        items.sort_by_key(|(tag, _)| **tag);
+        let list = items
+            .iter()
+            .map(|(tag, n)| format!("{tag}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!("未対応の要素をスキップしました: {list}"));
+    }
+
+    Ok((model, ImportReport { warnings }))
 }
 
 /// file id の集合を昇順・重複排除して 0 始まり連番へ写像する（file id → 新 index）。
@@ -704,6 +794,7 @@ fn build_sections(
     model: &mut Model,
     mut pending: Vec<PendingSec>,
     steel_lib: &HashMap<String, SectionShape>,
+    warnings: &mut Vec<String>,
 ) -> HashMap<u32, u32> {
     // file id 昇順で整列（Standard 書き出しは分割断面を文書順に整列させないため）。
     pending.sort_by_key(|s| s.file_id);
@@ -741,7 +832,13 @@ fn build_sections(
                 // （参照する部材の断面リンクを保つため。解析前に要確認）。
                 match shape_name.and_then(|nm| steel_lib.get(&nm).cloned()) {
                     Some(shape) => shape.to_section(new_id, ps.name),
-                    None => zero_section(new_id, ps.name),
+                    None => {
+                        warnings.push(format!(
+                            "鋼断面 (name=\"{}\") の形鋼参照を解決できず物性ゼロで取り込みました",
+                            ps.name
+                        ));
+                        zero_section(new_id, ps.name)
+                    }
                 }
             }
             PendingSecKind::CftRef(steel_name) => {
@@ -765,7 +862,13 @@ fn build_sections(
                     });
                 match cft {
                     Some(shape) => shape.to_section(new_id, ps.name),
-                    None => zero_section(new_id, ps.name),
+                    None => {
+                        warnings.push(format!(
+                            "CFT 断面 (name=\"{}\") の充填鋼管参照を解決できず物性ゼロで取り込みました",
+                            ps.name
+                        ));
+                        zero_section(new_id, ps.name)
+                    }
                 }
             }
             PendingSecKind::SrcRef {

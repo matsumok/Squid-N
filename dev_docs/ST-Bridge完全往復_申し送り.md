@@ -106,9 +106,11 @@ RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
    `StbAxes`、部材の `kind_structure`、単位系宣言）の read/write を実装する。
 6. **テーパ/ハンチ/非一様鋼断面**: `StbSecSteelColumn_S_NotSame` / `_Taper` / `_Joint`、
    梁ハンチ図形の読取り（バケット2 の断面型追加とセット）。
-7. **未対応要素の可視化**: 現状 SRC/CFT/基礎などは無警告で欠落する。import 時に
-   「未対応でスキップした要素・断面」を集計して呼び出し側へ返し、データ欠損を顕在化させる
-   （`Result` に警告リストを添える等）。
+7. **未対応要素の可視化**: ✅ **実装済み**（本 PR）。`import_stbridge_with_report` を追加し、
+   `ImportReport { warnings: Vec<String> }` を返す（`import_stbridge` は従来どおり Model のみ）。
+   壁・スラブ・基礎等の未対応要素のスキップ、テーパ等で図形を認識できない RC/SRC 断面の欠落、
+   未解決の形鋼参照（物性ゼロ化）、存在しない節点を参照する部材・節点荷重の破棄を集計する。
+   GUI の ST-Bridge 読込は警告があれば「⚠️ 取り込み時の注意」として表示する。
 
 ---
 

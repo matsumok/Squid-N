@@ -34,7 +34,7 @@ mod import;
 mod section_std;
 
 pub use export::{export_stbridge, export_stbridge_with};
-pub use import::import_stbridge;
+pub use import::{import_stbridge, import_stbridge_with_report, ImportReport};
 
 /// ST-Bridge 書き出し時の断面表現モード。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1204,6 +1204,74 @@ mod tests {
             m.elements[0].material,
             Some(MaterialId(0)),
             "断面の id_material が部材へ伝播する"
+        );
+    }
+
+    /// 対応範囲内のファイルは取り込み報告がクリーン（欠落なし）。
+    #[test]
+    fn test_import_report_clean_for_supported_model() {
+        let mut m = frame_nodes();
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "C".into()));
+        m.elements.push(member(0, true, 0));
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        let (_m, report) = import_stbridge_with_report(&xml).expect("import");
+        assert!(
+            report.is_clean(),
+            "対応範囲のモデルは警告なし: {:?}",
+            report.warnings
+        );
+    }
+
+    /// 未対応要素（壁・スラブ・基礎）は警告として報告され、無言で欠落しない。
+    #[test]
+    fn test_import_report_lists_unsupported_elements() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1"/>
+    <StbSlab id="0" name="S1"/>
+    <StbWall id="1" name="W1"/>
+    <StbWall id="2" name="W2"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.elements.len(), 1, "対応する柱のみ取り込む");
+        assert!(!report.is_clean());
+        let joined = report.warnings.join(" | ");
+        assert!(joined.contains("StbSlab×1"), "スラブの欠落を報告: {joined}");
+        assert!(joined.contains("StbWall×2"), "壁2件の欠落を報告: {joined}");
+    }
+
+    /// 形鋼ライブラリに定義の無い断面参照は、物性ゼロで取り込みつつ警告する。
+    #[test]
+    fn test_import_report_warns_unresolved_steel_ref() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="MISSING"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert_eq!(m.sections.len(), 1);
+        assert!(m.sections[0].shape.is_none(), "未解決参照は物性ゼロ断面");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("形鋼参照を解決できず")),
+            "未解決の形鋼参照を報告: {:?}",
+            report.warnings
         );
     }
 }

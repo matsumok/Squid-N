@@ -57,14 +57,21 @@ impl App {
                 return;
             }
         };
-        match squid_n_io::stbridge::import_stbridge(&xml) {
-            Ok(model) => {
+        match squid_n_io::stbridge::import_stbridge_with_report(&xml) {
+            Ok((model, report)) => {
                 if let Err(e) = model.validate() {
                     self.last_error = Some(format!("ST-Bridge読込モデルの検証エラー: {:?}", e));
                     return;
                 }
                 self.load_model(model);
                 self.project_path = None;
+                // 欠落・近似があれば注意として表示する（致命的ではない）。
+                if !report.is_clean() {
+                    self.last_error = Some(format!(
+                        "⚠️ ST-Bridge 取り込み時の注意:\n- {}",
+                        report.warnings.join("\n- ")
+                    ));
+                }
             }
             Err(e) => self.last_error = Some(format!("ST-Bridge読込エラー: {}", e)),
         }

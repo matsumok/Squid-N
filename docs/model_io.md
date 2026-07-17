@@ -158,11 +158,22 @@ let model = load_scz(Path::new("model.scz"))?;
 ### ライブラリからの利用
 
 ```rust
-use squid_n_io::stbridge::{import_stbridge, export_stbridge, export_stbridge_with, SectionExportMode};
+use squid_n_io::stbridge::{
+    import_stbridge, import_stbridge_with_report, export_stbridge, export_stbridge_with,
+    SectionExportMode,
+};
 
 // 読み込み: ST-Bridge XML 文字列 → 内部モデル
 let xml = std::fs::read_to_string("model.stb")?;
 let model = import_stbridge(&xml)?;
+
+// 読み込み（欠落の報告つき）: 未対応要素のスキップ・断面欠落・参照解決失敗などを警告として得る
+let (model, report) = import_stbridge_with_report(&xml)?;
+if !report.is_clean() {
+    for w in &report.warnings {
+        eprintln!("警告: {w}");
+    }
+}
 
 // 書き出し（物性モード / 既定）: 内部モデル → ST-Bridge XML 文字列
 let xml = export_stbridge(&model)?;
@@ -172,6 +183,11 @@ std::fs::write("model.stb", xml)?;
 let xml = export_stbridge_with(&model, SectionExportMode::Standard)?;
 std::fs::write("model_std.stb", xml)?;
 ```
+
+> **取り込みの欠落を確認する**: `import_stbridge_with_report` は [`ImportReport`] を返す。
+> 壁・スラブ・基礎などの未対応要素、テーパ等で図形を認識できない RC/SRC 断面、
+> 未解決の形鋼参照、存在しない節点を参照する部材・荷重が、警告として列挙される。
+> GUI の「ST-Bridge 読込」は警告があれば「⚠️ 取り込み時の注意」として表示する。
 
 ---
 
