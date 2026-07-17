@@ -14,7 +14,8 @@
 //!   真実とする方針）。BIM/他ソフト向けに標準要素で書き出す `Standard` モードは下記
 //!   「断面書き出しモード」を参照。import は `StbSecRaw` と標準断面要素（`StbSecColumn_S` 等）の
 //!   双方を読み取れる。
-//! - 床・ブレース・剛域・端部接合等の詳細。
+//! - **部材**は柱（鉛直）・大梁（水平）・ブレース（斜材、`StbBrace`）を往復する。
+//!   床（スラブ）・壁・剛域・端部接合等の詳細は未対応。
 //!
 //! 一次資料: ST-Bridge 公式スキーマ（XML 2.0 系）。要素・属性名はこれに準拠（subset）。
 //!
@@ -33,7 +34,7 @@ mod import;
 mod section_std;
 
 pub use export::{export_stbridge, export_stbridge_with};
-pub use import::import_stbridge;
+pub use import::{import_stbridge, import_stbridge_with_report, ImportReport};
 
 /// ST-Bridge 書き出し時の断面表現モード。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,15 +42,17 @@ pub enum SectionExportMode {
     /// 物性を独自要素 `StbSecRaw` として直接保持する。`import_stbridge` で往復可能。既定。
     #[default]
     Raw,
-    /// ST-Bridge 標準の断面要素（`StbSecColumn_S`/`StbSecBeam_S`/`StbSecColumn_RC`/
-    /// `StbSecBeam_RC`）＋形鋼ライブラリ（`StbSecSteel`）で書き出す。BIM/他ソフトとの
-    /// 連携向け。形状（`Section.shape`）を持たない断面や SRC・CFT・耐震壁は `StbSecRaw`
-    /// へフォールバックする。
+    /// ST-Bridge 標準の断面要素（鋼 `StbSecColumn_S`/`StbSecBeam_S`、RC `StbSecColumn_RC`/
+    /// `StbSecBeam_RC`、CFT `StbSecColumn_CFT`、SRC `StbSecColumn_SRC`/`StbSecBeam_SRC`）＋
+    /// 形鋼ライブラリ（`StbSecSteel`）で書き出す。BIM/他ソフトとの連携向け。形状
+    /// （`Section.shape`）を持たない断面や耐震壁は `StbSecRaw` へフォールバックする。
     ///
     /// `import_stbridge` は本モードのファイル（および同じ断面表現の他社ファイル）を
-    /// 読み戻せる（形鋼名から形状を復元し断面性能を再算定する）。ただし RC の配筋は
-    /// 復元されず（無筋相当）、柱・梁共有断面は 2 断面に分割される。完全一致での往復が
-    /// 要るときは [`Raw`](Self::Raw) を使う。
+    /// 読み戻せる（形鋼名から形状を復元し断面性能を再算定する。RC/SRC は配筋も
+    /// `StbSecBarArrangement*` で往復する）。ただし柱・梁で共有していた断面は書き出し時に
+    /// 2 断面へ分割される。CFT は柱のみ対応で梁に使うと `StbSecRaw` へ、RC 円形も梁では
+    /// `StbSecRaw` へフォールバックする（形状・配筋は往復しない）。配筋を持たない
+    /// （幾何のみの）他社ファイルは無筋相当で読む。
     Standard,
 }
 
@@ -570,6 +573,124 @@ mod tests {
         assert_eq!(back.elements[1].section, Some(SectionId(1)));
     }
 
+    /// 方向別に異なる本数・径・段数・かぶり・帯筋を持つ配筋（往復ずれ・取り違えを検出）。
+    fn rebar_distinct() -> RcRebar {
+        RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 25.0,
+                layers: 2,
+            },
+            main_y: BarSet {
+                count: 3,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 45.0,
+            shear: ShearBar {
+                dia: 13.0,
+                pitch: 150.0,
+                legs: 4,
+                grade: Some("KH785".into()),
+            },
+        }
+    }
+
+    /// 標準モード: RC 矩形柱の配筋（主筋・帯筋・かぶり）が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_rect_column_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 600.0,
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarArrangementColumn_RC>"),
+            "柱配筋要素が書き出される: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        // 形状（b・d・配筋すべて）が完全一致で復元される。
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 矩形柱の配筋が往復で保存される"
+        );
+    }
+
+    /// 標準モード: RC 円形柱の配筋が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_circle_column_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcCircle {
+            d: 800.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarColumn_RC_CircleSame "),
+            "円形配筋要素: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 円形柱の配筋が往復で保存される"
+        );
+    }
+
+    /// 標準モード: RC 矩形梁の配筋が往復で完全に保存される。
+    #[test]
+    fn test_standard_roundtrip_rc_beam_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections.push(shape.to_section(SectionId(0), "G1".into()));
+        m.elements.push(member(0, false, 0)); // 梁
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBarArrangementBeam_RC>"),
+            "梁配筋要素が書き出される: {xml}"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "RC 梁の配筋が往復で保存される"
+        );
+    }
+
+    /// 配筋要素の無い（幾何のみの）RC 断面ファイルも、無筋相当の既定配筋で読める。
+    #[test]
+    fn test_import_rc_without_bar_arrangement_uses_default() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C"><StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="500" width_Y="600"/></StbSecFigureColumn_RC></StbSecColumn_RC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert_eq!(m.sections.len(), 1);
+        match &m.sections[0].shape {
+            Some(SectionShape::RcRect { b, d, .. }) => {
+                assert_eq!(*b, 500.0);
+                assert_eq!(*d, 600.0);
+            }
+            other => panic!("RcRect を期待: {other:?}"),
+        }
+    }
+
     /// 標準モードで柱・梁に分割された共有鋼断面が、import で 2 断面として復元され
     /// 各部材が別 id を参照する（検証を通る）。
     #[test]
@@ -597,6 +718,279 @@ mod tests {
         );
         assert_eq!(back.elements[0].section, Some(SectionId(0)));
         assert_eq!(back.elements[1].section, Some(SectionId(1)));
+    }
+
+    /// 柱・梁で共有する RC 矩形断面が、配筋ごと 2 断面へ分割・復元される。
+    #[test]
+    fn test_standard_roundtrip_shared_rc_rect_rebar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcRect {
+            b: 500.0,
+            d: 800.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "RC1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+        m.elements.push(member(1, false, 0)); // 梁（共有）
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(back.sections.len(), 2, "共有 RC 断面は 2 断面へ分割される");
+        // 分割された両断面とも、元の形状・配筋が保存されている。
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+        assert_eq!(back.sections[1].shape, m.sections[0].shape);
+    }
+
+    /// grade=None の配筋も完全一致で往復する（strength_band 属性を出力しない経路）。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_grade_none() {
+        let mut m = frame_nodes();
+        let mut r = rebar_distinct();
+        r.shear.grade = None;
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 600.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    }
+
+    /// 非整数の径・ピッチ・かぶりも桁落ちなく往復する。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_non_integer() {
+        let mut m = frame_nodes();
+        let r = RcRebar {
+            main_x: BarSet {
+                count: 6,
+                dia: 12.7,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 9.53,
+                layers: 2,
+            },
+            cover: 40.5,
+            shear: ShearBar {
+                dia: 6.35,
+                pitch: 133.3,
+                legs: 2,
+                grade: Some("SD295".into()),
+            },
+        };
+        let shape = SectionShape::RcRect {
+            b: 450.0,
+            d: 650.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    }
+
+    /// 帯筋グレードにタブ等の制御空白が含まれても往復で保存される（esc の制御文字対策）。
+    #[test]
+    fn test_standard_roundtrip_rc_rebar_grade_with_control_chars() {
+        let mut m = frame_nodes();
+        let mut r = rebar_distinct();
+        r.shear.grade = Some("KH\t785\nX".into());
+        let shape = SectionShape::RcRect {
+            b: 400.0,
+            d: 700.0,
+            rebar: r,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "制御空白を含む grade が往復で保存される"
+        );
+    }
+
+    /// 円形 RC を梁に使うと（ST-Bridge に円形梁図形が無いため）StbSecRaw へフォールバックし、
+    /// 形状・配筋は失われるが物性は残り、検証は通る（ドキュメント化された既知の挙動）。
+    #[test]
+    fn test_standard_rc_circle_beam_falls_back_to_raw() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::RcCircle {
+            d: 700.0,
+            rebar: rebar_distinct(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "CB1".into()));
+        m.elements.push(member(0, false, 0)); // 梁（水平材）で円形を使う
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecRaw "), "円形梁は Raw にフォールバック");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        // 形状・配筋は失われる（shape=None）が、弾性物性は残る。
+        assert!(back.sections[0].shape.is_none(), "円形梁は形状が往復しない");
+        assert_eq!(back.sections[0].area, m.sections[0].area, "物性は残る");
+    }
+
+    /// 実 ST-Bridge 風の配筋属性（呼び名径 D22・標準名 D_band/N_main_X_1st）を best-effort で読む。
+    #[test]
+    fn test_import_rc_rebar_third_party_names() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C">
+      <StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="600" width_Y="600"/></StbSecFigureColumn_RC>
+      <StbSecBarArrangementColumn_RC>
+        <StbSecBarColumn_RC_RectSame N_main_X_1st="4" N_main_Y_1st="3" D_main="D22" D_band="D10" pitch_band="100"/>
+      </StbSecBarArrangementColumn_RC>
+    </StbSecColumn_RC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        match &m.sections[0].shape {
+            Some(SectionShape::RcRect { rebar, .. }) => {
+                assert_eq!(rebar.main_x.count, 4);
+                assert_eq!(rebar.main_y.count, 3);
+                assert_eq!(rebar.main_x.dia, 22.0, "呼び名 D22 → 22mm");
+                assert_eq!(rebar.shear.dia, 10.0, "呼び名 D10 → 10mm");
+                assert_eq!(rebar.shear.pitch, 100.0);
+            }
+            other => panic!("RcRect を期待: {other:?}"),
+        }
+    }
+
+    /// 標準モード: CFT 角形柱が `StbSecColumn_CFT`＋形鋼ライブラリとして往復する。
+    #[test]
+    fn test_standard_roundtrip_cft_box() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "CFT1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecColumn_CFT "), "CFT 柱要素: {xml}");
+        assert!(xml.contains("<StbSecRoll-BOX "), "充填鋼管の形鋼ライブラリ");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "CFT 角形が往復"
+        );
+    }
+
+    /// 標準モード: CFT 円形柱が往復する。
+    #[test]
+    fn test_standard_roundtrip_cft_pipe() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::CftPipe {
+            outer_dia: 500.0,
+            thick: 12.0,
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "CFT2".into()));
+        m.elements.push(member(0, true, 0));
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecColumn_CFT "));
+        assert!(xml.contains("<StbSecPipe "));
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "CFT 円形が往復"
+        );
+    }
+
+    /// 標準モード: SRC 柱（コンクリート＋内蔵鉄骨＋配筋＋鋼種）が完全に往復する。
+    #[test]
+    fn test_standard_roundtrip_src_column() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::SrcRect {
+            b: 800.0,
+            d: 800.0,
+            rebar: rebar_distinct(),
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 8.0,
+            steel_flange_thick: 13.0,
+            steel_grade: "SN490B".into(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "SRC1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecColumn_SRC "), "SRC 柱要素: {xml}");
+        assert!(
+            xml.contains("strength_steel=\"SN490B\""),
+            "鋼種が書き出される"
+        );
+        assert!(xml.contains("<StbSecRoll-H "), "内蔵鉄骨の形鋼ライブラリ");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "SRC 柱が形状・配筋・内蔵鉄骨・鋼種とも往復する"
+        );
+    }
+
+    /// 標準モード: SRC 梁も往復する（`StbSecBeam_SRC`）。
+    #[test]
+    fn test_standard_roundtrip_src_beam() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::SrcRect {
+            b: 500.0,
+            d: 800.0,
+            rebar: rebar_distinct(),
+            steel_height: 450.0,
+            steel_width: 200.0,
+            steel_web_thick: 9.0,
+            steel_flange_thick: 14.0,
+            steel_grade: "SN400B".into(),
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "SG1".into()));
+        m.elements.push(member(0, false, 0)); // 梁
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecBeam_SRC "), "SRC 梁要素: {xml}");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(back.sections[0].shape, m.sections[0].shape, "SRC 梁が往復");
+    }
+
+    /// CFT を梁に使うと（ST-Bridge に CFT 梁が無いため）Raw へフォールバックする。
+    #[test]
+    fn test_standard_cft_beam_falls_back_to_raw() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::CftBox {
+            height: 300.0,
+            width: 300.0,
+            thick: 12.0,
+        };
+        m.sections.push(shape.to_section(SectionId(0), "CB".into()));
+        m.elements.push(member(0, false, 0)); // 梁
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecRaw "), "CFT 梁は Raw にフォールバック");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert!(back.sections[0].shape.is_none());
     }
 
     /// 形鋼ライブラリが断面要素より後ろに現れても解決できる（順序非依存）。
@@ -676,5 +1070,400 @@ mod tests {
         let m = import_stbridge(xml).expect("import");
         assert_eq!(m.nodes.len(), 1);
         assert_eq!(m.nodes[0].coord, [1000.0, 2000.0, 3000.0]);
+    }
+
+    /// ブレース（斜材）が `StbBrace` として往復する（Raw / Standard 両モード）。
+    #[test]
+    fn test_roundtrip_brace() {
+        let mut m = frame_nodes();
+        let pipe = SectionShape::SteelPipe {
+            outer_dia: 100.0,
+            thick: 5.0,
+        };
+        m.sections.push(pipe.to_section(SectionId(0), "BR".into()));
+        // 節点0→3 の斜材（引張専用）。
+        m.elements.push(ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Brace { tension_only: true },
+            nodes: smallvec![NodeId(0), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+
+        let raw_xml = export_stbridge(&m).unwrap();
+        assert!(
+            raw_xml.contains("<StbBrace "),
+            "ブレースは StbBrace で書き出される"
+        );
+        for xml in [
+            raw_xml,
+            export_stbridge_with(&m, SectionExportMode::Standard).unwrap(),
+        ] {
+            let back = import_stbridge(&xml).expect("import");
+            assert!(back.validate().is_ok(), "{:?}", back.validate());
+            assert_eq!(back.elements.len(), 1);
+            assert_eq!(
+                back.elements[0].kind,
+                ElementKind::Brace { tension_only: true },
+                "ブレース種別（tension_only 含む）が往復する"
+            );
+            assert_eq!(back.elements[0].nodes.as_slice(), &[NodeId(0), NodeId(3)]);
+            assert_eq!(back.elements[0].section, Some(SectionId(0)));
+            assert_eq!(back.elements[0].material, Some(MaterialId(0)));
+        }
+    }
+
+    /// Standard 書き出しは断面側にも材料を付す（鋼は strength_main、RC は id_material）。
+    #[test]
+    fn test_standard_writes_section_material() {
+        // 鋼柱: strength_main に材料名。
+        let mut m = frame_nodes(); // 材料 0 = "SN400B"
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "C".into()));
+        m.elements.push(member(0, true, 0));
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("strength_main=\"SN400B\""),
+            "鋼断面に材料名（strength_main）を付す: {xml}"
+        );
+
+        // RC 柱: id_material に材料 id。
+        let mut m2 = frame_nodes();
+        let rc = SectionShape::RcRect {
+            b: 500.0,
+            d: 500.0,
+            rebar: rebar(),
+        };
+        m2.sections.push(rc.to_section(SectionId(0), "C".into()));
+        m2.elements.push(member(0, true, 0));
+        let xml2 = export_stbridge_with(&m2, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml2.contains("<StbSecColumn_RC id=\"0\" name=\"C\" id_material=\"0\""),
+            "RC 断面に材料 id を付す: {xml2}"
+        );
+    }
+
+    /// 実 STB 相当: 部材が id_material を持たず断面が鋼種（strength_main）を持つファイルで、
+    /// 断面の材料を部材へ伝播する（材料名で突き合わせ）。
+    #[test]
+    fn test_import_propagates_steel_grade_material_to_member() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMaterials><StbMaterial id="0" name="SN400B" young="205000" poisson="0.3" density="0"/></StbMaterials>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="H1" strength_main="SN400B"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+    <StbSecSteel><StbSecRoll-H name="H1" type="H" A="300" B="150" t1="6.5" t2="9" r="0"/></StbSecSteel>
+  </StbSections>
+  <StbMembers><StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(
+            m.elements[0].material,
+            Some(MaterialId(0)),
+            "部材が id_material を持たなくても断面の鋼種から材料が伝播する"
+        );
+    }
+
+    /// 実 STB 相当: RC 断面の id_material を（id_material 無しの）部材へ伝播する。
+    #[test]
+    fn test_import_propagates_rc_material_to_member() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMaterials><StbMaterial id="5" name="Fc24" young="21000" poisson="0.2" density="0"/></StbMaterials>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C" id_material="5"><StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="500" width_Y="500"/></StbSecFigureColumn_RC></StbSecColumn_RC>
+  </StbSections>
+  <StbMembers><StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        // 材料 id=5 は正規化で index 0 になる。
+        assert_eq!(
+            m.elements[0].material,
+            Some(MaterialId(0)),
+            "断面の id_material が部材へ伝播する"
+        );
+    }
+
+    /// 対応範囲内のファイルは取り込み報告がクリーン（欠落なし）。
+    #[test]
+    fn test_import_report_clean_for_supported_model() {
+        let mut m = frame_nodes();
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "C".into()));
+        m.elements.push(member(0, true, 0));
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        let (_m, report) = import_stbridge_with_report(&xml).expect("import");
+        assert!(
+            report.is_clean(),
+            "対応範囲のモデルは警告なし: {:?}",
+            report.warnings
+        );
+    }
+
+    /// 未対応要素（壁・スラブ・基礎）は警告として報告され、無言で欠落しない。
+    #[test]
+    fn test_import_report_lists_unsupported_elements() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1"/>
+    <StbSlab id="0" name="S1"/>
+    <StbWall id="1" name="W1"/>
+    <StbWall id="2" name="W2"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.elements.len(), 1, "対応する柱のみ取り込む");
+        assert!(!report.is_clean());
+        let joined = report.warnings.join(" | ");
+        assert!(joined.contains("StbSlab×1"), "スラブの欠落を報告: {joined}");
+        assert!(joined.contains("StbWall×2"), "壁2件の欠落を報告: {joined}");
+    }
+
+    /// 形鋼ライブラリに定義の無い断面参照は、物性ゼロで取り込みつつ警告する。
+    #[test]
+    fn test_import_report_warns_unresolved_steel_ref() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="MISSING"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert_eq!(m.sections.len(), 1);
+        assert!(m.sections[0].shape.is_none(), "未解決参照は物性ゼロ断面");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("形鋼参照を解決できず")),
+            "未解決の形鋼参照を報告: {:?}",
+            report.warnings
+        );
+    }
+
+    // ===== レビュー指摘の回帰テスト =====
+
+    /// [高] StbPost（間柱, bottom/top）を含むファイルが取り込みエラーで中断しない。
+    #[test]
+    fn test_import_stbpost_bottom_top() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers><StbPost id="0" id_node_bottom="0" id_node_top="1"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("StbPost で中断しない");
+        assert_eq!(m.elements.len(), 1);
+        assert_eq!(m.elements[0].nodes.as_slice(), &[NodeId(0), NodeId(1)]);
+    }
+
+    /// [高] SRC 内蔵鉄骨の参照が未解決なら警告する（無言のゼロ鉄骨を防ぐ）。
+    #[test]
+    fn test_import_report_warns_unresolved_src_steel() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_SRC id="0" name="SC" strength_steel="SN490B">
+      <StbSecFigureColumn_SRC><StbSecColumn_SRC_Rect width_X="800" width_Y="800"/></StbSecFigureColumn_SRC>
+      <StbSecSteelFigureColumn_SRC><StbSecSteelColumn_SRC_Same shape="MISSING_H"/></StbSecSteelFigureColumn_SRC>
+    </StbSecColumn_SRC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let (_m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("内蔵鉄骨参照を解決できず")),
+            "SRC 内蔵鉄骨の未解決を報告: {:?}",
+            report.warnings
+        );
+    }
+
+    /// [中] id_material を明示（-1 含む）する部材の material=None は、断面材料で上書きしない。
+    #[test]
+    fn test_material_none_member_not_overwritten_by_section() {
+        let mut m = frame_nodes(); // 材料0="SN400B"
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "S".into()));
+        let mut col = member(0, true, 0);
+        col.material = Some(MaterialId(0));
+        let mut beam = member(1, false, 0);
+        beam.material = None;
+        m.elements.push(col);
+        m.elements.push(beam);
+
+        let back = import_stbridge(&export_stbridge_with(&m, SectionExportMode::Standard).unwrap())
+            .expect("import");
+        assert_eq!(back.elements[0].material, Some(MaterialId(0)), "柱の材料");
+        assert_eq!(back.elements[1].material, None, "梁の材料は None のまま");
+    }
+
+    /// [中] 柱・梁で異なる材料が同一断面を共有する場合、分割後の各断面に正しい材料を書き出す。
+    #[test]
+    fn test_shared_section_role_material() {
+        let mut m = frame_nodes();
+        m.materials.push(Material {
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SN490B".into(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(325.0),
+        });
+        let h = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        };
+        m.sections.push(h.to_section(SectionId(0), "S".into()));
+        let mut col = member(0, true, 0);
+        col.material = Some(MaterialId(0));
+        let mut beam = member(1, false, 0);
+        beam.material = Some(MaterialId(1));
+        m.elements.push(col);
+        m.elements.push(beam);
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecColumn_S ") && xml.contains("strength_main=\"SN400B\""),
+            "柱断面に SN400B: {xml}"
+        );
+        assert!(
+            xml.contains("<StbSecBeam_S ") && xml.contains("strength_main=\"SN490B\""),
+            "梁断面に SN490B: {xml}"
+        );
+    }
+
+    /// [中] 存在しない断面を参照する部材は、リンクを外しつつ警告する。
+    #[test]
+    fn test_import_report_warns_dangling_section_ref() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers><StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="99"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert_eq!(m.elements[0].section, None);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("存在しない断面")),
+            "ダングリング断面参照を報告: {:?}",
+            report.warnings
+        );
+    }
+
+    /// [低] 鋼ブレース断面 StbSecBrace_S を取り込み、ブレースが断面を持つ。
+    #[test]
+    fn test_import_stbsecbrace_s() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="6000" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecBrace_S id="0" name="BR"><StbSecSteelFigureBrace_S><StbSecSteelBrace_S_Same shape="P1"/></StbSecSteelFigureBrace_S></StbSecBrace_S>
+    <StbSecSteel><StbSecPipe name="P1" D="100" t="5"/></StbSecSteel>
+  </StbSections>
+  <StbMembers><StbBrace id="0" id_node_start="0" id_node_end="1" id_section="0" tension_only="true"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(
+            m.elements[0].section,
+            Some(SectionId(0)),
+            "ブレースが断面を持つ"
+        );
+        assert!(
+            matches!(m.sections[0].shape, Some(SectionShape::SteelPipe { .. })),
+            "ブレース断面が鋼管として復元"
+        );
+        assert!(
+            report.is_clean(),
+            "StbSecBrace_S は未対応ではない: {:?}",
+            report.warnings
+        );
+    }
+
+    /// [低] esc は XML 1.0 で表現できない制御文字（例: form feed）を除去する。
+    #[test]
+    fn test_export_strips_illegal_control_chars() {
+        let mut m = frame_nodes();
+        let mut sec = SectionShape::SteelH {
+            height: 300.0,
+            width: 150.0,
+            web_thick: 6.5,
+            flange_thick: 9.0,
+        }
+        .to_section(SectionId(0), "S".into());
+        sec.name = "A\u{0C}B".into(); // form feed を含む名前
+        m.sections.push(sec);
+        m.elements.push(member(0, true, 0));
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(!xml.contains('\u{0C}'), "不正な制御文字が出力に残らない");
+        assert!(import_stbridge(&xml).is_ok(), "出力は XML として読み戻せる");
+    }
+
+    /// [低] 未対応要素リストに StbOpen（開口）が含まれ、欠落が報告される。
+    #[test]
+    fn test_import_report_lists_stbopen() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbMembers><StbOpen id="0" id_wall="1"/></StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (_m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(
+            report.warnings.iter().any(|w| w.contains("StbOpen")),
+            "StbOpen の欠落を報告: {:?}",
+            report.warnings
+        );
     }
 }

@@ -96,7 +96,7 @@ let model = load_scz(Path::new("model.scz"))?;
 | 層 | 名称、標高 |
 | 材料 | ヤング係数 E、ポアソン比 ν、密度、コンクリート強度 Fc、鋼材強度 Fy |
 | 断面 | 面積、断面二次モーメント（Iy・Iz）、ねじり定数 J、せい・幅などの物性 |
-| 部材 | 柱（鉛直材）／大梁（水平材）、節点・断面・材料の参照、部材軸（`ref_vector`） |
+| 部材 | 柱（鉛直材）／大梁（水平材）／ブレース（斜材・引張専用の別）、節点・断面・材料の参照、部材軸（`ref_vector`） |
 | 荷重 | 荷重ケース（節点荷重） |
 
 ### 非対応（対象外）
@@ -106,7 +106,7 @@ let model = load_scz(Path::new("model.scz"))?;
 - 解析結果・独自属性。
 - 拘束条件（支点）・質量（ST-Bridge の幾何スコープ外）。
 - 部材荷重・荷重組合せ。
-- 床（スラブ）・ブレース・剛域・端部接合などの詳細。
+- 床（スラブ）・壁・剛域・端部接合などの詳細（ブレースは対応済み）。
 
 ### 断面表現モード（書き出し）
 
@@ -121,15 +121,21 @@ let model = load_scz(Path::new("model.scz"))?;
 
 読み込み（import）は、`StbSecRaw`（物性）と ST-Bridge 標準の断面要素（`StbSecColumn_S` 等＋形鋼ライブラリ `StbSecSteel`）の**両方**を解釈する。標準要素は形鋼名から内部の断面形状を復元し、断面性能を再算定する。したがって断面形状モードで書き出したファイルや、同じ断面表現を用いる他社ソフトのファイルを Squid-N に読み戻せる。
 
-> **断面形状モードの往復についての注記**: 弾性断面性能（面積・断面二次モーメント等）と断面形状は
-> 復元されるが、次の情報は往復しない。
-> - **RC の配筋**（本数・径・かぶり等）は標準の図形要素に幾何しか無いため、読み戻すと無筋相当になる
->   （配筋検定を行う場合は取り込み後に入力が必要）。
+> **断面形状モードの往復についての注記**: 断面形状・弾性断面性能（面積・断面二次モーメント等）に加え、
+> **RC の配筋**（主筋の本数・径・段数、帯筋の径・ピッチ・組数・材質、かぶり）も
+> `StbSecBarArrangement*` として往復する（Squid-N の断面形状モード出力どうし）。ただし次の点に注意。
 > - **柱・梁で共有していた断面**は書き出し時に柱用・梁用へ分割されるため、読み戻すと 2 断面になる
->   （形状・性能は同一）。
-> - 形鋼ライブラリに定義の無い断面参照は物性ゼロの断面として残る（解析前に要確認）。
+>   （形状・配筋・性能は同一）。
+> - **RC 円形を梁として使う断面**は ST-Bridge に円形梁の図形が無いため物性（`StbSecRaw`）へ
+>   フォールバックし、形状・配筋は往復しない（物性のみ残る。円形柱は配筋も往復する）。
+> - 配筋を持たない（幾何のみの）他社ファイルを読むと、その RC 断面は無筋相当になる
+>   （配筋検定を行う場合は取り込み後に入力が必要）。他社ファイルの配筋は径の呼び名（`D22`）や
+>   一部の標準属性名（`D_main`・`N_main_X_1st` 等）を best-effort で読むが、実 ST-Bridge の
+>   配筋スキーマ（段別本数の合算・公称径の厳密対応）への完全準拠は今後の課題。
+> - 形鋼ライブラリに定義の無い断面参照、および認識できない図形（テーパ・ハンチ等）の RC 断面は
+>   物性ゼロ、または断面欠落（参照部材は断面なし）になる（解析前に要確認）。
 >
-> 完全一致での往復が必要なら**物性モード**または `.scz` を使う。
+> Squid-N 固有の解析・設計属性まで含めた完全一致での往復が必要なら**物性モード**または `.scz` を使う。
 
 #### 断面形状モードの対応
 
@@ -138,22 +144,36 @@ let model = load_scz(Path::new("model.scz"))?;
 | 内部形状 | 書き出し先 |
 |---|---|
 | H形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T形鋼 | 形鋼ライブラリ `StbSecSteel`（`StbSecRoll-H`/`-BOX`/`StbSecPipe` 等）＋ `StbSecColumn_S` / `StbSecBeam_S` |
-| RC 矩形・円形 | `StbSecColumn_RC` / `StbSecBeam_RC`（断面の幾何。配筋は本モードでは書き出さない） |
-| 上記以外（SRC・CFT・耐震壁・形状未定義） | `StbSecRaw`（物性）へフォールバック |
+| RC 矩形・円形 | `StbSecColumn_RC` / `StbSecBeam_RC`（断面の幾何 ＋ 配筋 `StbSecBarArrangement*`） |
+| CFT 角形・円形 | `StbSecColumn_CFT` ＋ 充填鋼管の `StbSecSteel` 参照（柱のみ。梁に使うと `StbSecRaw`） |
+| SRC 矩形 | `StbSecColumn_SRC` / `StbSecBeam_SRC`（コンクリート図形＋内蔵鉄骨 `StbSecSteel` 参照＋配筋＋鋼種 `strength_steel`） |
+| 上記以外（耐震壁・形状未定義） | `StbSecRaw`（物性）へフォールバック |
 
 補足:
 
 - ST-Bridge では断面が柱用（`StbSecColumn_*`）と梁用（`StbSecBeam_*`）に型分けされる。内部モデルで 1 つの断面を柱と梁の両方が共有している場合、書き出し時に柱用・梁用の 2 要素へ分割し、梁用へ新しい断面 id を割り当てる（各部材の断面参照は自動で張り替える）。読み戻すとこの分割がそのまま 2 断面になる。
-- 読み込み時は、形鋼名（`StbSecRoll-H` 等）から H形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T形鋼を、`StbSecColumn_RC_Rect`/`_Circle`・`StbSecBeam_RC_Straight` から RC 矩形・円形を復元する。断面 id が文書順に整列していなくても id を整列・再採番し、部材の断面参照を張り替える。
+- 読み込み時は、形鋼名（`StbSecRoll-H` 等）から H形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T形鋼を、`StbSecColumn_RC_Rect`/`_Circle`・`StbSecBeam_RC_Straight` から RC 矩形・円形を復元し、`StbSecBarArrangement*` から配筋を復元する。node/material/story/section/element/荷重ケースの id が 1 始まりや歯抜けでも 0 始まり連番へ正規化し、全参照を張り替える。
+- 材料は ST-Bridge の慣習に合わせ断面側にも付す（鋼は形鋼参照の `strength_main`＝材料名、RC/CFT/SRC は `id_material`）。読み込み時、部材が `id_material` を持たない他社ファイルでは、断面の材料を部材へ伝播する。
 
 ### ライブラリからの利用
 
 ```rust
-use squid_n_io::stbridge::{import_stbridge, export_stbridge, export_stbridge_with, SectionExportMode};
+use squid_n_io::stbridge::{
+    import_stbridge, import_stbridge_with_report, export_stbridge, export_stbridge_with,
+    SectionExportMode,
+};
 
 // 読み込み: ST-Bridge XML 文字列 → 内部モデル
 let xml = std::fs::read_to_string("model.stb")?;
 let model = import_stbridge(&xml)?;
+
+// 読み込み（欠落の報告つき）: 未対応要素のスキップ・断面欠落・参照解決失敗などを警告として得る
+let (model, report) = import_stbridge_with_report(&xml)?;
+if !report.is_clean() {
+    for w in &report.warnings {
+        eprintln!("警告: {w}");
+    }
+}
 
 // 書き出し（物性モード / 既定）: 内部モデル → ST-Bridge XML 文字列
 let xml = export_stbridge(&model)?;
@@ -163,6 +183,11 @@ std::fs::write("model.stb", xml)?;
 let xml = export_stbridge_with(&model, SectionExportMode::Standard)?;
 std::fs::write("model_std.stb", xml)?;
 ```
+
+> **取り込みの欠落を確認する**: `import_stbridge_with_report` は [`ImportReport`] を返す。
+> 壁・スラブ・基礎などの未対応要素、テーパ等で図形を認識できない RC/SRC 断面、
+> 未解決の形鋼参照、存在しない節点を参照する部材・荷重が、警告として列挙される。
+> GUI の「ST-Bridge 読込」は警告があれば「⚠️ 取り込み時の注意」として表示する。
 
 ---
 
