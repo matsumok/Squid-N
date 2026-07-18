@@ -253,6 +253,13 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 let a = attrs(&e)?;
+                // StbNodeIdOrder のテキストは開始タグ直後の Text/CData のみで届く。
+                // 別要素が現れた時点で取り込み窓を閉じる（自己終了タグ
+                // <StbNodeIdOrder/> は End が来ずフラグが残るため、この明示リセットで
+                // 無関係な子要素のテキストを境界へ誤取り込みするのを防ぐ）。
+                if tag != "StbNodeIdOrder" {
+                    in_node_id_order = false;
+                }
                 match tag.as_str() {
                     "ST_BRIDGE" => {
                         let v = a.get("version").cloned().unwrap_or_default();
@@ -684,15 +691,15 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             }
             // StbNodeIdOrder のテキスト内容（空白区切りの節点 id 列）を集める。
             // 節点 id は数字と空白のみで XML 実体参照を含まないため、そのまま UTF-8
-            // 解釈でよい。
+            // 解釈でよい。CDATA 形式（<![CDATA[0 1 2 3]]>）にも対応する。
             Event::Text(t) if in_node_id_order => {
                 if let Some(slab) = cur_slab.as_mut() {
-                    let text = String::from_utf8_lossy(t.as_ref());
-                    for tok in text.split_whitespace() {
-                        if let Ok(id) = tok.parse::<u32>() {
-                            slab.boundary.push(id);
-                        }
-                    }
+                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), slab);
+                }
+            }
+            Event::CData(t) if in_node_id_order => {
+                if let Some(slab) = cur_slab.as_mut() {
+                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), slab);
                 }
             }
             _ => {}
@@ -1315,6 +1322,16 @@ fn make_member(
         has_material_attr,
         ref_vec,
     })
+}
+
+/// `StbNodeIdOrder` の内容文字列（空白区切りの節点 id 列）を解析し、
+/// 数値として読める token を境界へ追加する（`RawSlab.boundary`）。
+fn push_node_id_tokens(text: &str, slab: &mut RawSlab) {
+    for tok in text.split_whitespace() {
+        if let Ok(id) = tok.parse::<u32>() {
+            slab.boundary.push(id);
+        }
+    }
 }
 
 fn attrs(e: &quick_xml::events::BytesStart) -> Result<HashMap<String, String>, StbError> {

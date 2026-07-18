@@ -230,6 +230,12 @@ fn raw_sections(model: &Model) -> (String, HashMap<u32, u32>, HashMap<u32, u32>)
 /// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。各スラブに 1 つの断面を
 /// `base + slab.id.0` の id で出力し、厚さは `slab.thickness`（未設定なら建物一律の
 /// `model.slab_thickness`）を用いる。`StbSlab.id_section` から参照される。
+///
+/// 注意（往復の非対称性）: `StbSecSlab_RC` は厚さを明示値でしか表現できないため、
+/// `slab.thickness == None`（＝建物一律値を継承）のスラブは書き出し時に
+/// `model.slab_thickness` の明示値へ実体化される。取り込み側ではこれを
+/// `Some(値)` として読むため、`None → Some(建物一律値)` の非対称が生じる
+/// （厚さの実効値は不変で解析結果に影響しない。フォーマット上不可避）。
 fn slab_sections(model: &Model, base: u32) -> String {
     let mut body = String::new();
     for slab in &model.slabs {

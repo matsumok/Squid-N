@@ -1288,6 +1288,63 @@ mod tests {
         assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
     }
 
+    /// StbNodeIdOrder が CDATA 形式でも境界を取り込めること。
+    #[test]
+    fn test_import_slab_node_order_cdata() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S1" kind_structure="RC">
+      <StbNodeIdOrder><![CDATA[0 1 2 3]]></StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.slabs.len(), 1, "CDATA の節点ループを取り込む");
+        assert_eq!(
+            m.slabs[0].boundary,
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        );
+    }
+
+    /// 自己終了 <StbNodeIdOrder/> の後に無関係な子要素のテキストがあっても、
+    /// 取り込み窓が閉じられて境界へ誤混入しないこと（レビュー指摘の回帰テスト）。
+    #[test]
+    fn test_import_slab_self_closing_node_order_does_not_capture_stray_text() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S1" kind_structure="RC">
+      <StbNodeIdOrder/>
+      <Foo>999</Foo>
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.slabs.len(), 1);
+        // 999 が混入せず、実 StbNodeIdOrder の 0 1 2 3 のみになる。
+        assert_eq!(
+            m.slabs[0].boundary,
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            "自己終了タグ後の無関係テキストを取り込まない"
+        );
+    }
+
     /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。
     #[test]
     fn test_slab_roundtrip_export_import() {
