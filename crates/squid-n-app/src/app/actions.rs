@@ -1653,53 +1653,86 @@ impl App {
             // 床設計は床用積載（最大）＋固定荷重を用いる。
             let w = slab.intensity(LoadPurpose::Floor);
 
-            // --- 小梁（単純支持梁） ---
-            for (ji, j) in slab.joists.iter().enumerate() {
-                let (a, b) = (j.support[0], j.support[1]);
-                if a == b || beam_between(a, b) {
-                    // 実部材化済み or 退化した小梁は床設計の対象外。
-                    continue;
-                }
-                let Some(sid) = j.section else { continue };
-                let Some(sec) = self.model.sections.get(sid.index()) else {
-                    continue;
-                };
-                let (Some(na), Some(nb)) = (
-                    self.model.nodes.get(a.index()),
-                    self.model.nodes.get(b.index()),
-                ) else {
-                    continue;
-                };
-                let span = {
-                    let d = [
-                        nb.coord[0] - na.coord[0],
-                        nb.coord[1] - na.coord[1],
-                        nb.coord[2] - na.coord[2],
-                    ];
-                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-                };
-                if span <= 1e-9 {
-                    continue;
-                }
-                let w_udl = w * j.spacing;
-                // 強軸断面係数 Z = Iy / (depth/2)。鋼小梁の既定物性で検定する。
-                let z = if sec.depth > 0.0 {
+            let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
+            let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
+                let sec = self.model.sections.get(sid.index())?;
+                // 強軸断面係数 Z = Iy / (depth/2)。
+                Some(if sec.depth > 0.0 {
                     sec.iy / (sec.depth / 2.0)
                 } else {
                     0.0
-                };
-                // 鋼の長期許容曲げ応力度 = F/1.5（既定 F=235）。
-                let sigma_allow = 235.0 / 1.5;
-                let r = fd::design_joist_simple(
-                    span,
-                    w_udl,
-                    z,
-                    sec.iy,
-                    fd::STEEL_YOUNG,
-                    sigma_allow,
-                    fd::DEFLECTION_LIMIT_DENOM,
-                );
-                joist_checks.push((slab.id, ji, r));
+                })
+            };
+
+            // --- 小梁: 交差があれば床格子サブモデル（二方向）で、無ければ単純支持梁で検定 ---
+            let grillage = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)
+                .and_then(|g| {
+                    crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
+                        .ok()
+                        .map(|sol| (g, sol))
+                });
+            if let Some((g, sol)) = grillage {
+                // 格子 FEM の部材力・たわみで各小梁を検定（十字梁の二方向挙動を反映）。
+                for (jidx, span, m, q, defl) in crate::floor_grillage::joist_design_forces(&g, &sol)
+                {
+                    let Some(j) = slab.joists.get(jidx) else {
+                        continue;
+                    };
+                    let Some(sid) = j.section else { continue };
+                    let Some(z) = z_of(sid) else { continue };
+                    let r = fd::design_joist_from_forces(
+                        span,
+                        w * j.spacing,
+                        m,
+                        q,
+                        defl,
+                        z,
+                        sigma_allow,
+                        fd::DEFLECTION_LIMIT_DENOM,
+                    );
+                    joist_checks.push((slab.id, jidx, r));
+                }
+            } else {
+                // 交差なし: 各小梁を独立した単純支持梁として検定。
+                for (ji, j) in slab.joists.iter().enumerate() {
+                    let (a, b) = (j.support[0], j.support[1]);
+                    if a == b || beam_between(a, b) {
+                        // 実部材化済み or 退化した小梁は床設計の対象外。
+                        continue;
+                    }
+                    let Some(sid) = j.section else { continue };
+                    let Some(z) = z_of(sid) else { continue };
+                    let Some(sec) = self.model.sections.get(sid.index()) else {
+                        continue;
+                    };
+                    let (Some(na), Some(nb)) = (
+                        self.model.nodes.get(a.index()),
+                        self.model.nodes.get(b.index()),
+                    ) else {
+                        continue;
+                    };
+                    let span = {
+                        let d = [
+                            nb.coord[0] - na.coord[0],
+                            nb.coord[1] - na.coord[1],
+                            nb.coord[2] - na.coord[2],
+                        ];
+                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                    };
+                    if span <= 1e-9 {
+                        continue;
+                    }
+                    let r = fd::design_joist_simple(
+                        span,
+                        w * j.spacing,
+                        z,
+                        sec.iy,
+                        fd::STEEL_YOUNG,
+                        sigma_allow,
+                        fd::DEFLECTION_LIMIT_DENOM,
+                    );
+                    joist_checks.push((slab.id, ji, r));
+                }
             }
 
             // --- スラブ（一方向版） ---

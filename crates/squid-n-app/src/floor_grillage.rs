@@ -310,6 +310,8 @@ const STEEL_YOUNG: f64 = 205_000.0;
 
 /// 床格子サブモデルの解。
 pub struct GrillageSolution {
+    /// 各節点の変位 `[Ux,Uy,Uz,Rx,Ry,Rz]`（たわみ算定に用いる）。
+    pub disp: Vec<[f64; 6]>,
     /// 各小梁要素の部材力（設計に用いる）。
     pub member_forces: Vec<(ElemId, MemberForces)>,
     /// 各節点の全体系反力 `[Fx,Fy,Fz,Mx,My,Mz]`。拘束自由度でのみ有意
@@ -324,9 +326,74 @@ pub fn solve_grillage(model: &Model, lc: LoadCaseId) -> Result<GrillageSolution,
         .map_err(|e| format!("床格子の求解に失敗: {e:?}"))?;
     let reactions = compute_reactions(model, lc, &once.disp);
     Ok(GrillageSolution {
+        disp: once.disp,
         member_forces: once.member_forces,
         reactions,
     })
+}
+
+/// 格子解から各小梁の設計用部材力を取り出す（床 Phase F-3）。
+/// `(小梁インデックス, スパン, |M|max, |Q|max, |δ|max)`。
+///
+/// - 曲げ `M` は各分割区間・評価点の `|My|,|Mz|` の最大（局所軸規約に頑健化）。
+/// - せん断 `Q` は `|Qy|,|Qz|` の最大。
+/// - たわみ `δ` はその小梁が通る節点の鉛直変位 `|Uz|` の最大（支点は ~0）。
+/// - スパンは分割区間長の総和（＝小梁全長）。
+pub fn joist_design_forces(
+    grillage: &SlabGrillage,
+    sol: &GrillageSolution,
+) -> Vec<(usize, f64, f64, f64, f64)> {
+    let m = &grillage.model;
+    // 小梁ごとに要素・節点を集約。
+    let n_joists = grillage
+        .elem_joist
+        .iter()
+        .map(|(_, j)| *j + 1)
+        .max()
+        .unwrap_or(0);
+    let mut span = vec![0.0f64; n_joists];
+    let mut m_max = vec![0.0f64; n_joists];
+    let mut q_max = vec![0.0f64; n_joists];
+    let mut nodes_of: Vec<Vec<usize>> = vec![Vec::new(); n_joists];
+
+    for (eidx, jidx) in &grillage.elem_joist {
+        let elem = &m.elements[*eidx];
+        let ni = elem.nodes[0].index();
+        let nj = elem.nodes[1].index();
+        // スパン（区間長）を加算。
+        let p0 = m.nodes[ni].coord;
+        let p1 = m.nodes[nj].coord;
+        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        span[*jidx] += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        for n in [ni, nj] {
+            if !nodes_of[*jidx].contains(&n) {
+                nodes_of[*jidx].push(n);
+            }
+        }
+        // 部材力の最大を集計。
+        if let Some((_, mf)) = sol.member_forces.iter().find(|(id, _)| *id == elem.id) {
+            for (_, f) in &mf.at {
+                let mm = f[4].abs().max(f[5].abs()); // |My|,|Mz|
+                let qq = f[1].abs().max(f[2].abs()); // |Qy|,|Qz|
+                if mm > m_max[*jidx] {
+                    m_max[*jidx] = mm;
+                }
+                if qq > q_max[*jidx] {
+                    q_max[*jidx] = qq;
+                }
+            }
+        }
+    }
+
+    (0..n_joists)
+        .map(|j| {
+            let defl = nodes_of[j]
+                .iter()
+                .map(|&n| sol.disp[n][2].abs())
+                .fold(0.0f64, f64::max);
+            (j, span[j], m_max[j], q_max[j], defl)
+        })
+        .collect()
 }
 
 /// `reaction = K·u − F_ext` を全節点・全成分について求める。

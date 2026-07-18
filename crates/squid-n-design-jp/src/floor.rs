@@ -56,6 +56,62 @@ pub fn design_joist_simple(
 ) -> JoistDesignResult {
     let m_max = w * span * span / 8.0;
     let q_max = w * span / 2.0;
+    let deflection = if young > 0.0 && inertia > 0.0 {
+        5.0 * w * span.powi(4) / (384.0 * young * inertia)
+    } else {
+        0.0
+    };
+    judge_joist(
+        span,
+        w,
+        m_max,
+        q_max,
+        deflection,
+        section_modulus,
+        sigma_allow,
+        defl_limit_denom,
+    )
+}
+
+/// 部材力（曲げ・せん断・たわみ）を直接与えて小梁を検定する（床格子サブモデルの
+/// FEM 結果から検定する用途。M・Q・δ は格子解析の実値。`w` は代表等分布荷重で
+/// 表示用途）。
+#[allow(clippy::too_many_arguments)]
+pub fn design_joist_from_forces(
+    span: f64,
+    w: f64,
+    m_max: f64,
+    q_max: f64,
+    deflection: f64,
+    section_modulus: f64,
+    sigma_allow: f64,
+    defl_limit_denom: f64,
+) -> JoistDesignResult {
+    judge_joist(
+        span,
+        w,
+        m_max.abs(),
+        q_max.abs(),
+        deflection.abs(),
+        section_modulus,
+        sigma_allow,
+        defl_limit_denom,
+    )
+}
+
+/// 共通の検定判定（曲げ応力度・たわみ制限）。`design_joist_simple`（単純梁の
+/// 閉形式）と `design_joist_from_forces`（格子 FEM）で共有する。
+#[allow(clippy::too_many_arguments)]
+fn judge_joist(
+    span: f64,
+    w: f64,
+    m_max: f64,
+    q_max: f64,
+    deflection: f64,
+    section_modulus: f64,
+    sigma_allow: f64,
+    defl_limit_denom: f64,
+) -> JoistDesignResult {
     let sigma = if section_modulus > 0.0 {
         m_max / section_modulus
     } else {
@@ -63,11 +119,6 @@ pub fn design_joist_simple(
     };
     let bending_ratio = if sigma_allow > 0.0 {
         sigma / sigma_allow
-    } else {
-        0.0
-    };
-    let deflection = if young > 0.0 && inertia > 0.0 {
-        5.0 * w * span.powi(4) / (384.0 * young * inertia)
     } else {
         0.0
     };

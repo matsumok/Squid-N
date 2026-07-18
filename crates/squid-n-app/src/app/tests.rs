@@ -2473,6 +2473,77 @@ fn test_floor_design_skips_materialized_joist() {
     );
 }
 
+/// 床 Phase F: 交差小梁（十字）のスラブは床格子サブモデル（二方向）で検定される。
+/// 2本の交差小梁が両方とも設計され、対称配置なので検定比が一致する。
+#[test]
+fn test_floor_design_uses_grillage_for_crossing_joists() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{JoistLine, Section, SlabUsage};
+
+    let mut model = make_square_slab_test_model();
+    model.slabs[0].usage = Some(SlabUsage::Office);
+    // 鋼小梁断面。
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    });
+    // 対辺の中点 N4..N7 を追加し、十字に交差する2本の小梁を配置。
+    let mk = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    model.nodes.push(mk(4, 2000.0, 0.0));
+    model.nodes.push(mk(5, 2000.0, 4000.0));
+    model.nodes.push(mk(6, 0.0, 2000.0));
+    model.nodes.push(mk(7, 4000.0, 2000.0));
+    model.slabs[0].joists = vec![
+        JoistLine {
+            dir: [0.0, 1.0],
+            spacing: 2000.0,
+            support: [NodeId(4), NodeId(5)],
+            section: Some(SectionId(0)),
+        },
+        JoistLine {
+            dir: [1.0, 0.0],
+            spacing: 2000.0,
+            support: [NodeId(6), NodeId(7)],
+            section: Some(SectionId(0)),
+        },
+    ];
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 2, "交差2小梁が格子で設計される");
+    // FEM 由来の検定比（曲げ・たわみ）が正で、対称配置なので一致。
+    assert!(joists[0].2.ratio > 0.0 && joists[1].2.ratio > 0.0);
+    assert!(
+        (joists[0].2.ratio - joists[1].2.ratio).abs() / joists[0].2.ratio < 1e-3,
+        "対称な十字は検定比が一致: {} vs {}",
+        joists[0].2.ratio,
+        joists[1].2.ratio
+    );
+    // 曲げモーメントも FEM 実値（>0）。
+    assert!(joists[0].2.m_max > 0.0);
+}
+
 /// 床 Phase E レビュー指摘: スラブ設計のスパンは一方向指定に一致する
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]
