@@ -427,9 +427,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         let beam_was_on = app.beam_draw_mode;
         ui.toggle_value(&mut app.beam_draw_mode, "梁作成モード");
-        // 梁作成を ON にしたら壁作成は OFF（排他）
+        // 梁作成を ON にしたら壁・スラブ作成は OFF（排他）
         if app.beam_draw_mode && !beam_was_on {
             app.wall_draw_mode = false;
+            app.slab_draw_mode = false;
         }
         if app.beam_draw_mode {
             match app.beam_draw_first {
@@ -455,9 +456,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         let wall_was_on = app.wall_draw_mode;
         ui.toggle_value(&mut app.wall_draw_mode, "壁作成モード");
-        // 壁作成を ON にしたら梁作成は OFF（排他）
+        // 壁作成を ON にしたら梁・スラブ作成は OFF（排他）
         if app.wall_draw_mode && !wall_was_on {
             app.beam_draw_mode = false;
+            app.slab_draw_mode = false;
         }
         if app.wall_draw_mode {
             let picked: Vec<String> = app
@@ -495,6 +497,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             app.wall_draw_mode = false;
         }
         if app.slab_draw_mode {
+            // 節点削除などで陳腐化した参照（範囲外 id）を毎フレーム除去し、
+            // 存在しない節点を境界に含むスラブの生成を防ぐ。
+            let node_count = app.model.nodes.len() as u32;
+            app.slab_draw_nodes.retain(|n| n.0 < node_count);
             let picked: Vec<String> = app
                 .slab_draw_nodes
                 .iter()

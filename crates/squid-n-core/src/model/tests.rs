@@ -91,6 +91,38 @@ fn test_validate_dangling_elem_node() {
 }
 
 #[test]
+fn test_validate_dangling_slab_boundary() {
+    use crate::model::{DistributionMethod, Slab};
+    let model = Model {
+        nodes: vec![Node {
+            id: NodeId(0),
+            coord: [0.0; 3],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        }],
+        slabs: vec![Slab {
+            id: crate::ids::SlabId(0),
+            // 存在しない節点 5 を境界に含む（陳腐化した参照）。
+            boundary: vec![NodeId(0), NodeId(5)],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::TriTrapezoid,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            thickness: None,
+        }],
+        ..Default::default()
+    };
+    assert!(
+        model.validate().is_err(),
+        "存在しない節点を参照するスラブ境界は検出されるはず"
+    );
+}
+
+#[test]
 fn test_shear_modulus_explicit() {
     let mat = Material {
         concrete_class: Default::default(),

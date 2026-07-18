@@ -850,6 +850,15 @@ fn test_delete_combination_out_of_range_is_noop() {
 fn test_add_delete_slab_roundtrip() {
     use squid_n_core::model::DistributionMethod;
     let mut model = empty_model();
+    for i in 0..4 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
     let mut stack = UndoStack::new();
     stack.run(
         &mut model,
@@ -892,6 +901,15 @@ fn test_add_delete_slab_roundtrip() {
 fn test_delete_slab_middle_renumbers_and_roundtrips() {
     use squid_n_core::model::{AreaLoad, DistributionMethod};
     let mut model = empty_model();
+    for i in 0..3 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
     let mut stack = UndoStack::new();
     for (i, kind) in ["A", "B", "C"].iter().enumerate() {
         stack.run(

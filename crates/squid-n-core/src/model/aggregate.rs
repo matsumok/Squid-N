@@ -177,6 +177,27 @@ impl Model {
             |s| s.id.0,
         )?;
         check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
+        // スラブの境界・小梁が参照する節点が実在すること（陳腐化した参照の検出）。
+        for slab in &self.slabs {
+            for &nid in &slab.boundary {
+                if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "Slab {} boundary -> Node {}",
+                        slab.id.0, nid.0
+                    )));
+                }
+            }
+            for j in &slab.joists {
+                for &nid in &j.support {
+                    if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Slab {} joist support -> Node {}",
+                            slab.id.0, nid.0
+                        )));
+                    }
+                }
+            }
+        }
         check_id_consistency(
             &self.sections,
             "sections",
