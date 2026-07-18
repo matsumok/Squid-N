@@ -9,9 +9,304 @@
 //! 拘束自由度でのみ意味を持つ）。交点ジョイントのピン／剛接は、サブモデルの
 //! 小梁要素の端部条件（`EndCondition::Pinned`/`Fixed`）で表現する。
 
-use squid_n_core::ids::{ElemId, LoadCaseId};
-use squid_n_core::model::Model;
+use squid_n_core::ids::{ElemId, LoadCaseId, NodeId};
+use squid_n_core::model::{Model, Slab};
 use squid_n_element::beam::MemberForces;
+
+/// 床格子サブモデルと、支点（大梁接続点）→本体モデルの原節点 id の対応。
+/// 支点反力を本体の大梁 CMQ（原節点への集中荷重）へ写すために保持する。
+pub struct SlabGrillage {
+    /// 独立サブモデル（本体架構を含まない小梁だけの格子）。
+    pub model: Model,
+    /// サブモデル節点インデックス → 本体モデルの原節点 id（大梁接続点のみ）。
+    pub support_origin: Vec<(usize, NodeId)>,
+    /// サブモデル要素インデックス → 元の小梁インデックス（設計結果の帰属用）。
+    pub elem_joist: Vec<(usize, usize)>,
+}
+
+/// 2 線分（XY 平面）の内部交点。端部近傍（`t,u ∈ (eps,1-eps)`）でのみ交差とみなす。
+/// 平行・端点接触は `None`。z は `p0` の値（床は水平面と仮定）。
+fn segment_intersection(
+    p0: [f64; 3],
+    p1: [f64; 3],
+    q0: [f64; 3],
+    q1: [f64; 3],
+) -> Option<[f64; 3]> {
+    let r = [p1[0] - p0[0], p1[1] - p0[1]];
+    let s = [q1[0] - q0[0], q1[1] - q0[1]];
+    let denom = r[0] * s[1] - r[1] * s[0];
+    if denom.abs() < 1e-9 {
+        return None; // 平行
+    }
+    let qp = [q0[0] - p0[0], q0[1] - p0[1]];
+    let t = (qp[0] * s[1] - qp[1] * s[0]) / denom;
+    let u = (qp[0] * r[1] - qp[1] * r[0]) / denom;
+    let eps = 1e-6;
+    if t > eps && t < 1.0 - eps && u > eps && u < 1.0 - eps {
+        Some([p0[0] + t * r[0], p0[1] + t * r[1], p0[2]])
+    } else {
+        None
+    }
+}
+
+/// 節点座標のレジストリ（座標一致で重複排除。交点を両小梁で共有させるため）。
+struct NodeRegistry {
+    coords: Vec<[f64; 3]>,
+}
+impl NodeRegistry {
+    fn get_or_add(&mut self, c: [f64; 3]) -> usize {
+        for (i, e) in self.coords.iter().enumerate() {
+            if (e[0] - c[0]).abs() < 1e-3
+                && (e[1] - c[1]).abs() < 1e-3
+                && (e[2] - c[2]).abs() < 1e-3
+            {
+                return i;
+            }
+        }
+        self.coords.push(c);
+        self.coords.len() - 1
+    }
+}
+
+/// スラブの小梁から床格子サブモデルを構築する（床 Phase F-2）。
+///
+/// - 各小梁は支持2節点間の線分。小梁どうしの内部交点を検出し、交点に節点を作って
+///   両小梁をそこで分割する（交点は共有節点＝**剛接十字**。既存の点反力モデルと異なり
+///   二方向の曲げ剛性が働く）。
+/// - 小梁の端部節点（大梁接続点）は鉛直支持（`Ux,Uy,Uz,Rz` 拘束・`Rx,Ry` 自由の
+///   単純支持）とする。大梁は分割しない。
+/// - 各小梁分割区間に負担幅の等分布荷重 `w·spacing`（下向き）を載せる。
+/// - 全小梁に断面が必要（`JoistLine.section`）。欠ける・支持節点が無効・交点が無い
+///   （＝格子でない）場合は `None`（呼び出し側は既存の単純梁設計へフォールバック）。
+///
+/// `w` は面荷重強度 [N/mm²]（床用）。返り値の荷重ケースは `LoadCaseId(0)`。
+pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGrillage> {
+    use squid_n_core::dof::{Dof, Dof6Mask};
+    use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LocalAxis,
+        Material, MemberLoad, MemberLoadKind, Node, Section,
+    };
+
+    if slab.joists.is_empty() {
+        return None;
+    }
+    // 小梁の幾何（端点座標・原節点 id・負担幅・原断面 id）を収集。全小梁に断面必須。
+    struct J {
+        a: [f64; 3],
+        b: [f64; 3],
+        a_id: NodeId,
+        b_id: NodeId,
+        spacing: f64,
+        sec: SectionId,
+        idx: usize,
+    }
+    let mut js: Vec<J> = Vec::new();
+    for (idx, j) in slab.joists.iter().enumerate() {
+        let a = model.nodes.get(j.support[0].index())?;
+        let b = model.nodes.get(j.support[1].index())?;
+        let sec = j.section?;
+        if sec.index() >= model.sections.len() {
+            return None;
+        }
+        js.push(J {
+            a: a.coord,
+            b: b.coord,
+            a_id: j.support[0],
+            b_id: j.support[1],
+            spacing: j.spacing,
+            sec,
+            idx,
+        });
+    }
+
+    let mut reg = NodeRegistry { coords: Vec::new() };
+    // 端点は原節点座標で登録し、原節点 id を覚える（支点＝大梁接続点）。
+    // 小梁が端点を共有する場合の重複は排除する（反力の二重計上を防ぐ）。
+    let mut support_origin: Vec<(usize, NodeId)> = Vec::new();
+    for j in &js {
+        let ia = reg.get_or_add(j.a);
+        if !support_origin.iter().any(|(n, _)| *n == ia) {
+            support_origin.push((ia, j.a_id));
+        }
+        let ib = reg.get_or_add(j.b);
+        if !support_origin.iter().any(|(n, _)| *n == ib) {
+            support_origin.push((ib, j.b_id));
+        }
+    }
+    // 交点検出: 各小梁について、他小梁との内部交点を (t, sub_node_index) で収集。
+    let mut crossings = false;
+    let mut per_joist_pts: Vec<Vec<(f64, usize)>> = vec![Vec::new(); js.len()];
+    for i in 0..js.len() {
+        for k in 0..js.len() {
+            if i == k {
+                continue;
+            }
+            if let Some(p) = segment_intersection(js[i].a, js[i].b, js[k].a, js[k].b) {
+                crossings = true;
+                let ni = reg.get_or_add(p);
+                // t パラメータ（a→b 上の位置）。
+                let ab = [js[i].b[0] - js[i].a[0], js[i].b[1] - js[i].a[1]];
+                let ap = [p[0] - js[i].a[0], p[1] - js[i].a[1]];
+                let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+                let t = if len2 > 1e-12 {
+                    (ap[0] * ab[0] + ap[1] * ab[1]) / len2
+                } else {
+                    0.0
+                };
+                per_joist_pts[i].push((t, ni));
+            }
+        }
+    }
+    if !crossings {
+        // 交差が無ければ格子ではない（既存の単純梁設計で十分）。
+        return None;
+    }
+
+    // 断面レジストリ（原 SectionId → サブ index）。
+    let mut sec_map: Vec<(SectionId, usize)> = Vec::new();
+    let mut sub_sections: Vec<Section> = Vec::new();
+    let sub_sec_id = |orig: SectionId,
+                      sub_sections: &mut Vec<Section>,
+                      sec_map: &mut Vec<(SectionId, usize)>|
+     -> usize {
+        if let Some((_, idx)) = sec_map.iter().find(|(o, _)| *o == orig) {
+            return *idx;
+        }
+        let mut s = model.sections[orig.index()].clone();
+        let idx = sub_sections.len();
+        s.id = SectionId(idx as u32);
+        sub_sections.push(s);
+        sec_map.push((orig, idx));
+        idx
+    };
+
+    // 要素・荷重を構築。各小梁を交点で分割。
+    let mut elements: Vec<ElementData> = Vec::new();
+    let mut member_loads: Vec<MemberLoad> = Vec::new();
+    let mut elem_joist: Vec<(usize, usize)> = Vec::new();
+    for j in &js {
+        let ia = reg.get_or_add(j.a);
+        let ib = reg.get_or_add(j.b);
+        // 分割点を t 昇順に並べ、両端を挟んで区間列を作る。
+        let mut pts: Vec<(f64, usize)> = per_joist_pts[j.idx].clone();
+        pts.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut chain: Vec<usize> = vec![ia];
+        for (_, ni) in &pts {
+            if *chain.last().unwrap() != *ni {
+                chain.push(*ni);
+            }
+        }
+        if *chain.last().unwrap() != ib {
+            chain.push(ib);
+        }
+        let sec_idx = sub_sec_id(j.sec, &mut sub_sections, &mut sec_map);
+        let w_udl = w * j.spacing; // 負担幅の等分布荷重（下向き）。
+        for seg in chain.windows(2) {
+            let (n0, n1) = (seg[0], seg[1]);
+            if n0 == n1 {
+                continue;
+            }
+            let eid = elements.len() as u32;
+            elements.push(ElementData {
+                id: ElemId(eid),
+                kind: ElementKind::Beam,
+                nodes: [NodeId(n0 as u32), NodeId(n1 as u32)].into_iter().collect(),
+                section: Some(SectionId(sec_idx as u32)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                // 剛接十字: 交点は共有節点で曲げ連続（両端 Fixed）。
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            });
+            let seg_len = {
+                let p0 = reg.coords[n0];
+                let p1 = reg.coords[n1];
+                let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            };
+            member_loads.push(MemberLoad {
+                elem: ElemId(eid),
+                dir: [0.0, 0.0, -1.0],
+                kind: MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: seg_len,
+                    w1: w_udl,
+                    w2: w_udl,
+                },
+            });
+            elem_joist.push((eid as usize, j.idx));
+        }
+    }
+
+    // 支点集合（端点＝大梁接続点）。
+    let support_nodes: std::collections::HashSet<usize> =
+        support_origin.iter().map(|(n, _)| *n).collect();
+    // 支点拘束マスク: Ux,Uy,Uz,Rz 固定・Rx,Ry 自由（鉛直単純支持＋面内拘束）。
+    let mut sup_mask = Dof6Mask::FREE;
+    for d in [Dof::Ux, Dof::Uy, Dof::Uz, Dof::Rz] {
+        sup_mask.set_fixed(d);
+    }
+
+    let nodes: Vec<Node> = reg
+        .coords
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if support_nodes.contains(&i) {
+                sup_mask
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+        })
+        .collect();
+
+    let materials = vec![Material {
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "小梁鋼材(既定)".into(),
+        young: STEEL_YOUNG,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: Some(235.0),
+    }];
+
+    let sub = Model {
+        nodes,
+        elements,
+        sections: sub_sections,
+        materials,
+        load_cases: vec![LoadCase {
+            id: LoadCaseId(0),
+            name: "床格子".into(),
+            kind: LoadCaseKind::Dead,
+            nodal: vec![],
+            member: member_loads,
+        }],
+        ..Default::default()
+    };
+    sub.validate().ok()?;
+
+    Some(SlabGrillage {
+        model: sub,
+        support_origin,
+        elem_joist,
+    })
+}
+
+/// 鋼小梁の既定ヤング係数 [N/mm²]（設計モジュールと同一）。
+const STEEL_YOUNG: f64 = 205_000.0;
 
 /// 床格子サブモデルの解。
 pub struct GrillageSolution {
@@ -248,5 +543,89 @@ mod tests {
         // 総和 = 全載荷。
         let sum = sol.reactions[0][2] + sol.reactions[1][2];
         assert!((sum - total).abs() / total < 1e-6, "sum={sum}");
+    }
+
+    /// 対称な十字小梁: 格子を構築して解き、支点反力の総和＝全載荷、4支点が対称。
+    #[test]
+    fn test_build_and_solve_symmetric_cross() {
+        use squid_n_core::ids::SlabId;
+        use squid_n_core::model::{DistributionMethod, JoistLine, Slab};
+
+        let mk = |id: u32, x: f64, y: f64| Node {
+            id: NodeId(id),
+            coord: [x, y, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let model = Model {
+            nodes: vec![
+                mk(0, 0.0, 0.0),
+                mk(1, 4000.0, 0.0),
+                mk(2, 4000.0, 4000.0),
+                mk(3, 0.0, 4000.0),
+                mk(4, 2000.0, 0.0),    // mid-bottom
+                mk(5, 2000.0, 4000.0), // mid-top
+                mk(6, 0.0, 2000.0),    // mid-left
+                mk(7, 4000.0, 2000.0), // mid-right
+            ],
+            sections: vec![beam_section(0)],
+            slabs: vec![Slab {
+                id: SlabId(0),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)], // 縦（x=2000）
+                        section: Some(SectionId(0)),
+                    },
+                    JoistLine {
+                        dir: [1.0, 0.0],
+                        spacing: 2000.0,
+                        support: [NodeId(6), NodeId(7)], // 横（y=2000）
+                        section: Some(SectionId(0)),
+                    },
+                ],
+                loads: vec![],
+                method: DistributionMethod::TriTrapezoid,
+                kind: Default::default(),
+                one_way: None,
+                edge_supported: None,
+                usage: None,
+                thickness: None,
+            }],
+            ..Default::default()
+        };
+
+        let w = 0.005_f64; // N/mm²
+        let g = build_slab_grillage(&model, &model.slabs[0], w).expect("格子構築");
+        // 交点（2000,2000）で分割 → 各小梁2区間・計4要素、節点は端点4＋交点1＝5。
+        assert_eq!(g.model.nodes.len(), 5);
+        assert_eq!(g.model.elements.len(), 4);
+
+        let sol = solve_grillage(&g.model, LoadCaseId(0)).expect("solve");
+        // 総載荷 = w·spacing·L × 2本 = 0.005·2000·4000·2。
+        let total = w * 2000.0 * 4000.0 * 2.0;
+        // 支点（端点4）の鉛直反力総和。
+        let support_sum: f64 = g
+            .support_origin
+            .iter()
+            .map(|(n, _)| sol.reactions[*n][2])
+            .sum();
+        assert!(
+            (support_sum - total).abs() / total < 1e-6,
+            "支点反力総和={support_sum} 全載荷={total}"
+        );
+        // 対称性: 4支点の反力がほぼ等しい。
+        let rs: Vec<f64> = g
+            .support_origin
+            .iter()
+            .map(|(n, _)| sol.reactions[*n][2])
+            .collect();
+        let r0 = rs[0];
+        for r in &rs {
+            assert!((r - r0).abs() / r0 < 1e-6, "非対称: {rs:?}");
+        }
     }
 }
