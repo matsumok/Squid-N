@@ -97,9 +97,12 @@ RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
    （`tension_only` 含む）を `StbBrace` として往復（Raw/Standard 両モード。斜材の断面参照は
    柱/梁いずれの役割マップからも解決、取り込み時は両端ピンを既定）。`StbPost`（間柱）は
    梁として取り込む。
-   - 残: **壁 `StbWall_RC` ↔ 壁要素**、**スラブ `StbSlab_RC` ↔ `slabs`**。これらは節点の
-     多角形（面）で定義され、`StbNodeIdList` や開口の表現が要るため、ブレースより大きい。
-     モデルは壁/スラブを持つのでパーサ側の面要素シリアライズが主作業。
+   - スラブ **`StbSlab` ↔ `slabs`** は ✅ **実装済み**（床 Phase D）。`StbNodeIdOrder`
+     の境界節点ループ（子要素 `StbNodeId` 形式・CDATA にも対応）と `StbSecSlab_RC` の
+     厚さを往復（`Slab.thickness` を追加）。荷重・用途・分配法は ST-Bridge に対応物が
+     無いため往復対象外（境界と厚さのみ）。
+   - 残: **壁 `StbWall_RC` ↔ 壁要素**。壁は面＋開口（`StbOpen`）の表現が要るためスラブより
+     大きい。モデルは壁を持つのでパーサ側の面要素シリアライズが主作業。
 5. **実 ST-Bridge 構造への準拠**: 現状は自社方言（`StbMaterials` を `StbModel` 直下、
    `StbNode` に `story` 属性、`StbSecRaw` 独自要素）。他社完全互換には
    標準構造（材料は `StbCommon` 配下、node-story は `StbStory` の `StbNodeIdList` 経由、

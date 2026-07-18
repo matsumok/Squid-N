@@ -277,6 +277,7 @@ impl EditCommand for AddSlab {
             kind: Default::default(),
             one_way: None,
             usage: self.usage,
+            thickness: None,
             id: new_id,
             boundary: self.boundary.clone(),
             joists: self.joists.clone(),

@@ -161,6 +161,11 @@ pub struct Slab {
     /// `None`（旧スキーマ・未設定）は積載荷重を持たない（`loads` の固定荷重のみ）。
     #[serde(default)]
     pub usage: Option<SlabUsage>,
+    /// スラブ厚さ [mm]。ST-Bridge（`StbSecSlab_RC`）往復で個別スラブごとの厚さを
+    /// 保持するために用いる。`None`（旧スキーマ・未設定）は建物一律の
+    /// `Model::slab_thickness` を用いる従来互換。
+    #[serde(default)]
+    pub thickness: Option<f64>,
 }
 
 impl Slab {
@@ -202,6 +207,7 @@ mod tests {
             kind: SlabKind::Interior,
             one_way: None,
             edge_supported: None,
+            thickness: None,
             usage,
         }
     }

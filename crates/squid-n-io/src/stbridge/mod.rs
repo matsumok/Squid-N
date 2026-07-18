@@ -1228,7 +1228,7 @@ mod tests {
         );
     }
 
-    /// 未対応要素（壁・スラブ・基礎）は警告として報告され、無言で欠落しない。
+    /// 未対応要素（壁・基礎）は警告として報告され、無言で欠落しない。
     #[test]
     fn test_import_report_lists_unsupported_elements() {
         let xml = r#"<?xml version="1.0"?>
@@ -1239,7 +1239,6 @@ mod tests {
   </StbNodes>
   <StbMembers>
     <StbColumn id="0" id_node_bottom="0" id_node_top="1"/>
-    <StbSlab id="0" name="S1"/>
     <StbWall id="1" name="W1"/>
     <StbWall id="2" name="W2"/>
   </StbMembers>
@@ -1249,8 +1248,152 @@ mod tests {
         assert_eq!(m.elements.len(), 1, "対応する柱のみ取り込む");
         assert!(!report.is_clean());
         let joined = report.warnings.join(" | ");
-        assert!(joined.contains("StbSlab×1"), "スラブの欠落を報告: {joined}");
         assert!(joined.contains("StbWall×2"), "壁2件の欠落を報告: {joined}");
+    }
+
+    /// StbSlab（境界節点ループ StbNodeIdOrder）と StbSecSlab_RC（厚さ）を取り込む。
+    #[test]
+    fn test_import_slab_with_node_order_and_thickness() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecSlab_RC id="7" name="S1">
+      <StbSecFigureSlab_RC>
+        <StbSecSlab_RC_Straight thickness="180"/>
+      </StbSecFigureSlab_RC>
+    </StbSecSlab_RC>
+  </StbSections>
+  <StbMembers>
+    <StbSlab id="0" name="S1" id_section="7" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.slabs.len(), 1, "スラブを1件取り込む");
+        let s = &m.slabs[0];
+        assert_eq!(
+            s.boundary,
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            "境界節点ループが順序どおり"
+        );
+        assert_eq!(s.thickness, Some(180.0), "断面参照から厚さを解決");
+        assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
+    }
+
+    /// StbNodeIdOrder が CDATA 形式でも境界を取り込めること。
+    #[test]
+    fn test_import_slab_node_order_cdata() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S1" kind_structure="RC">
+      <StbNodeIdOrder><![CDATA[0 1 2 3]]></StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.slabs.len(), 1, "CDATA の節点ループを取り込む");
+        assert_eq!(
+            m.slabs[0].boundary,
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        );
+    }
+
+    /// 自己終了 <StbNodeIdOrder/> の後に無関係な子要素のテキストがあっても、
+    /// 取り込み窓が閉じられて境界へ誤混入しないこと（レビュー指摘の回帰テスト）。
+    #[test]
+    fn test_import_slab_self_closing_node_order_does_not_capture_stray_text() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="3000" Z="0"/>
+    <StbNode id="3" X="0" Y="3000" Z="0"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S1" kind_structure="RC">
+      <StbNodeIdOrder/>
+      <Foo>999</Foo>
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        assert_eq!(m.slabs.len(), 1);
+        // 999 が混入せず、実 StbNodeIdOrder の 0 1 2 3 のみになる。
+        assert_eq!(
+            m.slabs[0].boundary,
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            "自己終了タグ後の無関係テキストを取り込まない"
+        );
+    }
+
+    /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。
+    #[test]
+    fn test_slab_roundtrip_export_import() {
+        use squid_n_core::ids::SlabId;
+        use squid_n_core::model::{DistributionMethod, Slab};
+        let mut model = Model::default();
+        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(squid_n_core::model::Node {
+                id: NodeId(i as u32),
+                coord: [x, y, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+            });
+        }
+        model.slabs.push(Slab {
+            id: SlabId(0),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: Vec::new(),
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            thickness: Some(200.0),
+        });
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        for mode in [SectionExportMode::Raw, SectionExportMode::Standard] {
+            let xml = export_stbridge_with(&model, mode).expect("export");
+            let (m2, report) = import_stbridge_with_report(&xml).expect("import");
+            assert!(m2.validate().is_ok(), "{:?}", m2.validate());
+            assert_eq!(m2.slabs.len(), 1, "{mode:?}: スラブ1件");
+            assert_eq!(
+                m2.slabs[0].boundary,
+                vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                "{mode:?}: 境界が往復"
+            );
+            assert_eq!(m2.slabs[0].thickness, Some(200.0), "{mode:?}: 厚さが往復");
+            assert!(
+                report.is_clean(),
+                "{mode:?}: 警告なし {:?}",
+                report.warnings
+            );
+        }
     }
 
     /// 形鋼ライブラリに定義の無い断面参照は、物性ゼロで取り込みつつ警告する。
