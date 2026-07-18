@@ -13,10 +13,10 @@
 //! 断面参照（`id_section`）を張り替える。
 
 use super::StbError;
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
+use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material, Model,
-    NodalLoad, Node, Section, Story,
+    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
+    Material, Model, NodalLoad, Node, Section, Slab, Story,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 use std::collections::HashMap;
@@ -117,6 +117,14 @@ struct RawLoadCase {
     nodal: Vec<(u32, [f64; 6])>,
 }
 
+/// 取り込み途中のスラブ（節点参照は file id。`StbSlab` + `StbNodeIdOrder`）。
+struct RawSlab {
+    /// 断面参照（`id_section`。`StbSecSlab_RC` の file id）。負値/未指定は `None`。
+    section_fid: Option<u32>,
+    /// 境界節点ループ（`StbNodeIdOrder`。file node id 列）。
+    boundary: Vec<u32>,
+}
+
 /// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
 enum RcGeom {
     Rect { b: f64, d: f64 },
@@ -154,6 +162,11 @@ enum CurSec {
         grade: String,
         mat_id: Option<u32>,
     },
+    /// RC スラブ断面（`StbSecSlab_RC`）。子の図形要素から厚さを集める。
+    Slab {
+        file_id: u32,
+        thickness: Option<f64>,
+    },
 }
 
 /// 取り込み時に欠落・近似した内容の報告（データ欠損を顕在化させる）。
@@ -173,8 +186,7 @@ impl ImportReport {
 /// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に警告対象とするもの
 /// （構造ラッパ等は対象外。実データを欠落させる部材・断面のみ列挙する）。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
-    // 部材（面要素・基礎・開口）
-    "StbSlab",
+    // 部材（面要素・基礎・開口。StbSlab は対応済み）
     "StbWall",
     "StbFooting",
     "StbPile",
@@ -182,9 +194,8 @@ const UNSUPPORTED_ELEMENTS: &[&str] = &[
     "StbStripFooting",
     "StbParapet",
     "StbOpen",
-    // 断面（壁・スラブ・基礎・開口。鋼ブレース断面 StbSecBrace_S は対応済み）
+    // 断面（壁・スラブ・基礎・開口。鋼ブレース断面 StbSecBrace_S・StbSecSlab_RC は対応済み）
     "StbSecWall_RC",
-    "StbSecSlab_RC",
     "StbSecSlab_S",
     "StbSecSlabDeck",
     "StbSecFoundation_RC",
@@ -226,6 +237,11 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let mut pending_members: Vec<PendingMember> = Vec::new();
     let mut steel_lib: HashMap<String, SectionShape> = HashMap::new();
     let mut cur = CurSec::None;
+    // スラブ関連の中間状態。
+    let mut raw_slabs: Vec<RawSlab> = Vec::new();
+    let mut slab_sec_thickness: HashMap<u32, f64> = HashMap::new();
+    let mut cur_slab: Option<RawSlab> = None;
+    let mut in_node_id_order = false;
 
     loop {
         let ev = reader
@@ -503,7 +519,43 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             return Err(StbError::Parse("StbNodalLoad outside StbLoadCase".into()));
                         }
                     }
-                    // 未対応の部材・断面（壁・スラブ・基礎等）はデータ欠落として集計する。
+                    // --- スラブ断面（StbSecSlab_RC）: 厚さを子要素から集める ---
+                    "StbSecSlab_RC" => {
+                        cur = CurSec::Slab {
+                            file_id: get_u32(&a, "id")?,
+                            // 一部方言は厚さを StbSecSlab_RC の直属性に持つ。
+                            thickness: get_f64_any(&a, &["thickness", "t", "depth", "D"]).ok(),
+                        };
+                    }
+                    // スラブ断面の図形（厚さ）。方言差を吸収して複数キーを許容する。
+                    "StbSecSlab_RC_Straight" | "StbSecFigureSlab_RC" => {
+                        if let CurSec::Slab { thickness, .. } = &mut cur {
+                            // 厚さ属性を持つ図形要素なら更新、無ければ既存値を保持。
+                            *thickness = get_f64_any(&a, &["thickness", "t", "depth", "D"])
+                                .ok()
+                                .or(*thickness);
+                        }
+                    }
+                    // --- スラブ（StbSlab）: 境界節点ループを StbNodeIdOrder から集める ---
+                    "StbSlab" => {
+                        cur_slab = Some(RawSlab {
+                            section_fid: match get_i64(&a, "id_section") {
+                                Some(s) if s >= 0 => Some(s as u32),
+                                _ => None,
+                            },
+                            boundary: Vec::new(),
+                        });
+                    }
+                    "StbNodeIdOrder" => {
+                        in_node_id_order = true;
+                    }
+                    // 節点ループを子要素形式（<StbNodeId id="…"/>）で持つ方言に対応。
+                    "StbNodeId" => {
+                        if let (Some(slab), Ok(id)) = (cur_slab.as_mut(), get_u32(&a, "id")) {
+                            slab.boundary.push(id);
+                        }
+                    }
+                    // 未対応の部材・断面（壁・基礎等）はデータ欠落として集計する。
                     other => {
                         if let Some(&known) = UNSUPPORTED_ELEMENTS.iter().find(|&&u| u == other) {
                             *unsupported.entry(known).or_insert(0) += 1;
@@ -609,7 +661,38 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             }
                         }
                     }
+                    "StbSecSlab_RC" => {
+                        // 厚さが取れたスラブ断面のみ登録する（cur は必ず None へ戻す）。
+                        if let CurSec::Slab {
+                            file_id,
+                            thickness: Some(t),
+                        } = std::mem::replace(&mut cur, CurSec::None)
+                        {
+                            slab_sec_thickness.insert(file_id, t);
+                        }
+                    }
+                    "StbNodeIdOrder" => {
+                        in_node_id_order = false;
+                    }
+                    "StbSlab" => {
+                        if let Some(slab) = cur_slab.take() {
+                            raw_slabs.push(slab);
+                        }
+                    }
                     _ => {}
+                }
+            }
+            // StbNodeIdOrder のテキスト内容（空白区切りの節点 id 列）を集める。
+            // 節点 id は数字と空白のみで XML 実体参照を含まないため、そのまま UTF-8
+            // 解釈でよい。
+            Event::Text(t) if in_node_id_order => {
+                if let Some(slab) = cur_slab.as_mut() {
+                    let text = String::from_utf8_lossy(t.as_ref());
+                    for tok in text.split_whitespace() {
+                        if let Ok(id) = tok.parse::<u32>() {
+                            slab.boundary.push(id);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -775,6 +858,48 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     if dangling_material > 0 {
         warnings.push(format!(
             "存在しない材料を参照する部材が {dangling_material} 件あり、材料リンクを外しました"
+        ));
+    }
+
+    // スラブ（StbSlab）。境界節点を正規化し、断面参照から厚さを解決する。
+    // 3 頂点未満・存在しない節点を含むスラブはスキップして報告する。
+    let mut skipped_slabs = 0u32;
+    for rs in raw_slabs {
+        let mut boundary = Vec::with_capacity(rs.boundary.len());
+        let mut resolved = true;
+        for fid in &rs.boundary {
+            match node_index.get(fid) {
+                Some(&ni) => boundary.push(NodeId(ni)),
+                None => {
+                    resolved = false;
+                    break;
+                }
+            }
+        }
+        if !resolved || boundary.len() < 3 {
+            skipped_slabs += 1;
+            continue;
+        }
+        let thickness = rs
+            .section_fid
+            .and_then(|fid| slab_sec_thickness.get(&fid).copied());
+        let new_id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(Slab {
+            id: new_id,
+            boundary,
+            joists: Vec::new(),
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            thickness,
+        });
+    }
+    if skipped_slabs > 0 {
+        warnings.push(format!(
+            "境界節点が解決できない、または頂点数が不足するスラブを {skipped_slabs} 件スキップしました"
         ));
     }
 

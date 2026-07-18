@@ -81,9 +81,21 @@ pub fn export_stbridge_with(model: &Model, mode: SectionExportMode) -> Result<St
     }
     s.push_str("    </StbMaterials>\n");
 
-    // 断面（モードに応じて Raw / Standard を切り替え。上で生成済み）
+    // スラブ断面（StbSecSlab_RC）の id は既存の断面 id（柱・梁。標準モードでは
+    // 分割で増える）と衝突しないよう、それらの最大 id の次から採番する。
+    let slab_sec_base = col_map
+        .values()
+        .chain(beam_map.values())
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0)
+        .max(model.sections.len() as u32);
+
+    // 断面（モードに応じて Raw / Standard を切り替え。上で生成済み）＋スラブ断面
     s.push_str("    <StbSections>\n");
     s.push_str(&sections_body);
+    s.push_str(&slab_sections(model, slab_sec_base));
     s.push_str("    </StbSections>\n");
 
     // 部材（柱＝鉛直／大梁＝水平／ブレース＝斜材）
@@ -148,6 +160,29 @@ pub fn export_stbridge_with(model: &Model, mode: SectionExportMode) -> Result<St
             _ => continue,
         }
     }
+    // スラブ（StbSlab）。境界節点ループを StbNodeIdOrder で列挙する。member id は
+    // 部材（柱・梁・ブレース）の id と衝突しないよう要素数の次から採番する。
+    let slab_member_base = model.elements.len() as u32;
+    for slab in &model.slabs {
+        let mid = slab_member_base + slab.id.0;
+        let sid = slab_sec_base + slab.id.0;
+        let order = slab
+            .boundary
+            .iter()
+            .map(|n| n.0.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        s.push_str(&format!(
+            "      <StbSlab id=\"{}\" name=\"{}\" id_section=\"{}\" kind_structure=\"RC\">\n",
+            mid,
+            esc(&format!("S{}", slab.id.0)),
+            sid,
+        ));
+        s.push_str(&format!(
+            "        <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"
+        ));
+        s.push_str("      </StbSlab>\n");
+    }
     s.push_str("    </StbMembers>\n");
 
     // 荷重ケース（節点荷重）
@@ -190,6 +225,30 @@ fn raw_sections(model: &Model) -> (String, HashMap<u32, u32>, HashMap<u32, u32>)
         map.insert(sec.id.0, sec.id.0);
     }
     (body, map.clone(), map)
+}
+
+/// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。各スラブに 1 つの断面を
+/// `base + slab.id.0` の id で出力し、厚さは `slab.thickness`（未設定なら建物一律の
+/// `model.slab_thickness`）を用いる。`StbSlab.id_section` から参照される。
+fn slab_sections(model: &Model, base: u32) -> String {
+    let mut body = String::new();
+    for slab in &model.slabs {
+        let sid = base + slab.id.0;
+        let t = slab.thickness.unwrap_or(model.slab_thickness);
+        body.push_str(&format!(
+            "      <StbSecSlab_RC id=\"{}\" name=\"{}\" kind_structure=\"RC\">\n",
+            sid,
+            esc(&format!("S{}", slab.id.0)),
+        ));
+        body.push_str("        <StbSecFigureSlab_RC>\n");
+        body.push_str(&format!(
+            "          <StbSecSlab_RC_Straight thickness=\"{}\"/>\n",
+            fmt(t),
+        ));
+        body.push_str("        </StbSecFigureSlab_RC>\n");
+        body.push_str("      </StbSecSlab_RC>\n");
+    }
+    body
 }
 
 pub(super) fn fmt(x: f64) -> String {

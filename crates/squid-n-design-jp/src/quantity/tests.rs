@@ -284,6 +284,7 @@ fn test_girder_formwork_slab_deduction() {
             kind: SlabKind::Interior,
             one_way: None,
             edge_supported: None,
+            thickness: None,
         });
     }
 
@@ -404,6 +405,7 @@ fn test_slab_quantity() {
         kind: SlabKind::Interior,
         one_way: None,
         edge_supported: None,
+        thickness: None,
     });
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
