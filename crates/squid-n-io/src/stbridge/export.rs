@@ -92,10 +92,14 @@ pub fn export_stbridge_with(model: &Model, mode: SectionExportMode) -> Result<St
         .unwrap_or(0)
         .max(model.sections.len() as u32);
 
-    // 断面（モードに応じて Raw / Standard を切り替え。上で生成済み）＋スラブ断面
+    // 壁断面（StbSecWall_RC）はスラブ断面の後ろから採番する（相互に衝突しない）。
+    let wall_sec_base = slab_sec_base + model.slabs.len() as u32;
+
+    // 断面（モードに応じて Raw / Standard を切り替え。上で生成済み）＋スラブ断面＋壁断面
     s.push_str("    <StbSections>\n");
     s.push_str(&sections_body);
     s.push_str(&slab_sections(model, slab_sec_base));
+    s.push_str(&wall_sections(model, wall_sec_base));
     s.push_str("    </StbSections>\n");
 
     // 部材（柱＝鉛直／大梁＝水平／ブレース＝斜材）
@@ -183,6 +187,35 @@ pub fn export_stbridge_with(model: &Model, mode: SectionExportMode) -> Result<St
         ));
         s.push_str("      </StbSlab>\n");
     }
+    // 壁（StbWall）。壁要素（ElementKind::Wall/Shell、境界3〜N 節点）の節点ループを
+    // 列挙する。StbWall id は要素 id をそのまま用いる（壁も要素なので衝突しない）。
+    // 厚さは wall_sections が壁ごとに 1 つ生成する StbSecWall_RC を参照する。
+    let mut wall_idx = 0u32;
+    for e in &model.elements {
+        if !matches!(e.kind, ElementKind::Wall | ElementKind::Shell) || e.nodes.len() < 3 {
+            continue;
+        }
+        let order = e
+            .nodes
+            .iter()
+            .map(|n| n.0.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sid = wall_sec_base + wall_idx;
+        let mat = e.material.map(|m| m.0 as i64).unwrap_or(-1);
+        s.push_str(&format!(
+            "      <StbWall id=\"{}\" name=\"{}\" id_section=\"{}\" id_material=\"{}\" kind_structure=\"RC\">\n",
+            e.id.0,
+            esc(&format!("W{}", e.id.0)),
+            sid,
+            mat,
+        ));
+        s.push_str(&format!(
+            "        <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"
+        ));
+        s.push_str("      </StbWall>\n");
+        wall_idx += 1;
+    }
     s.push_str("    </StbMembers>\n");
 
     // 荷重ケース（節点荷重）
@@ -253,6 +286,40 @@ fn slab_sections(model: &Model, base: u32) -> String {
         ));
         body.push_str("        </StbSecFigureSlab_RC>\n");
         body.push_str("      </StbSecSlab_RC>\n");
+    }
+    body
+}
+
+/// 壁断面（`StbSecWall_RC`）ブロックを生成する。壁要素（`ElementKind::Wall`/`Shell`、
+/// 境界3〜N 節点）ごとに 1 つの断面を `base + 壁通番` の id で出力し、厚さは壁の
+/// 断面（`elem.section.thickness`。未設定は 0）を用いる。`StbWall.id_section` から
+/// 参照される。壁の列挙順・フィルタは `export_stbridge_with` の StbWall ループと一致させる。
+fn wall_sections(model: &Model, base: u32) -> String {
+    let mut body = String::new();
+    let mut idx = 0u32;
+    for e in &model.elements {
+        if !matches!(e.kind, ElementKind::Wall | ElementKind::Shell) || e.nodes.len() < 3 {
+            continue;
+        }
+        let sid = base + idx;
+        let t = e
+            .section
+            .and_then(|s| model.sections.get(s.index()))
+            .and_then(|s| s.thickness)
+            .unwrap_or(0.0);
+        body.push_str(&format!(
+            "      <StbSecWall_RC id=\"{}\" name=\"{}\" kind_structure=\"RC\">\n",
+            sid,
+            esc(&format!("W{}", e.id.0)),
+        ));
+        body.push_str("        <StbSecFigureWall_RC>\n");
+        body.push_str(&format!(
+            "          <StbSecWall_RC_Straight thickness=\"{}\"/>\n",
+            fmt(t),
+        ));
+        body.push_str("        </StbSecFigureWall_RC>\n");
+        body.push_str("      </StbSecWall_RC>\n");
+        idx += 1;
     }
     body
 }
