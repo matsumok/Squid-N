@@ -575,6 +575,9 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                     }
                     // --- スラブ（StbSlab）: 境界節点ループを StbNodeIdOrder から集める ---
                     "StbSlab" => {
+                        // 自己終了 <StbWall/> 等で残った兄弟状態をクリアし、境界ノードの
+                        // 取り違えを防ぐ（StbSlab/StbWall は入れ子にならない）。
+                        cur_wall = None;
                         cur_slab = Some(RawSlab {
                             section_fid: match get_i64(&a, "id_section") {
                                 Some(s) if s >= 0 => Some(s as u32),
@@ -585,6 +588,7 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                     }
                     // --- 壁（StbWall）: 境界節点ループを StbNodeIdOrder から集める ---
                     "StbWall" => {
+                        cur_slab = None;
                         cur_wall = Some(RawWall {
                             section_fid: match get_i64(&a, "id_section") {
                                 Some(s) if s >= 0 => Some(s as u32),

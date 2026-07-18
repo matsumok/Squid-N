@@ -2473,6 +2473,81 @@ fn test_floor_design_skips_materialized_joist() {
     );
 }
 
+/// 床 Phase E レビュー指摘: スラブ設計のスパンは一方向指定に一致する
+/// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
+#[test]
+fn test_slab_design_span_respects_one_way() {
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, Slab};
+
+    // lx=6000（辺0方向, X）、ly=3000（辺3方向, Y）の矩形スラブ。
+    let mk_node = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    let base_slab = |one_way: Option<OneWayDir>| Slab {
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        joists: vec![],
+        loads: vec![AreaLoad {
+            kind: "DL".into(),
+            value: 0.005,
+        }],
+        method: DistributionMethod::OneWay,
+        kind: Default::default(),
+        one_way,
+        edge_supported: None,
+        usage: None,
+        thickness: Some(150.0),
+    };
+    let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, 6000.0, 0.0),
+            mk_node(2, 6000.0, 3000.0),
+            mk_node(3, 0.0, 3000.0),
+        ],
+        slabs: vec![base_slab(one_way)],
+        ..Default::default()
+    };
+
+    // 一方向 X → スパン = lx = 6000（長辺）。
+    let app_x = App {
+        model: mk_model(Some(OneWayDir::X)),
+        ..App::default()
+    };
+    let (_j, slabs_x) = app_x.floor_design_checks();
+    assert!(
+        (slabs_x[0].1.span - 6000.0).abs() < 1e-6,
+        "X一方向は長辺6000で設計"
+    );
+
+    // 一方向 Y → スパン = ly = 3000（短辺）。
+    let app_y = App {
+        model: mk_model(Some(OneWayDir::Y)),
+        ..App::default()
+    };
+    let (_j, slabs_y) = app_y.floor_design_checks();
+    assert!(
+        (slabs_y[0].1.span - 3000.0).abs() < 1e-6,
+        "Y一方向は短辺3000で設計"
+    );
+
+    // 指定なし → 短辺 min(6000,3000)=3000（安全側）。
+    let app_n = App {
+        model: mk_model(None),
+        ..App::default()
+    };
+    let (_j, slabs_n) = app_n.floor_design_checks();
+    assert!(
+        (slabs_n[0].1.span - 3000.0).abs() < 1e-6,
+        "両方向は短辺3000で設計"
+    );
+}
+
 /// レビュー §1.7: 地震用重量に使う荷重ケースの選択が、並び順ではなく
 /// `LoadCaseKind` に基づくことを確認する（Dead+LiveSeismic 優先、
 /// LiveSeismic が無ければ Dead+Live、種別が一つも設定されていなければ

@@ -1395,6 +1395,39 @@ mod tests {
         assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
     }
 
+    /// 自己終了 <StbSlab/> の後の StbWall の節点ループが、陳腐化したスラブ状態に
+    /// 取り込まれず正しく壁へ入ること（レビュー指摘の回帰テスト）。
+    #[test]
+    fn test_self_closing_slab_does_not_steal_wall_nodes() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="0" Z="3000"/>
+    <StbNode id="3" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S0" id_section="1"/>
+    <StbWall id="1" name="W1" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbWall>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        let walls: Vec<_> = m
+            .elements
+            .iter()
+            .filter(|e| e.kind == squid_n_core::model::ElementKind::Wall)
+            .collect();
+        assert_eq!(walls.len(), 1, "壁が取り込まれる（節点を横取りされない）");
+        assert_eq!(
+            walls[0].nodes.as_slice(),
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        );
+    }
+
     /// 壁（境界＋厚さ）を含むモデルが export→import で往復すること。
     #[test]
     fn test_wall_roundtrip_export_import() {

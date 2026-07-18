@@ -1704,7 +1704,14 @@ impl App {
 
             // --- スラブ（一方向版） ---
             if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
-                let span = lx.min(ly);
+                use squid_n_core::model::OneWayDir;
+                // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
+                // 一方向指定が無い（両方向）場合は安全側に短辺で設計する。
+                let span = match slab.one_way {
+                    Some(OneWayDir::X) => lx,
+                    Some(OneWayDir::Y) => ly,
+                    None => lx.min(ly),
+                };
                 let thickness = slab.thickness.unwrap_or(self.model.slab_thickness);
                 if span > 1e-9 && thickness > 0.0 {
                     // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。

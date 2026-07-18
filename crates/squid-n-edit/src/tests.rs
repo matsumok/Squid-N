@@ -633,6 +633,73 @@ fn test_delete_section_in_use_is_noop_and_renumbers() {
     assert!(model.eq_ignoring_dofmap(&before));
 }
 
+/// 小梁（JoistLine.section）が参照する断面は削除ガードで守られ、別断面の削除では
+/// 参照が繰り上がって追随する（床設計用の断面参照が陳腐化しない。レビュー指摘）。
+#[test]
+fn test_delete_section_referenced_by_joist() {
+    use squid_n_core::model::{DistributionMethod, JoistLine, Node, Section};
+    let mut model = empty_model();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
+    for i in 0..2u32 {
+        model.sections.push(Section {
+            id: SectionId(i),
+            name: format!("S{}", i),
+            area: 100.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 10.0,
+            width: 10.0,
+            as_y: 80.0,
+            as_z: 80.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        });
+    }
+    // 小梁が断面 1 のみを参照するスラブ（要素は断面を参照しない）。
+    model.slabs.push(squid_n_core::model::Slab {
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        joists: vec![JoistLine {
+            dir: [1.0, 0.0],
+            spacing: 900.0,
+            support: [NodeId(0), NodeId(1)],
+            section: Some(SectionId(1)),
+        }],
+        loads: vec![],
+        method: DistributionMethod::TriTrapezoid,
+        kind: Default::default(),
+        one_way: None,
+        edge_supported: None,
+        usage: None,
+        thickness: None,
+    });
+    let mut stack = UndoStack::new();
+
+    // 小梁が参照中の断面 1 は削除できない（要素だけでなく小梁も参照チェック対象）。
+    stack.run(&mut model, Box::new(DeleteSection { id: SectionId(1) }));
+    assert_eq!(model.sections.len(), 2, "小梁参照中の断面は削除されない");
+
+    // 未参照の断面 0 を削除 → 断面 1 が 0 へ繰り上がり、小梁参照も追随する。
+    stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
+    assert_eq!(model.sections.len(), 1);
+    assert_eq!(
+        model.slabs[0].joists[0].section,
+        Some(SectionId(0)),
+        "小梁の断面参照が繰り上がりに追随"
+    );
+    assert!(model.validate().is_ok());
+}
+
 #[test]
 fn test_add_delete_material_roundtrip() {
     let mut model = empty_model();

@@ -196,6 +196,14 @@ impl Model {
                         )));
                     }
                 }
+                if let Some(sid) = j.section {
+                    if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Slab {} joist -> Section {}",
+                            slab.id.0, sid.0
+                        )));
+                    }
+                }
             }
         }
         check_id_consistency(
