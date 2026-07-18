@@ -1939,6 +1939,7 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
         mk_beam(3, 3, 0),
     ];
     let slab = Slab {
+        usage: None,
         edge_supported: None,
         kind: Default::default(),
         one_way: None,
@@ -2042,6 +2043,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         mk_beam(3, 3, 0),
     ];
     let slab = Slab {
+        usage: None,
         edge_supported: None,
         kind: Default::default(),
         one_way: None,
