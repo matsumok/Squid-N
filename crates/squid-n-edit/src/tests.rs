@@ -850,6 +850,15 @@ fn test_delete_combination_out_of_range_is_noop() {
 fn test_add_delete_slab_roundtrip() {
     use squid_n_core::model::DistributionMethod;
     let mut model = empty_model();
+    for i in 0..4 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
     let mut stack = UndoStack::new();
     stack.run(
         &mut model,
@@ -892,6 +901,15 @@ fn test_add_delete_slab_roundtrip() {
 fn test_delete_slab_middle_renumbers_and_roundtrips() {
     use squid_n_core::model::{AreaLoad, DistributionMethod};
     let mut model = empty_model();
+    for i in 0..3 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
     let mut stack = UndoStack::new();
     for (i, kind) in ["A", "B", "C"].iter().enumerate() {
         stack.run(
@@ -1612,6 +1630,64 @@ fn test_set_slab_joists_roundtrip() {
         }),
     );
     assert_eq!(model.slabs[0].joists, joists);
+}
+
+#[test]
+fn test_materialize_slab_joists_creates_beams() {
+    use squid_n_core::model::{DistributionMethod, ElementKind, EndCondition, JoistLine};
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: vec![JoistLine {
+                dir: [0.0, 1.0],
+                spacing: 900.0,
+                support: [NodeId(0), NodeId(3)],
+            }],
+            loads: vec![],
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+        }),
+    );
+    let before = model.elements.len();
+
+    stack.run(
+        &mut model,
+        Box::new(MaterializeSlabJoists { slab: SlabId(0) }),
+    );
+    assert_eq!(model.elements.len(), before + 1, "小梁1本が実部材化される");
+    let beam = model.elements.last().unwrap();
+    assert_eq!(beam.kind, ElementKind::Beam);
+    assert_eq!(beam.nodes.len(), 2);
+    assert!(
+        (beam.nodes[0] == NodeId(0) && beam.nodes[1] == NodeId(3))
+            || (beam.nodes[0] == NodeId(3) && beam.nodes[1] == NodeId(0)),
+        "支持2節点を両端に持つ"
+    );
+    assert_eq!(
+        beam.end_cond,
+        [EndCondition::Pinned, EndCondition::Pinned],
+        "小梁は両端ピン"
+    );
+
+    // 再実行しても既存の実部材があるので新規生成しない（冪等）。
+    stack.run(
+        &mut model,
+        Box::new(MaterializeSlabJoists { slab: SlabId(0) }),
+    );
+    assert_eq!(
+        model.elements.len(),
+        before + 1,
+        "実部材化済みは重複生成しない"
+    );
+
+    // undo で生成した実部材が末尾から除去される。
+    stack.undo(&mut model); // 2回目（冪等 no-op）を戻す
+    assert_eq!(model.elements.len(), before + 1);
+    stack.undo(&mut model); // 1回目の生成を戻す
+    assert_eq!(model.elements.len(), before, "undo で実部材化を取り消す");
 }
 
 #[test]

@@ -427,9 +427,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         let beam_was_on = app.beam_draw_mode;
         ui.toggle_value(&mut app.beam_draw_mode, "梁作成モード");
-        // 梁作成を ON にしたら壁作成は OFF（排他）
+        // 梁作成を ON にしたら壁・スラブ作成は OFF（排他）
         if app.beam_draw_mode && !beam_was_on {
             app.wall_draw_mode = false;
+            app.slab_draw_mode = false;
         }
         if app.beam_draw_mode {
             match app.beam_draw_first {
@@ -455,9 +456,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         let wall_was_on = app.wall_draw_mode;
         ui.toggle_value(&mut app.wall_draw_mode, "壁作成モード");
-        // 壁作成を ON にしたら梁作成は OFF（排他）
+        // 壁作成を ON にしたら梁・スラブ作成は OFF（排他）
         if app.wall_draw_mode && !wall_was_on {
             app.beam_draw_mode = false;
+            app.slab_draw_mode = false;
         }
         if app.wall_draw_mode {
             let picked: Vec<String> = app
@@ -482,6 +484,60 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // モード OFF 時は選択をクリア
     if !app.wall_draw_mode {
         app.wall_draw_nodes.clear();
+    }
+
+    // --- スラブ作成モード ---
+    // ON 中はクリックで境界節点を外周順に選び、3〜N 節点そろったら「確定」で生成する。
+    ui.horizontal(|ui| {
+        let slab_was_on = app.slab_draw_mode;
+        ui.toggle_value(&mut app.slab_draw_mode, "スラブ作成モード");
+        // スラブ作成を ON にしたら梁・壁作成は OFF（排他）
+        if app.slab_draw_mode && !slab_was_on {
+            app.beam_draw_mode = false;
+            app.wall_draw_mode = false;
+        }
+        if app.slab_draw_mode {
+            // 節点削除などで陳腐化した参照（範囲外 id）を毎フレーム除去し、
+            // 存在しない節点を境界に含むスラブの生成を防ぐ。
+            let node_count = app.model.nodes.len() as u32;
+            app.slab_draw_nodes.retain(|n| n.0 < node_count);
+            let picked: Vec<String> = app
+                .slab_draw_nodes
+                .iter()
+                .map(|n| format!("N{}", n.0))
+                .collect();
+            ui.label(format!(
+                "境界節点を外周順にクリック ({}){}",
+                app.slab_draw_nodes.len(),
+                if picked.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", picked.join(", "))
+                }
+            ));
+            if app.slab_draw_nodes.len() >= 3 && ui.button("確定").clicked() {
+                let boundary = app.slab_draw_nodes.clone();
+                app.undo.run(
+                    &mut app.model,
+                    Box::new(squid_n_edit::AddSlab {
+                        boundary,
+                        joists: Vec::new(),
+                        loads: Vec::new(),
+                        method: squid_n_core::model::DistributionMethod::TriTrapezoid,
+                        usage: None,
+                    }),
+                );
+                app.staleness.mark_edited();
+                app.slab_draw_nodes.clear();
+            }
+            if !app.slab_draw_nodes.is_empty() && ui.button("キャンセル").clicked() {
+                app.slab_draw_nodes.clear();
+            }
+        }
+    });
+    // モード OFF 時は選択をクリア
+    if !app.slab_draw_mode {
+        app.slab_draw_nodes.clear();
     }
 
     // --- 断面割当 UI ---
@@ -773,6 +829,26 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         }
                     }
                 }
+            } else if app.slab_draw_mode {
+                // スラブ作成モード：クリック位置に最も近い節点を外周順に追加する。
+                let mut best: Option<(usize, f32)> = None;
+                for (i, &p) in pts.iter().enumerate() {
+                    let d = (click_pos - egui::pos2(p[0], p[1])).length();
+                    if best.is_none_or(|(_, bd)| d < bd) {
+                        best = Some((i, d));
+                    }
+                }
+                // 節点ピッキング許容距離（px）
+                const NODE_PICK_THRESHOLD: f32 = 10.0;
+                if let Some((i, d)) = best {
+                    if d <= NODE_PICK_THRESHOLD {
+                        let node_id = app.model.nodes[i].id;
+                        // 同一節点の重複選択は無視（外周は各節点1回）。
+                        if !app.slab_draw_nodes.contains(&node_id) {
+                            app.slab_draw_nodes.push(node_id);
+                        }
+                    }
+                }
             } else {
                 // 通常モード：クリック位置に最も近い部材線分を選び、閾値内なら選択。
                 let mut best: Option<(squid_n_core::ids::ElemId, f32)> = None;
@@ -812,7 +888,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         let node_id = app.model.nodes[i].id;
         let is_first = app.beam_draw_first == Some(node_id);
         let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
-        let (radius, color) = if is_first || is_wall_pick {
+        let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
+        let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
             // 作成モードで選択中の節点 = 重要（赤）
             (5.0, theme::PARETO_RED)
         } else {
