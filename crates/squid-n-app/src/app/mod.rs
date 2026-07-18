@@ -425,6 +425,13 @@ pub struct App {
     /// 壁作成モードで選択済みの節点（4 点目で壁を生成しリセット）
     #[cfg(feature = "gui")]
     pub wall_draw_nodes: Vec<squid_n_core::ids::NodeId>,
+    /// ビューアのスラブ作成モード（ON 中はクリックで境界節点を順に選び、
+    /// 「確定」で 3〜N 節点のスラブを作る）
+    #[cfg(feature = "gui")]
+    pub slab_draw_mode: bool,
+    /// スラブ作成モードで選択済みの境界節点（外周順。確定で AddSlab しリセット）
+    #[cfg(feature = "gui")]
+    pub slab_draw_nodes: Vec<squid_n_core::ids::NodeId>,
     /// 現在のプロジェクトファイル（.scz）パス。未保存なら None。
     pub project_path: Option<std::path::PathBuf>,
     /// 解析タブの設定値
@@ -541,6 +548,10 @@ impl Default for App {
             beam_draw_mode: false,
             #[cfg(feature = "gui")]
             beam_draw_first: None,
+            #[cfg(feature = "gui")]
+            slab_draw_mode: false,
+            #[cfg(feature = "gui")]
+            slab_draw_nodes: Vec::new(),
             #[cfg(feature = "gui")]
             wall_draw_mode: false,
             #[cfg(feature = "gui")]

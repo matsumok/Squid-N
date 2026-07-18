@@ -9,7 +9,8 @@ use squid_n_edit::{AddSlab, DeleteSlab, SetSlabJoists, SetSlabKind, SetSlabOneWa
 /// `nodes` は境界4節点（頂点0→1→2→3→0 の順で外周を辿る）の選択状態。
 #[derive(Clone, Debug)]
 pub struct SlabDraft {
-    pub nodes: [Option<NodeId>; 4],
+    /// 境界節点スロット（外周順。3〜N 個、可変長）。
+    pub nodes: Vec<Option<NodeId>>,
     /// 荷重種別（既定 "DL"）
     pub load_kind: String,
     /// 荷重値の入力文字列。**UI 表示は kN/m²**（内部格納は ×1e-3 した N/mm²）。
@@ -28,7 +29,7 @@ pub struct SlabDraft {
 impl Default for SlabDraft {
     fn default() -> Self {
         Self {
-            nodes: [None; 4],
+            nodes: vec![None; 4],
             load_kind: "DL".to_string(),
             load_value: "0".to_string(),
             method: DistributionMethod::TriTrapezoid,
@@ -257,8 +258,8 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     // ── スラブ追加フォーム ──────────────────────────────────
     ui.strong("スラブを追加");
 
-    if app.model.nodes.len() < 4 {
-        ui.label("スラブを追加するには節点が4つ以上必要です");
+    if app.model.nodes.len() < 3 {
+        ui.label("スラブを追加するには節点が3つ以上必要です");
         return;
     }
 
@@ -266,11 +267,32 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     // （app.model への参照を保持したまま app.slab_draft を可変参照しないため）。
     let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
 
+    // 境界頂点は 3〜N の可変長。スロット数は +/− ボタンで調整する。
+    if app.slab_draft.nodes.len() < 3 {
+        app.slab_draft.nodes.resize(3, None);
+    }
     ui.label(
-        "境界節点（頂点0→1→2→3→0 の順で外周を辿り、その辺 i=節点i→節点i+1 を持つ梁を検索します）:",
+        "境界節点（頂点0→1→2→…→0 の順で外周を辿り、その辺 i=節点i→節点i+1 を持つ梁を検索します。3〜N 節点対応）:",
     );
+    ui.horizontal(|ui| {
+        if ui.button("+ 頂点を追加").clicked() {
+            app.slab_draft.nodes.push(None);
+        }
+        if ui
+            .add_enabled(
+                app.slab_draft.nodes.len() > 3,
+                egui::Button::new("− 頂点を削除"),
+            )
+            .on_hover_text("末尾の頂点スロットを削除（最小3）")
+            .clicked()
+        {
+            app.slab_draft.nodes.pop();
+        }
+        ui.label(format!("頂点数: {}", app.slab_draft.nodes.len()));
+    });
     ui.horizontal_wrapped(|ui| {
-        for k in 0..4 {
+        let n_slots = app.slab_draft.nodes.len();
+        for k in 0..n_slots {
             let text = app.slab_draft.nodes[k]
                 .map(|n| format!("N{}", n.0))
                 .unwrap_or_else(|| "―".to_string());
@@ -342,18 +364,20 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut dedup = selected.clone();
     dedup.sort_by_key(|n| n.0);
     dedup.dedup();
-    let can_add = selected.len() == 4 && dedup.len() == 4;
+    // 全スロットが埋まり（selected.len == slots）、3頂点以上、重複が無いこと。
+    let n_slots = app.slab_draft.nodes.len();
+    let can_add = selected.len() == n_slots && n_slots >= 3 && dedup.len() == n_slots;
 
     if ui
         .add_enabled(can_add, egui::Button::new("+ 追加"))
-        .on_hover_text("境界節点4つがすべて選択され、かつ重複が無い場合に追加できます")
+        .on_hover_text("境界節点が3つ以上すべて選択され、かつ重複が無い場合に追加できます")
         .clicked()
     {
         let boundary: Vec<NodeId> = app
             .slab_draft
             .nodes
             .iter()
-            .map(|n| n.expect("can_add で4つとも Some を確認済み"))
+            .map(|n| n.expect("can_add で全スロット Some を確認済み"))
             .collect();
         let value_kn_m2 = app
             .slab_draft
