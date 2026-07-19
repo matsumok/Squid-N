@@ -1597,6 +1597,52 @@ mod tests {
         );
     }
 
+    /// 明示リストに無い未知の部材・断面・荷重要素も「取り込み対象外」として通知される
+    /// （fail-loud）。一方、形鋼ライブラリのコンテナ StbSecSteel は誤検出しない。
+    #[test]
+    fn test_import_report_unknown_elements_are_reported() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C">
+      <StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="H1"/></StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H1" A="300" B="150" t1="6.5" t2="9"/>
+    </StbSecSteel>
+    <StbSecFutureThing id="1" name="X"/>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+    <StbNovelMember id="1"/>
+  </StbMembers>
+  <StbLoads>
+    <StbLoadCase id="0" name="L1">
+      <StbNodalLoad id_node="1" fz="-5"/>
+      <StbLoadMember id="0"/>
+    </StbLoadCase>
+  </StbLoads>
+</StbModel></ST_BRIDGE>"#;
+        let (_m, report) = import_stbridge_with_report(xml).expect("import");
+        let joined = report.warnings.join(" | ");
+        // 未知の部材・断面・荷重が名指しで通知される。
+        assert!(joined.contains("StbNovelMember×1"), "未知の部材: {joined}");
+        assert!(
+            joined.contains("StbSecFutureThing×1"),
+            "未知の断面: {joined}"
+        );
+        assert!(joined.contains("StbLoadMember×1"), "未対応の荷重: {joined}");
+        // 形鋼ライブラリのコンテナは誤検出しない。
+        assert!(
+            !joined.contains("StbSecSteel×"),
+            "コンテナは誤検出しない: {joined}"
+        );
+    }
+
     /// StbSlab（境界節点ループ StbNodeIdOrder）と StbSecSlab_RC（厚さ）を取り込む。
     #[test]
     fn test_import_slab_with_node_order_and_thickness() {

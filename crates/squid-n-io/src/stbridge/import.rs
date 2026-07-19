@@ -201,9 +201,14 @@ impl ImportReport {
     }
 }
 
-/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に警告対象とするもの
-/// （構造ラッパ等は対象外。実データを欠落させる部材・断面のみ列挙する）。
+/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に必ず警告対象とするもの。
+/// これに加え、部材（`StbMembers`）・断面（`StbSections`）・荷重（`StbLoadCase`）の直属子で
+/// 未対応のものは、このリストに無い未知要素であっても警告する（fail-loud。詳細は取り込み
+/// ループの `other` 分岐を参照）。本リストは、直属の親からは判別しづらい要素（通り芯など
+/// `StbModel` 直下のもの）を確実に拾うために併用する。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
+    // 通り芯（Model 直下。grid/axis 概念が無く往復対象外）
+    "StbAxes",
     // 部材（面要素・基礎・開口。StbSlab・StbWall は対応済み）
     "StbFooting",
     "StbPile",
@@ -241,7 +246,11 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let mut version_ok = false;
     let mut warnings: Vec<String> = Vec::new();
     // 未対応要素はタグごとに件数を集計し、最後にまとめて 1 行の警告にする。
-    let mut unsupported: HashMap<&'static str, u32> = HashMap::new();
+    // 明示リストに無い未知の要素も、部材/断面/荷重の直属子であれば「取り込み対象外」
+    // として拾う（fail-loud。取りこぼしを無言で捨てない）ため、キーは String とする。
+    let mut unsupported: HashMap<String, u32> = HashMap::new();
+    // 開いている要素のスタック（直属の親要素を知り、未知の部材/断面/荷重を検出するため）。
+    let mut container_stack: Vec<String> = Vec::new();
 
     // 全要素を一旦 file id 付きの中間表現へ集め、パース後に id を 0 始まり連番へ
     // 正規化して参照を張り替える（他社ファイルの 1 始まり・歯抜け id に対応）。
@@ -269,12 +278,16 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
         let ev = reader
             .read_event()
             .map_err(|e| StbError::Parse(e.to_string()))?;
+        // 自己終了要素（<Foo/>）は End が来ないためスタックへ積まない。
+        let is_empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 let a = attrs(&e)?;
+                // この要素の直属の親（未知の部材/断面/荷重の検出に使う）。
+                let parent = container_stack.last().map(|s| s.as_str());
                 // StbNodeIdOrder のテキストは開始タグ直後の Text/CData のみで届く。
                 // 別要素が現れた時点で取り込み窓を閉じる（自己終了タグ
                 // <StbNodeIdOrder/> は End が来ずフラグが残るため、この明示リセットで
@@ -630,15 +643,28 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             }
                         }
                     }
-                    // 未対応の部材・断面（壁・基礎等）はデータ欠落として集計する。
+                    // 未対応の要素はデータ欠落として集計する（fail-loud）。明示リストに
+                    // 加え、部材（StbMembers）・断面（StbSections、ただし形鋼ライブラリ
+                    // コンテナ StbSecSteel は除く）・荷重（StbLoadCase）の直属子で未対応の
+                    // ものは、リスト外の未知要素であっても「取り込み対象外」として拾う。
                     other => {
-                        if let Some(&known) = UNSUPPORTED_ELEMENTS.iter().find(|&&u| u == other) {
-                            *unsupported.entry(known).or_insert(0) += 1;
+                        let skipped_data = UNSUPPORTED_ELEMENTS.contains(&other)
+                            || matches!(parent, Some("StbMembers"))
+                            || (matches!(parent, Some("StbSections")) && other != "StbSecSteel")
+                            || matches!(parent, Some("StbLoadCase"));
+                        if skipped_data {
+                            *unsupported.entry(other.to_string()).or_insert(0) += 1;
                         }
                     }
                 }
+                // 開始要素はスタックへ積む（自己終了要素は End が来ないため積まない）。
+                if !is_empty {
+                    container_stack.push(tag);
+                }
             }
             Event::End(e) => {
+                // 対応する開始要素をスタックから降ろす。
+                container_stack.pop();
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 match tag.as_str() {
@@ -1138,8 +1164,8 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
 
     // 未対応要素の集計を 1 行の警告にまとめる（タグ名昇順で決定的に）。
     if !unsupported.is_empty() {
-        let mut items: Vec<(&&str, &u32)> = unsupported.iter().collect();
-        items.sort_by_key(|(tag, _)| **tag);
+        let mut items: Vec<(&String, &u32)> = unsupported.iter().collect();
+        items.sort_by(|a, b| a.0.cmp(b.0));
         let list = items
             .iter()
             .map(|(tag, n)| format!("{tag}×{n}"))

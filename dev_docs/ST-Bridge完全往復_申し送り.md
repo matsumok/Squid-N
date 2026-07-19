@@ -138,6 +138,11 @@ SteelFlatBar / SteelRoundBar / RcRect / RcCircle / SrcRect / CftBox / CftPipe / 
    壁・スラブ・基礎等の未対応要素のスキップ、テーパ等で図形を認識できない RC/SRC 断面の欠落、
    未解決の形鋼参照（物性ゼロ化）、存在しない節点を参照する部材・節点荷重の破棄を集計する。
    GUI の ST-Bridge 読込は警告があれば「⚠️ 取り込み時の注意」として表示する。
+   - **fail-loud 化**（実装済み）: 未対応要素の検出を手動リスト（`UNSUPPORTED_ELEMENTS`）
+     だけに頼らず、部材（`StbMembers`）・断面（`StbSections`、コンテナ `StbSecSteel` は除く）・
+     荷重（`StbLoadCase`）の直属子で未対応のものは、リストに無い未知要素であっても要素名で
+     通知する（取り込みループのタグスタックで直属の親を判定）。これにより ST-Bridge 2.1 の
+     新要素やベンダー拡張・未対応荷重（`StbLoadMember` 等）も無言で捨てずに顕在化する。
 
 ---
 
