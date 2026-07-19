@@ -41,6 +41,8 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI * (r * r - ri * ri)
             }
+            SectionShape::SteelFlatBar { width, thick } => width * thick,
+            SectionShape::SteelRoundBar { dia } => std::f64::consts::PI * dia * dia / 4.0,
             SectionShape::RcRect { b, d, .. } => b * d,
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d * d / 4.0,
             // SRC: 質量算定への影響を避けるためコンクリート全断面とする（doc 参照）。
@@ -152,6 +154,9 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 4.0 * (r.powi(4) - ri.powi(4))
             }
+            // 平鋼は中実矩形（せい d=thick、幅 b=width）。iy は b·d³/12。
+            SectionShape::SteelFlatBar { width, thick } => width * thick.powi(3) / 12.0,
+            SectionShape::SteelRoundBar { dia } => std::f64::consts::PI * dia.powi(4) / 64.0,
             SectionShape::RcRect { b, d, .. } => b * d.powi(3) / 12.0,
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 64.0,
             SectionShape::SrcRect {
@@ -252,6 +257,9 @@ impl SectionShape {
                 iz + iz_w
             }
             SectionShape::SteelPipe { .. } => self.calc_iy(),
+            // 平鋼は中実矩形。iz は d·b³/12（b=width、d=thick）。
+            SectionShape::SteelFlatBar { width, thick } => thick * width.powi(3) / 12.0,
+            SectionShape::SteelRoundBar { .. } => self.calc_iy(),
             SectionShape::RcRect { b, d, .. } => d * b.powi(3) / 12.0,
             SectionShape::RcCircle { .. } => self.calc_iy(),
             SectionShape::SrcRect {
@@ -332,6 +340,9 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 2.0 * (r.powi(4) - ri.powi(4))
             }
+            // 平鋼は中実矩形のねじり定数（RC 矩形と同じ閉形式）。
+            SectionShape::SteelFlatBar { width, thick } => rect_torsion_j(width, thick),
+            SectionShape::SteelRoundBar { dia } => std::f64::consts::PI * dia.powi(4) / 32.0,
             SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,
             // ねじりは RC 矩形と同じ扱い（内蔵鉄骨の寄与は無視。

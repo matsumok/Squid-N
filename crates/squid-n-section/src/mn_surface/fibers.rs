@@ -293,6 +293,8 @@ pub fn plastic_fibers(
         | SectionShape::SteelTee { height, width, .. } => height.max(width),
         SectionShape::SteelAngle { leg_a, leg_b, .. } => leg_a.max(leg_b),
         SectionShape::SteelPipe { outer_dia, .. } => outer_dia,
+        SectionShape::SteelFlatBar { width, thick } => width.max(thick),
+        SectionShape::SteelRoundBar { dia } => dia,
         SectionShape::RcRect { b, d, .. } => b.max(d),
         SectionShape::RcCircle { d, .. } => d,
         SectionShape::SrcRect { b, d, .. } => b.max(d),
@@ -407,6 +409,16 @@ pub fn plastic_fibers(
             let n_theta = if fine { 48 } else { 8 };
             let n_r = if fine { 4 } else { 1 };
             mesh_annulus(&mut fibers, outer_dia, thick, n_theta, n_r, steel);
+        }
+        SectionShape::SteelFlatBar { width, thick } => {
+            // 中実矩形（幅 width×せい thick）を鋼ファイバで充填。
+            mesh_rect(&mut fibers, [0.0, 0.0], width, thick, target, steel);
+        }
+        SectionShape::SteelRoundBar { dia } => {
+            // 中実円 = 厚 dia/2 の円環を鋼ファイバで充填。
+            let n_theta = if fine { 48 } else { 8 };
+            let n_r = if fine { 12 } else { 2 };
+            mesh_annulus(&mut fibers, dia, dia / 2.0, n_theta, n_r, steel);
         }
         SectionShape::RcRect { b, d, ref rebar } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);

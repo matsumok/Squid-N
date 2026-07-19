@@ -113,6 +113,11 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 ..
             } => return (ShapeCategory::Other, flange_thick, web_thick),
             SectionShape::SteelAngle { thick, .. } => return (ShapeCategory::Other, thick, thick),
+            // 平鋼・中実丸鋼は板要素でない中実断面。局部座屈検定の対象外として Other 扱い。
+            SectionShape::SteelFlatBar { thick, .. } => {
+                return (ShapeCategory::Other, thick, thick)
+            }
+            SectionShape::SteelRoundBar { dia } => return (ShapeCategory::Other, dia, dia),
             // CFT の鋼管部分は角形/円形鋼管として扱う（検定本体は cft 側で行う）。
             SectionShape::CftBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::CftPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),

@@ -257,6 +257,25 @@ fn steel_figure(shape: &SectionShape) -> Option<(String, String)> {
             );
             Some(e(&name, body))
         }
+        SectionShape::SteelFlatBar { width, thick } => {
+            let name = format!("FB-{}x{}", num(width), num(thick));
+            let body = format!(
+                "<StbSecRoll-FlatBar name=\"{}\" type=\"FlatBar\" B=\"{}\" t=\"{}\"/>",
+                esc(&name),
+                num(width),
+                num(thick)
+            );
+            Some(e(&name, body))
+        }
+        SectionShape::SteelRoundBar { dia } => {
+            let name = format!("RB-{}", num(dia));
+            let body = format!(
+                "<StbSecRoll-RoundBar name=\"{}\" type=\"RoundBar\" D=\"{}\"/>",
+                esc(&name),
+                num(dia)
+            );
+            Some(e(&name, body))
+        }
         _ => None,
     }
 }

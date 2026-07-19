@@ -997,6 +997,90 @@ mod tests {
         assert_eq!(m.stories[0].node_ids, vec![NodeId(1)], "story 属性から補完");
     }
 
+    /// 標準モード: 平鋼（中実矩形）が `StbSecColumn_S`＋`StbSecRoll-FlatBar` として往復する。
+    #[test]
+    fn test_standard_roundtrip_flat_bar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::SteelFlatBar {
+            width: 100.0,
+            thick: 12.0,
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "FB1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(xml.contains("<StbSecColumn_S "), "鋼柱要素: {xml}");
+        assert!(xml.contains("<StbSecRoll-FlatBar "), "平鋼の形鋼ライブラリ");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(back.sections[0].shape, m.sections[0].shape, "平鋼が往復");
+        // 断面性能（中実矩形）が算定されている。
+        assert!((back.sections[0].area - 1200.0).abs() < 1e-6, "A=width·t");
+    }
+
+    /// 標準モード: 中実丸鋼が `StbSecColumn_S`＋`StbSecRoll-RoundBar` として往復する。
+    #[test]
+    fn test_standard_roundtrip_round_bar() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::SteelRoundBar { dia: 32.0 };
+        m.sections
+            .push(shape.to_section(SectionId(0), "RB1".into()));
+        m.elements.push(member(0, true, 0));
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecRoll-RoundBar "),
+            "中実丸鋼の形鋼ライブラリ"
+        );
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "中実丸鋼が往復"
+        );
+    }
+
+    /// import: 実 ST-Bridge の平鋼・丸鋼ライブラリ名を直接読み取れる。
+    #[test]
+    fn test_import_flat_and_round_bar_library() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="0" name="FB">
+      <StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="FB-90x9"/></StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecColumn_S id="1" name="RB">
+      <StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="RB-25"/></StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecSteel>
+      <StbSecRoll-FlatBar name="FB-90x9" B="90" t="9"/>
+      <StbSecRoll-RoundBar name="RB-25" D="25"/>
+    </StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        let shapes: Vec<_> = m.sections.iter().map(|s| s.shape.clone()).collect();
+        assert!(
+            shapes.contains(&Some(SectionShape::SteelFlatBar {
+                width: 90.0,
+                thick: 9.0
+            })),
+            "平鋼が復元される: {shapes:?}"
+        );
+        assert!(
+            shapes.contains(&Some(SectionShape::SteelRoundBar { dia: 25.0 })),
+            "中実丸鋼が復元される: {shapes:?}"
+        );
+    }
+
     /// 標準モード: CFT 角形柱が `StbSecColumn_CFT`＋形鋼ライブラリとして往復する。
     #[test]
     fn test_standard_roundtrip_cft_box() {

@@ -77,6 +77,16 @@ pub enum SectionShape {
     },
     /// Steel round pipe (鋼管).
     SteelPipe { outer_dia: f64, thick: f64 },
+    /// Steel flat bar / plate (平鋼・鋼板). 中実矩形。
+    ///
+    /// `width`: 幅 B [mm]（Z 方向）、`thick`: 板厚 t [mm]（Y 方向＝せい）。
+    /// 断面性能は中実矩形として算定する（配筋は無い）。部材のせい/幅の向きは
+    /// 局所座標（`ref_vector`）で与える。薄板だが幅厚比検定の対象外（板要素ではない）。
+    SteelFlatBar { width: f64, thick: f64 },
+    /// Steel solid round bar (中実丸鋼).
+    ///
+    /// `dia`: 直径 D [mm]。断面性能は中実円として算定する。
+    SteelRoundBar { dia: f64 },
     /// Reinforced concrete rectangle (RC 矩形).
     RcRect { b: f64, d: f64, rebar: RcRebar },
     /// Reinforced concrete circle column (RC 円形).

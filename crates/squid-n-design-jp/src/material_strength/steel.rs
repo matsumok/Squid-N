@@ -105,8 +105,11 @@ pub fn plate_thickness(sec: &Section) -> f64 {
             SectionShape::SteelBox { thick, .. }
             | SectionShape::SteelAngle { thick, .. }
             | SectionShape::SteelPipe { thick, .. }
+            | SectionShape::SteelFlatBar { thick, .. }
             | SectionShape::CftBox { thick, .. }
             | SectionShape::CftPipe { thick, .. } => return thick,
+            // 中実丸鋼は板要素ではないため、板厚区分は全断面の径で判定する。
+            SectionShape::SteelRoundBar { dia } => return dia,
             SectionShape::SrcRect {
                 steel_web_thick,
                 steel_flange_thick,

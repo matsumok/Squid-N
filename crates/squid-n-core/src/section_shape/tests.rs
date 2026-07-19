@@ -39,6 +39,40 @@ fn test_steel_pipe() {
 }
 
 #[test]
+fn test_steel_flat_bar() {
+    // 中実矩形 B=100 × t=12。A=1200、iy=b·d³/12=100·12³/12、iz=d·b³/12=12·100³/12。
+    let shape = SectionShape::SteelFlatBar {
+        width: 100.0,
+        thick: 12.0,
+    };
+    let sec = shape.to_section(SectionId(0), "FB-100x12".into());
+    assert!((sec.area - 1200.0).abs() < 1e-6);
+    assert!((sec.iy - 100.0 * 12.0_f64.powi(3) / 12.0).abs() < 1e-6);
+    assert!((sec.iz - 12.0 * 100.0_f64.powi(3) / 12.0).abs() < 1e-6);
+    assert!(
+        sec.iz > sec.iy,
+        "幅 > せい なので弱軸せい方向より iz が大きい"
+    );
+    assert!(sec.j > 0.0 && sec.as_y > 0.0 && sec.as_z > 0.0);
+    assert_eq!(sec.depth, 12.0);
+    assert_eq!(sec.width, 100.0);
+}
+
+#[test]
+fn test_steel_round_bar() {
+    // 中実円 D=30。A=πD²/4、iy=iz=πD⁴/64、J=πD⁴/32=2·iy。
+    let shape = SectionShape::SteelRoundBar { dia: 30.0 };
+    let sec = shape.to_section(SectionId(0), "RB-30".into());
+    let pi = std::f64::consts::PI;
+    assert!((sec.area - pi * 30.0 * 30.0 / 4.0).abs() < 1e-6);
+    assert!((sec.iy - pi * 30.0_f64.powi(4) / 64.0).abs() < 1e-6);
+    assert!((sec.iy - sec.iz).abs() < 1e-9, "軸対称");
+    assert!((sec.j - 2.0 * sec.iy).abs() < 1e-6);
+    assert_eq!(sec.depth, 30.0);
+    assert_eq!(sec.width, 30.0);
+}
+
+#[test]
 fn test_rc_rect() {
     let shape = SectionShape::RcRect {
         b: 500.0,

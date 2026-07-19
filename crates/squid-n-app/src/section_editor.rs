@@ -86,6 +86,8 @@ pub enum ShapeKind {
     SteelChannel,
     SteelTee,
     SteelPipe,
+    SteelFlatBar,
+    SteelRoundBar,
     RcRect,
     RcCircle,
 }
@@ -99,17 +101,21 @@ impl ShapeKind {
             ShapeKind::SteelChannel => "鋼 C形",
             ShapeKind::SteelTee => "鋼 T形",
             ShapeKind::SteelPipe => "鋼 丸鋼管",
+            ShapeKind::SteelFlatBar => "鋼 平鋼",
+            ShapeKind::SteelRoundBar => "鋼 中実丸鋼",
             ShapeKind::RcRect => "RC 矩形",
             ShapeKind::RcCircle => "RC 円形",
         }
     }
-    pub const ALL: [ShapeKind; 8] = [
+    pub const ALL: [ShapeKind; 10] = [
         ShapeKind::SteelH,
         ShapeKind::SteelBox,
         ShapeKind::SteelAngle,
         ShapeKind::SteelChannel,
         ShapeKind::SteelTee,
         ShapeKind::SteelPipe,
+        ShapeKind::SteelFlatBar,
+        ShapeKind::SteelRoundBar,
         ShapeKind::RcRect,
         ShapeKind::RcCircle,
     ];
@@ -274,6 +280,12 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             ShapeKind::SteelPipe => {
                 steel_pipe_fields(ui, draft);
+            }
+            ShapeKind::SteelFlatBar => {
+                steel_flat_bar_fields(ui, draft);
+            }
+            ShapeKind::SteelRoundBar => {
+                steel_round_bar_fields(ui, draft);
             }
             ShapeKind::RcRect => {
                 rc_rect_fields(ui, draft);
@@ -443,6 +455,22 @@ fn steel_pipe_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     });
 }
 
+fn steel_flat_bar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+    ui.horizontal(|ui| {
+        ui.label("B 幅:");
+        num_field(ui, &mut d.b);
+        ui.label("t 板厚:");
+        num_field(ui, &mut d.t);
+    });
+}
+
+fn steel_round_bar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
+    ui.horizontal(|ui| {
+        ui.label("D 径:");
+        num_field(ui, &mut d.outer_dia);
+    });
+}
+
 fn rc_rect_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
     ui.horizontal(|ui| {
         ui.label("B 幅:");
@@ -575,6 +603,11 @@ fn build_shape(d: &SectionEditorDraft) -> SectionShape {
             outer_dia: d.outer_dia,
             thick: d.thick,
         },
+        ShapeKind::SteelFlatBar => SectionShape::SteelFlatBar {
+            width: d.b,
+            thick: d.t,
+        },
+        ShapeKind::SteelRoundBar => SectionShape::SteelRoundBar { dia: d.outer_dia },
         ShapeKind::RcRect => SectionShape::RcRect {
             b: d.rc_b,
             d: d.rc_d,

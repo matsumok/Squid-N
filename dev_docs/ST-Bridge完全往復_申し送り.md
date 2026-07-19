@@ -34,11 +34,14 @@ ST-Bridge にあり Squid のモデルが表現できないもの。**まず `sq
 ### 断面形状（`SectionShape` に variant 追加）
 
 現状: `SteelH / SteelBox / SteelAngle / SteelChannel / SteelTee / SteelPipe /
-RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
+SteelFlatBar / SteelRoundBar / RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
 
 不足（ST-Bridge の形鋼ライブラリ・RC 図形にあるが未対応）:
-- **平鋼・鋼板**（`StbSecRoll-FlatBar` 等）
-- **中実丸鋼**（solid round bar）
+- **平鋼・鋼板**（`StbSecRoll-FlatBar` 等）: ✅ **実装済み**。`SteelFlatBar { width, thick }`
+  として中実矩形の断面性能を算定。ST-Bridge 標準モードで `StbSecColumn_S`/`StbSecBeam_S`＋
+  `StbSecRoll-FlatBar` として往復。断面エディタにも「鋼 平鋼」を追加。
+- **中実丸鋼**（solid round bar）: ✅ **実装済み**。`SteelRoundBar { dia }` として中実円の
+  断面性能を算定。`StbSecRoll-RoundBar` として往復。断面エディタにも「鋼 中実丸鋼」を追加。
 - **リップ溝形・軽量形鋼**（`StbSecRoll-LipC` 等の冷間成形材）
 - **組立断面**: 2L（抱き山形）・2C（抱き溝形）・十字形（cross-H）などの built-up
 - **非対称 H**（上下フランジ幅・厚が異なる `StbSecBuild-H`）。現 `SteelH` は左右上下対称前提。

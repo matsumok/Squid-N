@@ -84,6 +84,15 @@ impl SectionShape {
             SectionShape::SteelPipe { outer_dia, .. } | SectionShape::CftPipe { outer_dia, .. } => {
                 (outer_dia, outer_dia, area / 2.0, area / 2.0)
             }
+            // 平鋼: 中実矩形（せい d=thick、幅 b=width）。せん断有効断面は矩形の A/κ。
+            SectionShape::SteelFlatBar { width, thick } => (
+                thick,
+                width,
+                width * thick / KAPPA_RC,
+                width * thick / KAPPA_RC,
+            ),
+            // 中実丸鋼: せん断形状係数 κ=10/9（As=0.9A）。
+            SectionShape::SteelRoundBar { dia } => (dia, dia, area * 0.9, area * 0.9),
             SectionShape::RcRect { b, d, .. } => (d, b, b * d / KAPPA_RC, b * d / KAPPA_RC),
             SectionShape::RcCircle { d, .. } => (d, d, area / KAPPA_RC, area / KAPPA_RC),
             SectionShape::SrcRect {

@@ -1353,6 +1353,16 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
             web_thick: a_(&["t1"])?,
             flange_thick: a_(&["t2"])?,
         }),
+        // 平鋼・鋼板（中実矩形）。幅 B・板厚 t。
+        t if t.ends_with("-FlatBar") => Some(SectionShape::SteelFlatBar {
+            width: a_(&["B", "A", "width"])?,
+            thick: a_(&["t", "t1"])?,
+        }),
+        // 中実丸鋼。直径 D（半径 R のみの場合は 2R）。
+        t if t.ends_with("-RoundBar") => {
+            let dia = a_(&["D", "A"]).or_else(|| a_(&["R"]).map(|r| r * 2.0))?;
+            Some(SectionShape::SteelRoundBar { dia })
+        }
         _ => None,
     }
 }
