@@ -20,6 +20,9 @@
     他社ファイルは一切読めないため MVP とした。
   - 併せて: 断面の標準要素（`StbSecColumn_S` 等＋形鋼ライブラリ）の読取り、
     大文字 X/Y/Z 座標の受容も本 PR までに実装済み。
+  - **鋼管の形鋼ライブラリ名**: 実 ST-Bridge の `StbSecRoll-Pipe`（冷間成形の
+    `StbSecBuild-Pipe`）を読み取り可能（従来は Squid 方言の `StbSecPipe` のみ対応で、
+    他社ファイルの鋼管柱・梁の形鋼参照が解決できず物性ゼロになっていた）。
 
 ---
 
@@ -71,9 +74,11 @@ RcRect / RcCircle / SrcRect / CftBox / CftPipe / RcWall`。
    - **残課題（実 ST-Bridge 配筋スキーマ完全準拠）**: 書き出す属性名は Squid 独自
      （`count_main_X`・`dia_main_X` 等）で、実 ST-Bridge の配筋属性（`D_main`・`N_main_X_1st`/
      `_2nd` の段別本数、呼び名→公称径の対応、`kind_corner` 等）とは異なる。import は
-     `D_main`/`N_main_X_1st`/呼び名径（`D22`）を best-effort で拾うが、段別本数の合算や
-     梁の上端/下端（`N_main_top`/`_bottom`）↔ 内部 `main_x`/`main_y`（せい/幅方向）の
-     意味対応は近似。第三者ソフトとの厳密な配筋往復には実スキーマの read/write が必要。
+     `D_main`/`N_main_X_1st`/呼び名径（`D22`）を best-effort で拾う。**段別本数の合算は
+     実装済み**（`N_main_X_1st`/`_2nd`/`_3rd`、梁の `N_main_top`/`_bottom` の各段を合算し、
+     非ゼロの段数を `layers` に反映）。ただし梁の上端/下端（`N_main_top`/`_bottom`）↔ 内部
+     `main_x`/`main_y`（せい/幅方向）の意味対応は近似のまま。第三者ソフトとの厳密な配筋
+     往復には残る意味対応・`kind_corner` 等の read/write が必要。
    - **円形梁の非対応**: ST-Bridge に円形梁図形が無いため、`RcCircle` を梁に使う断面は
      `StbSecRaw` にフォールバックし形状・配筋が往復しない（円形柱は往復する）。
    - **未認識図形の断面欠落**: テーパ・ハンチ等 `StbSecColumn_RC_Rect`/`_Circle`・

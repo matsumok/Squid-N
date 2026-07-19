@@ -869,6 +869,79 @@ mod tests {
         }
     }
 
+    /// 実 ST-Bridge の段別主筋本数（`N_main_X_1st`/`_2nd`、梁の `N_main_bottom`/`_2nd`）を
+    /// 合算し、非ゼロの段数を `layers` に反映することを確認する。
+    #[test]
+    fn test_import_rc_rebar_layered_counts() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbSections>
+    <StbSecColumn_RC id="0" name="C">
+      <StbSecFigureColumn_RC><StbSecColumn_RC_Rect width_X="700" width_Y="700"/></StbSecFigureColumn_RC>
+      <StbSecBarArrangementColumn_RC>
+        <StbSecBarColumn_RC_RectSame N_main_X_1st="4" N_main_X_2nd="3" N_main_Y_1st="5" D_main="D25" D_band="D13" pitch_band="100"/>
+      </StbSecBarArrangementColumn_RC>
+    </StbSecColumn_RC>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        match &m.sections[0].shape {
+            Some(SectionShape::RcRect { rebar, .. }) => {
+                assert_eq!(rebar.main_x.count, 7, "X 方向は 1・2 段目を合算 (4+3)");
+                assert_eq!(rebar.main_x.layers, 2, "非ゼロの段数 = 2");
+                assert_eq!(rebar.main_y.count, 5, "Y 方向は 1 段目のみ");
+                assert_eq!(rebar.main_y.layers, 1, "非ゼロの段数 = 1");
+                assert_eq!(rebar.main_x.dia, 25.0, "呼び名 D25 → 25mm");
+            }
+            other => panic!("RcRect を期待: {other:?}"),
+        }
+    }
+
+    /// 実 ST-Bridge の鋼管形鋼ライブラリ名（`StbSecRoll-Pipe`）を取り込み、鋼管柱の
+    /// 断面性能（物性ゼロでない）を復元できることを確認する。Squid 方言（`StbSecPipe`）
+    /// だけでなく標準名も受けることの回帰テスト。
+    #[test]
+    fn test_import_steel_roll_pipe_library() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="0" name="P1">
+      <StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="P-267.4x6" strength_main="STKN400B"/></StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecSteel>
+      <StbSecRoll-Pipe name="P-267.4x6" D="267.4" t="6"/>
+    </StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        // 形鋼参照が解決され、物性ゼロの警告が出ていないこと。
+        assert!(
+            report.warnings.iter().all(|w| !w.contains("物性ゼロ")),
+            "鋼管の形鋼参照が解決されるべき: {:?}",
+            report.warnings
+        );
+        let sec = &m.sections[0];
+        assert!(
+            sec.area > 0.0,
+            "鋼管断面の断面積が復元される: A={}",
+            sec.area
+        );
+        match &sec.shape {
+            Some(SectionShape::SteelPipe { outer_dia, thick }) => {
+                assert_eq!(*outer_dia, 267.4);
+                assert_eq!(*thick, 6.0);
+            }
+            other => panic!("SteelPipe を期待: {other:?}"),
+        }
+    }
+
     /// 標準モード: CFT 角形柱が `StbSecColumn_CFT`＋形鋼ライブラリとして往復する。
     #[test]
     fn test_standard_roundtrip_cft_box() {

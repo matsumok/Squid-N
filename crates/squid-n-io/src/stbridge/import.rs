@@ -1281,7 +1281,11 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
                 thick,
             })
         }
-        "StbSecPipe" => Some(SectionShape::SteelPipe {
+        // 鋼管。Squid 方言の `StbSecPipe` に加え、実 ST-Bridge の形鋼ライブラリ名
+        // （`StbSecRoll-Pipe`／冷間成形の `StbSecBuild-Pipe`）も受ける。いずれも外径 D・
+        // 板厚 t を持つ（別名 A/t1 も許容）。これが無いと他社ファイルの鋼管柱・梁の
+        // 形鋼参照が解決できず、物性ゼロの断面になってしまう。
+        t if t == "StbSecPipe" || t.ends_with("-Pipe") => Some(SectionShape::SteelPipe {
             outer_dia: a_(&["D", "A"])?,
             thick: a_(&["t", "t1"])?,
         }),
@@ -1347,8 +1351,9 @@ fn parse_bar_dia(v: &str) -> Option<f64> {
 /// 拾う。欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
 /// 配筋の欠落・近似は往復での剛性に影響しない。
 ///
-/// なお実 ST-Bridge の配筋スキーマ（段別本数 `N_main_X_1st`/`_2nd` の合算、呼び名→公称径の
-/// 正確な対応、段数・かぶりの詳細）への完全準拠は今後の課題。
+/// 段別本数（`N_main_X_1st`/`_2nd`/`_3rd`、梁は `N_main_top`/`_bottom` の各段）は合算して
+/// 総本数とし、非ゼロの段数を `layers` に反映する。呼び名→公称径の正確な対応や、梁の
+/// 上端/下端 ↔ 内部 `main_x`/`main_y`（せい/幅方向）の厳密な意味対応は今後の課題。
 fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     let f = |keys: &[&str]| -> f64 {
         for k in keys {
@@ -1381,37 +1386,73 @@ fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
         }
         0
     };
-    // 段数は指定が無ければ 1 段扱い（配筋自体は 0 本でも段数 1 は無害）。
-    let layers = |keys: &[&str]| -> u32 {
-        for k in keys {
-            if let Some(v) = a.get(*k) {
-                if let Ok(x) = v.parse::<u32>() {
-                    return x;
+    // 主筋本数と段数を求める。Squid 出力の合計本数キー（`count_main_*`）があれば
+    // それを最優先で使う（往復での本数一致を保つ）。無ければ実 ST-Bridge の段別本数
+    // （`N_main_*_1st`/`_2nd`/`_3rd`）を合算する（他社ファイルは段別にしか本数を持たず、
+    // 1 段目だけ読むと下端筋の 2 段目等を取りこぼす）。段数は明示キー
+    // （`count_main_layers_*`）を優先し、無ければ非ゼロの段数を数える。
+    // 各引数: totals=合計本数キー, layers=段ごとの候補キー列, layer_attr=明示段数キー。
+    let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
+        for k in totals {
+            if let Some(x) = a.get(*k).and_then(|v| v.parse::<u32>().ok()) {
+                let l = a
+                    .get(layer_attr)
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|&l| l > 0)
+                    .unwrap_or(1);
+                return (x, l);
+            }
+        }
+        let mut sum = 0u32;
+        let mut nonzero_stages = 0u32;
+        for stage in stages {
+            if let Some(x) = stage
+                .iter()
+                .find_map(|k| a.get(*k).and_then(|v| v.parse::<u32>().ok()))
+            {
+                if x > 0 {
+                    sum += x;
+                    nonzero_stages += 1;
                 }
             }
         }
-        1
+        let layers = a
+            .get(layer_attr)
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&l| l > 0)
+            .unwrap_or_else(|| nonzero_stages.max(1));
+        (sum, layers)
     };
+    // せい方向（X）／梁上端。合計本数キーが無いときは 1〜3 段目を合算する。
+    let (count_x, layers_x) = count_and_layers(
+        &["count_main_X", "count_main_top"],
+        &[
+            &["N_main_X_1st", "N_main_top_1st", "N_main_top"],
+            &["N_main_X_2nd", "N_main_top_2nd"],
+            &["N_main_X_3rd", "N_main_top_3rd"],
+        ],
+        "count_main_layers_X",
+    );
+    // 幅方向（Y）／梁下端。
+    let (count_y, layers_y) = count_and_layers(
+        &["count_main_Y", "count_main_bottom"],
+        &[
+            &["N_main_Y_1st", "N_main_bottom_1st", "N_main_bottom"],
+            &["N_main_Y_2nd", "N_main_bottom_2nd"],
+            &["N_main_Y_3rd", "N_main_bottom_3rd"],
+        ],
+        "count_main_layers_Y",
+    );
     RcRebar {
         main_x: BarSet {
-            count: u(&[
-                "count_main_X",
-                "N_main_X_1st",
-                "count_main_top",
-                "N_main_top",
-            ]),
+            count: count_x,
             dia: dia(&["dia_main_X", "dia_main", "D_main"]),
-            layers: layers(&["count_main_layers_X"]),
+            layers: layers_x,
         },
         main_y: BarSet {
-            count: u(&[
-                "count_main_Y",
-                "N_main_Y_1st",
-                "count_main_bottom",
-                "N_main_bottom",
-            ]),
+            count: count_y,
             dia: dia(&["dia_main_Y", "dia_main", "D_main"]),
-            layers: layers(&["count_main_layers_Y"]),
+            layers: layers_y,
         },
         cover: f(&["cover", "kaburi"]),
         shear: ShearBar {
