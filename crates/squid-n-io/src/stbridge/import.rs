@@ -97,6 +97,9 @@ struct RawStory {
     file_id: u32,
     name: String,
     elevation: f64,
+    /// 実 ST-Bridge の `StbStory` 直下 `StbNodeIdList/StbNodeId` が示す所属節点
+    /// （file node id 列）。Squid 方言は `StbNode` の `story` 属性を使うため空になる。
+    node_ids: Vec<u32>,
 }
 
 /// 取り込み途中の材料（id 正規化前）。
@@ -198,9 +201,14 @@ impl ImportReport {
     }
 }
 
-/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に警告対象とするもの
-/// （構造ラッパ等は対象外。実データを欠落させる部材・断面のみ列挙する）。
+/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に必ず警告対象とするもの。
+/// これに加え、部材（`StbMembers`）・断面（`StbSections`）・荷重（`StbLoadCase`）の直属子で
+/// 未対応のものは、このリストに無い未知要素であっても警告する（fail-loud。詳細は取り込み
+/// ループの `other` 分岐を参照）。本リストは、直属の親からは判別しづらい要素（通り芯など
+/// `StbModel` 直下のもの）を確実に拾うために併用する。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
+    // 通り芯（Model 直下。grid/axis 概念が無く往復対象外）
+    "StbAxes",
     // 部材（面要素・基礎・開口。StbSlab・StbWall は対応済み）
     "StbFooting",
     "StbPile",
@@ -238,7 +246,11 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let mut version_ok = false;
     let mut warnings: Vec<String> = Vec::new();
     // 未対応要素はタグごとに件数を集計し、最後にまとめて 1 行の警告にする。
-    let mut unsupported: HashMap<&'static str, u32> = HashMap::new();
+    // 明示リストに無い未知の要素も、部材/断面/荷重の直属子であれば「取り込み対象外」
+    // として拾う（fail-loud。取りこぼしを無言で捨てない）ため、キーは String とする。
+    let mut unsupported: HashMap<String, u32> = HashMap::new();
+    // 開いている要素のスタック（直属の親要素を知り、未知の部材/断面/荷重を検出するため）。
+    let mut container_stack: Vec<String> = Vec::new();
 
     // 全要素を一旦 file id 付きの中間表現へ集め、パース後に id を 0 始まり連番へ
     // 正規化して参照を張り替える（他社ファイルの 1 始まり・歯抜け id に対応）。
@@ -258,17 +270,24 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let mut wall_sec_thickness: HashMap<u32, f64> = HashMap::new();
     let mut cur_wall: Option<RawWall> = None;
     let mut in_node_id_order = false;
+    // 実 ST-Bridge の `StbStory`（内部に `StbNodeIdList/StbNodeId` を持つ）を開いている間 true。
+    // 開いている `StbNodeId` を直近の階の所属節点として集めるために使う。
+    let mut in_story = false;
 
     loop {
         let ev = reader
             .read_event()
             .map_err(|e| StbError::Parse(e.to_string()))?;
+        // 自己終了要素（<Foo/>）は End が来ないためスタックへ積まない。
+        let is_empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 let a = attrs(&e)?;
+                // この要素の直属の親（未知の部材/断面/荷重の検出に使う）。
+                let parent = container_stack.last().map(|s| s.as_str());
                 // StbNodeIdOrder のテキストは開始タグ直後の Text/CData のみで届く。
                 // 別要素が現れた時点で取り込み窓を閉じる（自己終了タグ
                 // <StbNodeIdOrder/> は End が来ずフラグが残るため、この明示リセットで
@@ -305,7 +324,12 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             file_id: get_u32(&a, "id")?,
                             name: a.get("name").cloned().unwrap_or_default(),
                             elevation: get_f64_any(&a, &["height", "Z"])?,
+                            node_ids: Vec::new(),
                         });
+                        // 直下の StbNodeIdList/StbNodeId をこの階へ集める窓を開く
+                        // （空の <StbStory/> でも害は無い。StbNodeId はスラブ・壁を優先し、
+                        // かつ階は通常部材より前に現れるため誤取り込みしない）。
+                        in_story = true;
                     }
                     "StbMaterial" => {
                         raw_materials.push(RawMaterial {
@@ -612,18 +636,35 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                                 slab.boundary.push(id);
                             } else if let Some(wall) = cur_wall.as_mut() {
                                 wall.boundary.push(id);
+                            } else if in_story {
+                                if let Some(story) = raw_stories.last_mut() {
+                                    story.node_ids.push(id);
+                                }
                             }
                         }
                     }
-                    // 未対応の部材・断面（壁・基礎等）はデータ欠落として集計する。
+                    // 未対応の要素はデータ欠落として集計する（fail-loud）。明示リストに
+                    // 加え、部材（StbMembers）・断面（StbSections、ただし形鋼ライブラリ
+                    // コンテナ StbSecSteel は除く）・荷重（StbLoadCase）の直属子で未対応の
+                    // ものは、リスト外の未知要素であっても「取り込み対象外」として拾う。
                     other => {
-                        if let Some(&known) = UNSUPPORTED_ELEMENTS.iter().find(|&&u| u == other) {
-                            *unsupported.entry(known).or_insert(0) += 1;
+                        let skipped_data = UNSUPPORTED_ELEMENTS.contains(&other)
+                            || matches!(parent, Some("StbMembers"))
+                            || (matches!(parent, Some("StbSections")) && other != "StbSecSteel")
+                            || matches!(parent, Some("StbLoadCase"));
+                        if skipped_data {
+                            *unsupported.entry(other.to_string()).or_insert(0) += 1;
                         }
                     }
                 }
+                // 開始要素はスタックへ積む（自己終了要素は End が来ないため積まない）。
+                if !is_empty {
+                    container_stack.push(tag);
+                }
             }
             Event::End(e) => {
+                // 対応する開始要素をスタックから降ろす。
+                container_stack.pop();
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 match tag.as_str() {
@@ -743,6 +784,9 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                     "StbNodeIdOrder" => {
                         in_node_id_order = false;
                     }
+                    "StbStory" => {
+                        in_story = false;
+                    }
                     "StbSlab" => {
                         if let Some(slab) = cur_slab.take() {
                             raw_slabs.push(slab);
@@ -795,15 +839,31 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let story_index = build_index(raw_stories.iter().map(|s| s.file_id));
     let material_index = build_index(raw_materials.iter().map(|m| m.file_id));
 
+    // 実 ST-Bridge の階所属（StbStory/StbNodeIdList）から file node id → file story id を作る。
+    // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、無ければこの表を引く。
+    let node_story_from_list: HashMap<u32, u32> = raw_stories
+        .iter()
+        .flat_map(|s| {
+            let sid = s.file_id;
+            s.node_ids.iter().map(move |&nid| (nid, sid))
+        })
+        .collect();
+
     raw_stories.sort_by_key(|s| s.file_id);
     for s in raw_stories {
+        // 階の所属節点を正規化後の NodeId へ解決する（存在しない節点は除外）。
+        let node_ids = s
+            .node_ids
+            .iter()
+            .filter_map(|fid| node_index.get(fid).copied().map(NodeId))
+            .collect();
         model.stories.push(Story {
             level_kind: Default::default(),
             structure: Default::default(),
             id: StoryId(story_index[&s.file_id]),
             name: s.name,
             elevation: s.elevation,
-            node_ids: vec![],
+            node_ids,
             diaphragms: vec![],
             seismic_weight: None,
         });
@@ -816,11 +876,24 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             coord: n.coord,
             restraint: squid_n_core::dof::Dof6Mask::FREE,
             mass: None,
+            // 節点自身の story 属性（Squid 方言）を優先し、無ければ階の所属節点リストから引く。
             story: n
                 .story
-                .and_then(|s| story_index.get(&s).copied())
+                .or_else(|| node_story_from_list.get(&n.file_id).copied())
+                .and_then(|sfid| story_index.get(&sfid).copied())
                 .map(StoryId),
         });
+    }
+
+    // 階の所属節点リストを節点の story 属性からも補完する（StbNodeIdList を持たない
+    // Squid 方言でも Story.node_ids を完全にする。StbNodeIdList 由来との重複は除く）。
+    for node in &model.nodes {
+        if let Some(sid) = node.story {
+            let list = &mut model.stories[sid.index()].node_ids;
+            if !list.contains(&node.id) {
+                list.push(node.id);
+            }
+        }
     }
 
     raw_materials.sort_by_key(|m| m.file_id);
@@ -1091,8 +1164,8 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
 
     // 未対応要素の集計を 1 行の警告にまとめる（タグ名昇順で決定的に）。
     if !unsupported.is_empty() {
-        let mut items: Vec<(&&str, &u32)> = unsupported.iter().collect();
-        items.sort_by_key(|(tag, _)| **tag);
+        let mut items: Vec<(&String, &u32)> = unsupported.iter().collect();
+        items.sort_by(|a, b| a.0.cmp(b.0));
         let list = items
             .iter()
             .map(|(tag, n)| format!("{tag}×{n}"))
@@ -1267,12 +1340,29 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
     // 形鋼の寸法属性は A(せい/長辺)・B(幅/短辺)・t1(ウェブ)・t2(フランジ) を基本とする。
     let a_ = |keys: &[&str]| get_f64_any(a, keys).ok();
     match tag {
-        t if t.ends_with("-H") => Some(SectionShape::SteelH {
-            height: a_(&["A"])?,
-            width: a_(&["B"])?,
-            web_thick: a_(&["t1"])?,
-            flange_thick: a_(&["t2"])?,
-        }),
+        t if t.ends_with("-H") => {
+            let height = a_(&["A"])?;
+            let web_thick = a_(&["t1"])?;
+            let upper_width = a_(&["B"])?;
+            let upper_thick = a_(&["t2"])?;
+            // 下フランジの方言属性があれば非対称組立 H、無ければ対称 H。
+            match (a_(&["B2", "B_lower"]), a_(&["t2_lower", "t2_2"])) {
+                (Some(lower_width), Some(lower_thick)) => Some(SectionShape::SteelBuiltH {
+                    height,
+                    upper_width,
+                    upper_thick,
+                    lower_width,
+                    lower_thick,
+                    web_thick,
+                }),
+                _ => Some(SectionShape::SteelH {
+                    height,
+                    width: upper_width,
+                    web_thick,
+                    flange_thick: upper_thick,
+                }),
+            }
+        }
         t if t.ends_with("-BOX") => {
             let thick = a_(&["t", "t1"])?;
             Some(SectionShape::SteelBox {
@@ -1281,7 +1371,11 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
                 thick,
             })
         }
-        "StbSecPipe" => Some(SectionShape::SteelPipe {
+        // 鋼管。Squid 方言の `StbSecPipe` に加え、実 ST-Bridge の形鋼ライブラリ名
+        // （`StbSecRoll-Pipe`／冷間成形の `StbSecBuild-Pipe`）も受ける。いずれも外径 D・
+        // 板厚 t を持つ（別名 A/t1 も許容）。これが無いと他社ファイルの鋼管柱・梁の
+        // 形鋼参照が解決できず、物性ゼロの断面になってしまう。
+        t if t == "StbSecPipe" || t.ends_with("-Pipe") => Some(SectionShape::SteelPipe {
             outer_dia: a_(&["D", "A"])?,
             thick: a_(&["t", "t1"])?,
         }),
@@ -1301,6 +1395,23 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
             width: a_(&["B"])?,
             web_thick: a_(&["t1"])?,
             flange_thick: a_(&["t2"])?,
+        }),
+        // 平鋼・鋼板（中実矩形）。幅 B・板厚 t。
+        t if t.ends_with("-FlatBar") => Some(SectionShape::SteelFlatBar {
+            width: a_(&["B", "A", "width"])?,
+            thick: a_(&["t", "t1"])?,
+        }),
+        // 中実丸鋼。直径 D（半径 R のみの場合は 2R）。
+        t if t.ends_with("-RoundBar") => {
+            let dia = a_(&["D", "A"]).or_else(|| a_(&["R"]).map(|r| r * 2.0))?;
+            Some(SectionShape::SteelRoundBar { dia })
+        }
+        // リップ溝形鋼（冷間成形）。せい A・幅 B・リップ C・板厚 t。
+        t if t.ends_with("-LipC") => Some(SectionShape::SteelLipChannel {
+            height: a_(&["A", "H"])?,
+            width: a_(&["B"])?,
+            lip: a_(&["C"])?,
+            thick: a_(&["t", "t1"])?,
         }),
         _ => None,
     }
@@ -1347,8 +1458,9 @@ fn parse_bar_dia(v: &str) -> Option<f64> {
 /// 拾う。欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
 /// 配筋の欠落・近似は往復での剛性に影響しない。
 ///
-/// なお実 ST-Bridge の配筋スキーマ（段別本数 `N_main_X_1st`/`_2nd` の合算、呼び名→公称径の
-/// 正確な対応、段数・かぶりの詳細）への完全準拠は今後の課題。
+/// 段別本数（`N_main_X_1st`/`_2nd`/`_3rd`、梁は `N_main_top`/`_bottom` の各段）は合算して
+/// 総本数とし、非ゼロの段数を `layers` に反映する。呼び名→公称径の正確な対応や、梁の
+/// 上端/下端 ↔ 内部 `main_x`/`main_y`（せい/幅方向）の厳密な意味対応は今後の課題。
 fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     let f = |keys: &[&str]| -> f64 {
         for k in keys {
@@ -1381,37 +1493,73 @@ fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
         }
         0
     };
-    // 段数は指定が無ければ 1 段扱い（配筋自体は 0 本でも段数 1 は無害）。
-    let layers = |keys: &[&str]| -> u32 {
-        for k in keys {
-            if let Some(v) = a.get(*k) {
-                if let Ok(x) = v.parse::<u32>() {
-                    return x;
+    // 主筋本数と段数を求める。Squid 出力の合計本数キー（`count_main_*`）があれば
+    // それを最優先で使う（往復での本数一致を保つ）。無ければ実 ST-Bridge の段別本数
+    // （`N_main_*_1st`/`_2nd`/`_3rd`）を合算する（他社ファイルは段別にしか本数を持たず、
+    // 1 段目だけ読むと下端筋の 2 段目等を取りこぼす）。段数は明示キー
+    // （`count_main_layers_*`）を優先し、無ければ非ゼロの段数を数える。
+    // 各引数: totals=合計本数キー, layers=段ごとの候補キー列, layer_attr=明示段数キー。
+    let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
+        for k in totals {
+            if let Some(x) = a.get(*k).and_then(|v| v.parse::<u32>().ok()) {
+                let l = a
+                    .get(layer_attr)
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|&l| l > 0)
+                    .unwrap_or(1);
+                return (x, l);
+            }
+        }
+        let mut sum = 0u32;
+        let mut nonzero_stages = 0u32;
+        for stage in stages {
+            if let Some(x) = stage
+                .iter()
+                .find_map(|k| a.get(*k).and_then(|v| v.parse::<u32>().ok()))
+            {
+                if x > 0 {
+                    sum += x;
+                    nonzero_stages += 1;
                 }
             }
         }
-        1
+        let layers = a
+            .get(layer_attr)
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&l| l > 0)
+            .unwrap_or_else(|| nonzero_stages.max(1));
+        (sum, layers)
     };
+    // せい方向（X）／梁上端。合計本数キーが無いときは 1〜3 段目を合算する。
+    let (count_x, layers_x) = count_and_layers(
+        &["count_main_X", "count_main_top"],
+        &[
+            &["N_main_X_1st", "N_main_top_1st", "N_main_top"],
+            &["N_main_X_2nd", "N_main_top_2nd"],
+            &["N_main_X_3rd", "N_main_top_3rd"],
+        ],
+        "count_main_layers_X",
+    );
+    // 幅方向（Y）／梁下端。
+    let (count_y, layers_y) = count_and_layers(
+        &["count_main_Y", "count_main_bottom"],
+        &[
+            &["N_main_Y_1st", "N_main_bottom_1st", "N_main_bottom"],
+            &["N_main_Y_2nd", "N_main_bottom_2nd"],
+            &["N_main_Y_3rd", "N_main_bottom_3rd"],
+        ],
+        "count_main_layers_Y",
+    );
     RcRebar {
         main_x: BarSet {
-            count: u(&[
-                "count_main_X",
-                "N_main_X_1st",
-                "count_main_top",
-                "N_main_top",
-            ]),
+            count: count_x,
             dia: dia(&["dia_main_X", "dia_main", "D_main"]),
-            layers: layers(&["count_main_layers_X"]),
+            layers: layers_x,
         },
         main_y: BarSet {
-            count: u(&[
-                "count_main_Y",
-                "N_main_Y_1st",
-                "count_main_bottom",
-                "N_main_bottom",
-            ]),
+            count: count_y,
             dia: dia(&["dia_main_Y", "dia_main", "D_main"]),
-            layers: layers(&["count_main_layers_Y"]),
+            layers: layers_y,
         },
         cover: f(&["cover", "kaburi"]),
         shear: ShearBar {

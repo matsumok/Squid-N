@@ -100,6 +100,13 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 flange_thick,
                 ..
             } => return (ShapeCategory::H, flange_thick, web_thick),
+            // 非対称組立 H は H 系として扱う。フランジ厚は薄い方（幅厚比が厳しい側）を代表とする。
+            SectionShape::SteelBuiltH {
+                web_thick,
+                upper_thick,
+                lower_thick,
+                ..
+            } => return (ShapeCategory::H, upper_thick.min(lower_thick), web_thick),
             SectionShape::SteelBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::SteelPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),
             SectionShape::SteelChannel {
@@ -113,6 +120,15 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 ..
             } => return (ShapeCategory::Other, flange_thick, web_thick),
             SectionShape::SteelAngle { thick, .. } => return (ShapeCategory::Other, thick, thick),
+            // 平鋼・中実丸鋼は板要素でない中実断面。局部座屈検定の対象外として Other 扱い。
+            SectionShape::SteelFlatBar { thick, .. } => {
+                return (ShapeCategory::Other, thick, thick)
+            }
+            SectionShape::SteelRoundBar { dia } => return (ShapeCategory::Other, dia, dia),
+            // リップ溝形は冷間成形の開断面。局部座屈は有効幅で扱うため Other 扱い（板厚 t）。
+            SectionShape::SteelLipChannel { thick, .. } => {
+                return (ShapeCategory::Other, thick, thick)
+            }
             // CFT の鋼管部分は角形/円形鋼管として扱う（検定本体は cft 側で行う）。
             SectionShape::CftBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::CftPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),

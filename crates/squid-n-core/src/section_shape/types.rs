@@ -77,6 +77,42 @@ pub enum SectionShape {
     },
     /// Steel round pipe (鋼管).
     SteelPipe { outer_dia: f64, thick: f64 },
+    /// Steel flat bar / plate (平鋼・鋼板). 中実矩形。
+    ///
+    /// `width`: 幅 B [mm]（Z 方向）、`thick`: 板厚 t [mm]（Y 方向＝せい）。
+    /// 断面性能は中実矩形として算定する（配筋は無い）。部材のせい/幅の向きは
+    /// 局所座標（`ref_vector`）で与える。薄板だが幅厚比検定の対象外（板要素ではない）。
+    SteelFlatBar { width: f64, thick: f64 },
+    /// Steel solid round bar (中実丸鋼).
+    ///
+    /// `dia`: 直径 D [mm]。断面性能は中実円として算定する。
+    SteelRoundBar { dia: f64 },
+    /// Steel welded built-up H with unequal flanges (非対称組立 H 形鋼). `StbSecBuild-H`。
+    ///
+    /// 上下フランジの幅・厚が異なる溶接組立断面。`height`: せい H（外〜外）、
+    /// `upper_width`/`upper_thick`: 上フランジ、`lower_width`/`lower_thick`: 下フランジ、
+    /// `web_thick`: ウェブ厚。上下フランジ＋ウェブの矩形分解＋平行軸で断面性能を算定する
+    /// （図心は Y 方向に偏心。左右対称）。上下同一寸法なら通常の `SteelH` と等価。
+    SteelBuiltH {
+        height: f64,
+        upper_width: f64,
+        upper_thick: f64,
+        lower_width: f64,
+        lower_thick: f64,
+        web_thick: f64,
+    },
+    /// Steel cold-formed lipped channel (リップ溝形鋼). `StbSecRoll-LipC`。
+    ///
+    /// `height`: せい H [mm]（Y 方向）、`width`: フランジ幅 B [mm]（Z 方向。ウェブ外面〜
+    /// フランジ先端）、`lip`: リップ長 C [mm]（Y 方向）、`thick`: 板厚 t [mm]（全要素一様）。
+    /// 薄肉開断面としてウェブ・上下フランジ・上下リップの矩形分解で断面性能を算定する
+    /// （図心は Z 方向に偏心。冷間成形材の有効断面・局部座屈は別途検討）。
+    SteelLipChannel {
+        height: f64,
+        width: f64,
+        lip: f64,
+        thick: f64,
+    },
     /// Reinforced concrete rectangle (RC 矩形).
     RcRect { b: f64, d: f64, rebar: RcRebar },
     /// Reinforced concrete circle column (RC 円形).

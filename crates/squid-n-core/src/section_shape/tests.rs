@@ -39,6 +39,160 @@ fn test_steel_pipe() {
 }
 
 #[test]
+fn test_steel_flat_bar() {
+    // 中実矩形 B=100 × t=12。A=1200、iy=b·d³/12=100·12³/12、iz=d·b³/12=12·100³/12。
+    let shape = SectionShape::SteelFlatBar {
+        width: 100.0,
+        thick: 12.0,
+    };
+    let sec = shape.to_section(SectionId(0), "FB-100x12".into());
+    assert!((sec.area - 1200.0).abs() < 1e-6);
+    assert!((sec.iy - 100.0 * 12.0_f64.powi(3) / 12.0).abs() < 1e-6);
+    assert!((sec.iz - 12.0 * 100.0_f64.powi(3) / 12.0).abs() < 1e-6);
+    assert!(
+        sec.iz > sec.iy,
+        "幅 > せい なので弱軸せい方向より iz が大きい"
+    );
+    assert!(sec.j > 0.0 && sec.as_y > 0.0 && sec.as_z > 0.0);
+    assert_eq!(sec.depth, 12.0);
+    assert_eq!(sec.width, 100.0);
+}
+
+#[test]
+fn test_steel_round_bar() {
+    // 中実円 D=30。A=πD²/4、iy=iz=πD⁴/64、J=πD⁴/32=2·iy。
+    let shape = SectionShape::SteelRoundBar { dia: 30.0 };
+    let sec = shape.to_section(SectionId(0), "RB-30".into());
+    let pi = std::f64::consts::PI;
+    assert!((sec.area - pi * 30.0 * 30.0 / 4.0).abs() < 1e-6);
+    assert!((sec.iy - pi * 30.0_f64.powi(4) / 64.0).abs() < 1e-6);
+    assert!((sec.iy - sec.iz).abs() < 1e-9, "軸対称");
+    assert!((sec.j - 2.0 * sec.iy).abs() < 1e-6);
+    assert_eq!(sec.depth, 30.0);
+    assert_eq!(sec.width, 30.0);
+}
+
+#[test]
+fn test_steel_lip_channel() {
+    // リップ溝形 H=150, B=75, C=20, t=2.3。矩形分解で独立計算した値と一致するか。
+    let h = 150.0;
+    let b = 75.0;
+    let c = 20.0;
+    let t = 2.3;
+    let shape = SectionShape::SteelLipChannel {
+        height: h,
+        width: b,
+        lip: c,
+        thick: t,
+    };
+    let sec = shape.to_section(SectionId(0), "LipC-150x75x20x2.3".into());
+    // 断面積 = ウェブ + 2 フランジ + 2 リップ（重なり無し分解）。
+    let area_expect = t * h + 2.0 * (b - t) * t + 2.0 * t * (c - t);
+    assert!(
+        (sec.area - area_expect).abs() < 1e-6,
+        "A={} 期待 {}",
+        sec.area,
+        area_expect
+    );
+    // 強軸 iy（上下対称、y=H/2 まわり）を独立計算。
+    let i_web = t * h.powi(3) / 12.0;
+    let a_f = (b - t) * t;
+    let i_f = (b - t) * t.powi(3) / 12.0 + a_f * ((h - t) / 2.0).powi(2);
+    let a_l = t * (c - t);
+    let i_l = t * (c - t).powi(3) / 12.0 + a_l * ((h - c - t) / 2.0).powi(2);
+    let iy_expect = i_web + 2.0 * i_f + 2.0 * i_l;
+    assert!(
+        (sec.iy - iy_expect).abs() < 1e-3,
+        "iy={} 期待 {}",
+        sec.iy,
+        iy_expect
+    );
+    // 溝形なので強軸 > 弱軸、いずれも正、J・せん断有効断面も正。
+    assert!(sec.iy > sec.iz && sec.iz > 0.0);
+    assert!(sec.j > 0.0 && sec.as_y > 0.0 && sec.as_z > 0.0);
+    assert_eq!(sec.depth, h);
+    assert_eq!(sec.width, b);
+}
+
+#[test]
+fn test_steel_built_h_equal_flanges_matches_rolled_h() {
+    // 上下フランジが同一なら通常の SteelH と断面性能が一致する（分解の妥当性確認）。
+    let built = SectionShape::SteelBuiltH {
+        height: 400.0,
+        upper_width: 200.0,
+        upper_thick: 12.0,
+        lower_width: 200.0,
+        lower_thick: 12.0,
+        web_thick: 8.0,
+    };
+    let rolled = SectionShape::SteelH {
+        height: 400.0,
+        width: 200.0,
+        web_thick: 8.0,
+        flange_thick: 12.0,
+    };
+    let sb = built.to_section(SectionId(0), "BH".into());
+    let sr = rolled.to_section(SectionId(0), "H".into());
+    assert!((sb.area - sr.area).abs() < 1e-6, "A 一致");
+    assert!(
+        (sb.iy - sr.iy).abs() < 1e-3,
+        "iy 一致 {} vs {}",
+        sb.iy,
+        sr.iy
+    );
+    assert!((sb.iz - sr.iz).abs() < 1e-3, "iz 一致");
+    assert!((sb.j - sr.j).abs() < 1e-3, "J 一致");
+}
+
+#[test]
+fn test_steel_built_h_asymmetric() {
+    // 下フランジが大きい非対称 H。図心は下寄り、強軸 iy は独立計算と一致。
+    let h = 500.0;
+    let uw = 150.0;
+    let ut = 9.0;
+    let lw = 300.0;
+    let lt = 19.0;
+    let tw = 9.0;
+    let shape = SectionShape::SteelBuiltH {
+        height: h,
+        upper_width: uw,
+        upper_thick: ut,
+        lower_width: lw,
+        lower_thick: lt,
+        web_thick: tw,
+    };
+    let sec = shape.to_section(SectionId(0), "BH".into());
+    // 面積 = 上フランジ + 下フランジ + ウェブ。
+    let hw = h - ut - lt;
+    let a_expect = uw * ut + lw * lt + tw * hw;
+    assert!((sec.area - a_expect).abs() < 1e-6);
+    // 図心 y（下端起点）を独立計算し、iy を平行軸で検算。
+    let a_uf = uw * ut;
+    let a_lf = lw * lt;
+    let a_w = tw * hw;
+    let y_uf = h - ut / 2.0;
+    let y_lf = lt / 2.0;
+    let y_w = lt + hw / 2.0;
+    let y_bar = (a_uf * y_uf + a_lf * y_lf + a_w * y_w) / a_expect;
+    let iy_expect = uw * ut.powi(3) / 12.0
+        + a_uf * (y_uf - y_bar).powi(2)
+        + lw * lt.powi(3) / 12.0
+        + a_lf * (y_lf - y_bar).powi(2)
+        + tw * hw.powi(3) / 12.0
+        + a_w * (y_w - y_bar).powi(2);
+    assert!(
+        (sec.iy - iy_expect).abs() < 1e-3,
+        "iy={} 期待 {}",
+        sec.iy,
+        iy_expect
+    );
+    assert!(sec.iy > sec.iz && sec.iz > 0.0);
+    assert!(sec.j > 0.0 && sec.as_y > 0.0 && sec.as_z > 0.0);
+    assert_eq!(sec.depth, h);
+    assert_eq!(sec.width, lw, "せい幅は広い方（下フランジ）");
+}
+
+#[test]
 fn test_rc_rect() {
     let shape = SectionShape::RcRect {
         b: 500.0,

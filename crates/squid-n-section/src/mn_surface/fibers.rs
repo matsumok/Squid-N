@@ -293,6 +293,15 @@ pub fn plastic_fibers(
         | SectionShape::SteelTee { height, width, .. } => height.max(width),
         SectionShape::SteelAngle { leg_a, leg_b, .. } => leg_a.max(leg_b),
         SectionShape::SteelPipe { outer_dia, .. } => outer_dia,
+        SectionShape::SteelFlatBar { width, thick } => width.max(thick),
+        SectionShape::SteelRoundBar { dia } => dia,
+        SectionShape::SteelLipChannel { height, width, .. } => height.max(width),
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            lower_width,
+            ..
+        } => height.max(upper_width).max(lower_width),
         SectionShape::RcRect { b, d, .. } => b.max(d),
         SectionShape::RcCircle { d, .. } => d,
         SectionShape::SrcRect { b, d, .. } => b.max(d),
@@ -408,6 +417,91 @@ pub fn plastic_fibers(
             let n_r = if fine { 4 } else { 1 };
             mesh_annulus(&mut fibers, outer_dia, thick, n_theta, n_r, steel);
         }
+        SectionShape::SteelFlatBar { width, thick } => {
+            // 中実矩形（幅 width×せい thick）を鋼ファイバで充填。
+            mesh_rect(&mut fibers, [0.0, 0.0], width, thick, target, steel);
+        }
+        SectionShape::SteelRoundBar { dia } => {
+            // 中実円 = 厚 dia/2 の円環を鋼ファイバで充填。
+            let n_theta = if fine { 48 } else { 8 };
+            let n_r = if fine { 12 } else { 2 };
+            mesh_annulus(&mut fibers, dia, dia / 2.0, n_theta, n_r, steel);
+        }
+        SectionShape::SteelLipChannel {
+            height,
+            width,
+            lip,
+            thick,
+        } => {
+            let t = thick;
+            // ウェブ・上下フランジ・上下リップの 5 枚（重なり無し）。座標は後で図心補正。
+            mesh_rect(
+                &mut fibers,
+                [t / 2.0, height / 2.0],
+                t,
+                height,
+                target,
+                steel,
+            );
+            for ysign in [1.0, -1.0] {
+                // フランジ（y=±(H−t)/2）
+                mesh_rect(
+                    &mut fibers,
+                    [(t + width) / 2.0, height / 2.0 + ysign * (height - t) / 2.0],
+                    width - t,
+                    t,
+                    target,
+                    steel,
+                );
+                // リップ（y=±(H−C−t)/2）
+                mesh_rect(
+                    &mut fibers,
+                    [
+                        width - t / 2.0,
+                        height / 2.0 + ysign * (height - lip - t) / 2.0,
+                    ],
+                    t,
+                    lip - t,
+                    target,
+                    steel,
+                );
+            }
+        }
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            upper_thick,
+            lower_width,
+            lower_thick,
+            web_thick,
+        } => {
+            // 上下フランジ（幅が異なる）＋ウェブ。座標は後で図心補正。
+            let hw = (height - upper_thick - lower_thick).max(0.0);
+            mesh_rect(
+                &mut fibers,
+                [0.0, height - upper_thick / 2.0],
+                upper_width,
+                upper_thick,
+                target,
+                steel,
+            );
+            mesh_rect(
+                &mut fibers,
+                [0.0, lower_thick / 2.0],
+                lower_width,
+                lower_thick,
+                target,
+                steel,
+            );
+            mesh_rect(
+                &mut fibers,
+                [0.0, lower_thick + hw / 2.0],
+                web_thick,
+                hw,
+                target,
+                steel,
+            );
+        }
         SectionShape::RcRect { b, d, ref rebar } => {
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
             rebar_fibers_rect(
@@ -499,6 +593,8 @@ pub fn plastic_fibers(
         SectionShape::SteelAngle { .. }
             | SectionShape::SteelChannel { .. }
             | SectionShape::SteelTee { .. }
+            | SectionShape::SteelLipChannel { .. }
+            | SectionShape::SteelBuiltH { .. }
     ) {
         let a_sum: f64 = fibers.iter().map(|f| f.area).sum();
         if a_sum > 0.0 {
