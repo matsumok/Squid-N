@@ -1795,6 +1795,13 @@ impl App {
         slab: &squid_n_core::model::Slab,
         w: f64,
     ) -> Option<Vec<(NodeId, f64)>> {
+        // `distribute_slab_w` が小梁二段階伝達（点反力 Node＋境界 Edge）を採るスラブに
+        // 限定する。隅・片持ち・辺支持・非矩形・分配法が三角/一方向以外のスラブは
+        // 小梁が使われず全面積が Edge/隅集中で分配されるため、格子反力を上乗せすると
+        // 二重計上（または隅集中荷重の取りこぼし）になる。
+        if !squid_n_load::floor::uses_joist_distribution(&self.model, slab) {
+            return None;
+        }
         // 実部材化された小梁を含む場合は対象外（本体 FEM と二重計上を避ける）。
         let materialized = |a: NodeId, b: NodeId| -> bool {
             self.model.elements.iter().any(|e| {

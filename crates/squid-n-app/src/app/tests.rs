@@ -2339,6 +2339,17 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
             .is_none(),
         "実部材化小梁を含むスラブは格子荷重の対象外（None）"
     );
+
+    // 分配法が小梁二段階伝達（三角/一方向）でないスラブは、distribute_slab_w が
+    // 小梁点反力を出さず全面積を境界へ Edge 分配するため、格子反力を上乗せすると
+    // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
+    app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
+    app.model.slabs[0].method = DistributionMethod::TributaryArea;
+    assert!(
+        app.slab_grillage_node_reactions(&app.model.slabs[0], w)
+            .is_none(),
+        "分配法が三角/一方向でないスラブは格子荷重の対象外（二重計上回避）"
+    );
 }
 
 /// 床 Phase A-3: 用途を設定したスラブは地震用積載（LiveSeismic）ケースも同期され、
