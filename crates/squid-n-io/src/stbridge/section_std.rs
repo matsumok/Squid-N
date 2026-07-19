@@ -276,6 +276,37 @@ fn steel_figure(shape: &SectionShape) -> Option<(String, String)> {
             );
             Some(e(&name, body))
         }
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            upper_thick,
+            lower_width,
+            lower_thick,
+            web_thick,
+        } => {
+            let name = format!(
+                "BH-{}x{}x{}x{}x{}x{}",
+                num(height),
+                num(upper_width),
+                num(upper_thick),
+                num(lower_width),
+                num(lower_thick),
+                num(web_thick)
+            );
+            // 標準属性 A/B/t1/t2 は上フランジで表す（第三者は対称 H として読める）。
+            // 下フランジは方言属性 B2/t2_lower で持ち、Squid の完全往復を保証する。
+            let body = format!(
+                "<StbSecBuild-H name=\"{}\" type=\"H\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" B2=\"{}\" t2_lower=\"{}\"/>",
+                esc(&name),
+                num(height),
+                num(upper_width),
+                num(web_thick),
+                num(upper_thick),
+                num(lower_width),
+                num(lower_thick)
+            );
+            Some(e(&name, body))
+        }
         SectionShape::SteelLipChannel {
             height,
             width,

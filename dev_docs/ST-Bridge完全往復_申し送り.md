@@ -48,7 +48,14 @@ SteelFlatBar / SteelRoundBar / RcRect / RcCircle / SrcRect / CftBox / CftPipe / 
   「鋼 リップ溝形」を追加。冷間成形材の有効断面・局部座屈（有効幅法）は今後の課題で、
   幅厚比・部材ランク検定は対象外扱い。リップ Z 形・軽溝形等の他の軽量形鋼は未対応。
 - **組立断面**: 2L（抱き山形）・2C（抱き溝形）・十字形（cross-H）などの built-up
-- **非対称 H**（上下フランジ幅・厚が異なる `StbSecBuild-H`）。現 `SteelH` は左右上下対称前提。
+- **非対称 H**（上下フランジ幅・厚が異なる `StbSecBuild-H`）: ✅ **実装済み**。
+  `SteelBuiltH { height, upper_width, upper_thick, lower_width, lower_thick, web_thick }` として
+  上下フランジ＋ウェブの矩形分解＋平行軸で断面性能を算定（図心は Y 偏心）。上下同一なら
+  `SteelH` と一致。ST-Bridge は標準の非対称 H 断面要素が無いため、`StbSecBuild-H` に標準
+  `A/B/t1/t2`（上フランジ）を書き、下フランジは方言属性 `B2`/`t2_lower` で持つ（Squid どうしは
+  完全往復。第三者は上フランジの対称 H として読む）。import は `B2`/`t2_lower` があれば非対称、
+  無ければ対称 `SteelH`。幅厚比・部材ランクは上下フランジ・ウェブの最悪値で検定。断面エディタ
+  にも「鋼 非対称組立H形」を追加。塑性断面係数 Zp（非対称の塑性中立軸）は今後の課題。
 - **RC の T 形・L 形梁**（スラブ一体のフランジ付き断面）、テーパ/ハンチ断面。
   ハンチは `member_detail_attrs` に一部あるが、断面図形としての表現は無い。
 

@@ -1,7 +1,9 @@
 //! [`SectionShape`] の基本断面性能（A, Zp, Iy, Iz, J, 軸剛性用断面積）。
 
 use super::constants::N_S_EQ;
-use super::geometry::{angle_centroid, lip_channel_centroid_z, rect_torsion_j, tee_centroid};
+use super::geometry::{
+    angle_centroid, built_h_centroid_y, lip_channel_centroid_z, rect_torsion_j, tee_centroid,
+};
 use super::types::SectionShape;
 
 impl SectionShape {
@@ -50,6 +52,24 @@ impl SectionShape {
                 thick,
             } => {
                 let (_, area) = lip_channel_centroid_z(height, width, lip, thick);
+                area
+            }
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => {
+                let (_, area) = built_h_centroid_y(
+                    height,
+                    upper_width,
+                    upper_thick,
+                    lower_width,
+                    lower_thick,
+                    web_thick,
+                );
                 area
             }
             SectionShape::RcRect { b, d, .. } => b * d,
@@ -186,6 +206,35 @@ impl SectionShape {
                 let i_l = t * (lip - t).powi(3) / 12.0 + a_l * off_l.powi(2);
                 i_web + 2.0 * i_f + 2.0 * i_l
             }
+            // 非対称組立 H: 強軸（図心 y_bar まわり）。上下フランジ＋ウェブの平行軸。
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => {
+                let (y_bar, _) = built_h_centroid_y(
+                    height,
+                    upper_width,
+                    upper_thick,
+                    lower_width,
+                    lower_thick,
+                    web_thick,
+                );
+                let hw = (height - upper_thick - lower_thick).max(0.0);
+                let a_uf = upper_width * upper_thick;
+                let y_uf = height - upper_thick / 2.0;
+                let i_uf = upper_width * upper_thick.powi(3) / 12.0 + a_uf * (y_uf - y_bar).powi(2);
+                let a_lf = lower_width * lower_thick;
+                let y_lf = lower_thick / 2.0;
+                let i_lf = lower_width * lower_thick.powi(3) / 12.0 + a_lf * (y_lf - y_bar).powi(2);
+                let a_w = web_thick * hw;
+                let y_w = lower_thick + hw / 2.0;
+                let i_w = web_thick * hw.powi(3) / 12.0 + a_w * (y_w - y_bar).powi(2);
+                i_uf + i_lf + i_w
+            }
             SectionShape::RcRect { b, d, .. } => b * d.powi(3) / 12.0,
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 64.0,
             SectionShape::SrcRect {
@@ -311,6 +360,20 @@ impl SectionShape {
                 let i_l = (lip - t) * t.powi(3) / 12.0 + a_l * (z_l - z_bar).powi(2);
                 i_web + 2.0 * i_f + 2.0 * i_l
             }
+            // 非対称組立 H: 弱軸（z=0、左右対称なので各板の自己慣性のみ）。
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => {
+                let hw = (height - upper_thick - lower_thick).max(0.0);
+                upper_thick * upper_width.powi(3) / 12.0
+                    + lower_thick * lower_width.powi(3) / 12.0
+                    + hw * web_thick.powi(3) / 12.0
+            }
             SectionShape::RcRect { b, d, .. } => d * b.powi(3) / 12.0,
             SectionShape::RcCircle { .. } => self.calc_iy(),
             SectionShape::SrcRect {
@@ -403,6 +466,21 @@ impl SectionShape {
             } => {
                 let len = height + 2.0 * (width - thick) + 2.0 * (lip - thick);
                 len * thick.powi(3) / 3.0
+            }
+            // 非対称組立 H（開断面）: J = (1/3)Σ b·t³（各板）。
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => {
+                let hw = (height - upper_thick - lower_thick).max(0.0);
+                (upper_width * upper_thick.powi(3)
+                    + lower_width * lower_thick.powi(3)
+                    + hw * web_thick.powi(3))
+                    / 3.0
             }
             SectionShape::RcRect { b, d, .. } => rect_torsion_j(b, d),
             SectionShape::RcCircle { d, .. } => std::f64::consts::PI * d.powi(4) / 32.0,

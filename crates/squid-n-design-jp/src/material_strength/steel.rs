@@ -111,6 +111,12 @@ pub fn plate_thickness(sec: &Section) -> f64 {
             | SectionShape::CftPipe { thick, .. } => return thick,
             // 中実丸鋼は板要素ではないため、板厚区分は全断面の径で判定する。
             SectionShape::SteelRoundBar { dia } => return dia,
+            SectionShape::SteelBuiltH {
+                web_thick,
+                upper_thick,
+                lower_thick,
+                ..
+            } => return web_thick.max(upper_thick).max(lower_thick),
             SectionShape::SrcRect {
                 steel_web_thick,
                 steel_flange_thick,

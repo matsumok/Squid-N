@@ -266,6 +266,36 @@ pub fn s_member_rank_by_kihon(
             let web_rank = rank_from_limits(web_wt, &h_web_limits(member_use, web_is_490));
             worst_rank(&[flange_rank, web_rank])
         }
+        // 非対称組立 H: 上下フランジ（幅・厚が異なる）とウェブの各幅厚比ランクの最悪値。
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            upper_thick,
+            lower_width,
+            lower_thick,
+            web_thick,
+        } => {
+            if upper_thick <= 0.0 || lower_thick <= 0.0 || web_thick <= 0.0 {
+                return None;
+            }
+            let web_clear = height - upper_thick - lower_thick;
+            if web_clear < 0.0 {
+                return None;
+            }
+            let uf_rank = rank_from_limits(
+                (upper_width / 2.0) / upper_thick,
+                &h_flange_limits(member_use, is_490_class(grade_name, upper_thick)),
+            );
+            let lf_rank = rank_from_limits(
+                (lower_width / 2.0) / lower_thick,
+                &h_flange_limits(member_use, is_490_class(grade_name, lower_thick)),
+            );
+            let web_rank = rank_from_limits(
+                web_clear / web_thick,
+                &h_web_limits(member_use, is_490_class(grade_name, web_thick)),
+            );
+            worst_rank(&[uf_rank, lf_rank, web_rank])
+        }
         SectionShape::SteelBox { height, thick, .. }
         | SectionShape::CftBox { height, thick, .. } => {
             if thick <= 0.0 {

@@ -64,6 +64,36 @@ pub(crate) fn lip_channel_centroid_z(height: f64, width: f64, lip: f64, thick: f
     (z_bar, a_total)
 }
 
+/// 非対称組立 H 形鋼（上下フランジの幅・厚が異なる welded H）の図心 y と断面積。
+///
+/// せい `height`（H, 外〜外）・上フランジ `upper_width`×`upper_thick`・下フランジ
+/// `lower_width`×`lower_thick`・ウェブ厚 `web_thick`。上下フランジ＋ウェブの 3 枚へ
+/// 分解する。左右対称（フランジはウェブ中心）のため図心 z=0。戻り値 `(y_bar, area)`
+/// （y は下フランジ下端 y=0 起点）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn built_h_centroid_y(
+    height: f64,
+    upper_width: f64,
+    upper_thick: f64,
+    lower_width: f64,
+    lower_thick: f64,
+    web_thick: f64,
+) -> (f64, f64) {
+    let hw = (height - upper_thick - lower_thick).max(0.0);
+    let a_uf = upper_width * upper_thick;
+    let a_lf = lower_width * lower_thick;
+    let a_w = web_thick * hw;
+    let a_total = a_uf + a_lf + a_w;
+    if a_total < 1e-30 {
+        return (0.0, 0.0);
+    }
+    let y_uf = height - upper_thick / 2.0;
+    let y_lf = lower_thick / 2.0;
+    let y_w = lower_thick + hw / 2.0;
+    let y_bar = (a_uf * y_uf + a_lf * y_lf + a_w * y_w) / a_total;
+    (y_bar, a_total)
+}
+
 pub(crate) fn tee_centroid(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> f64 {
     let a_f = width * flange_thick;
     let a_w = (height - flange_thick) * web_thick;

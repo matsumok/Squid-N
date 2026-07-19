@@ -1148,6 +1148,70 @@ mod tests {
         assert!(m.sections[0].area > 0.0);
     }
 
+    /// 標準モード: 非対称組立 H が `StbSecBuild-H`（下フランジ方言属性付き）として往復する。
+    #[test]
+    fn test_standard_roundtrip_built_h() {
+        let mut m = frame_nodes();
+        let shape = SectionShape::SteelBuiltH {
+            height: 500.0,
+            upper_width: 150.0,
+            upper_thick: 9.0,
+            lower_width: 300.0,
+            lower_thick: 19.0,
+            web_thick: 9.0,
+        };
+        m.sections
+            .push(shape.to_section(SectionId(0), "BH1".into()));
+        m.elements.push(member(0, true, 0)); // 柱
+
+        let xml = export_stbridge_with(&m, SectionExportMode::Standard).unwrap();
+        assert!(
+            xml.contains("<StbSecBuild-H "),
+            "組立 H の形鋼ライブラリ: {xml}"
+        );
+        assert!(xml.contains("B2="), "下フランジの方言属性が付く");
+        let back = import_stbridge(&xml).expect("import");
+        assert!(back.validate().is_ok(), "{:?}", back.validate());
+        assert_eq!(
+            back.sections[0].shape, m.sections[0].shape,
+            "非対称組立 H が完全往復"
+        );
+    }
+
+    /// import: `StbSecBuild-H`（下フランジ属性なし＝第三者の対称 H）は `SteelH` として読む。
+    #[test]
+    fn test_import_symmetric_build_h_is_steel_h() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="0" name="BH">
+      <StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="BH-400"/></StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecSteel>
+      <StbSecBuild-H name="BH-400" A="400" B="200" t1="8" t2="12"/>
+    </StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let m = import_stbridge(xml).expect("import");
+        assert_eq!(
+            m.sections[0].shape,
+            Some(SectionShape::SteelH {
+                height: 400.0,
+                width: 200.0,
+                web_thick: 8.0,
+                flange_thick: 12.0
+            }),
+            "下フランジ属性が無ければ対称 H"
+        );
+    }
+
     /// 標準モード: CFT 角形柱が `StbSecColumn_CFT`＋形鋼ライブラリとして往復する。
     #[test]
     fn test_standard_roundtrip_cft_box() {

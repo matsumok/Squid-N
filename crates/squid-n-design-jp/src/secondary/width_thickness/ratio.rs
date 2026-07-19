@@ -47,6 +47,20 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
             let wi = ratio(width - 2.0 * thick, thick)?;
             Some(hi.max(wi))
         }
+        // 非対称組立 H: 上下フランジ・ウェブの各幅厚比の最大値。
+        SectionShape::SteelBuiltH {
+            height,
+            upper_width,
+            upper_thick,
+            lower_width,
+            lower_thick,
+            web_thick,
+        } => {
+            let uf = ratio(upper_width, 2.0 * upper_thick)?;
+            let lf = ratio(lower_width, 2.0 * lower_thick)?;
+            let web = ratio(height - upper_thick - lower_thick, web_thick)?;
+            Some(uf.max(lf).max(web))
+        }
         SectionShape::SteelChannel {
             height,
             width,

@@ -100,6 +100,13 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
                 flange_thick,
                 ..
             } => return (ShapeCategory::H, flange_thick, web_thick),
+            // 非対称組立 H は H 系として扱う。フランジ厚は薄い方（幅厚比が厳しい側）を代表とする。
+            SectionShape::SteelBuiltH {
+                web_thick,
+                upper_thick,
+                lower_thick,
+                ..
+            } => return (ShapeCategory::H, upper_thick.min(lower_thick), web_thick),
             SectionShape::SteelBox { thick, .. } => return (ShapeCategory::Box, thick, thick),
             SectionShape::SteelPipe { thick, .. } => return (ShapeCategory::Pipe, thick, thick),
             SectionShape::SteelChannel {

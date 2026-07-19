@@ -1314,12 +1314,29 @@ fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionSha
     // 形鋼の寸法属性は A(せい/長辺)・B(幅/短辺)・t1(ウェブ)・t2(フランジ) を基本とする。
     let a_ = |keys: &[&str]| get_f64_any(a, keys).ok();
     match tag {
-        t if t.ends_with("-H") => Some(SectionShape::SteelH {
-            height: a_(&["A"])?,
-            width: a_(&["B"])?,
-            web_thick: a_(&["t1"])?,
-            flange_thick: a_(&["t2"])?,
-        }),
+        t if t.ends_with("-H") => {
+            let height = a_(&["A"])?;
+            let web_thick = a_(&["t1"])?;
+            let upper_width = a_(&["B"])?;
+            let upper_thick = a_(&["t2"])?;
+            // 下フランジの方言属性があれば非対称組立 H、無ければ対称 H。
+            match (a_(&["B2", "B_lower"]), a_(&["t2_lower", "t2_2"])) {
+                (Some(lower_width), Some(lower_thick)) => Some(SectionShape::SteelBuiltH {
+                    height,
+                    upper_width,
+                    upper_thick,
+                    lower_width,
+                    lower_thick,
+                    web_thick,
+                }),
+                _ => Some(SectionShape::SteelH {
+                    height,
+                    width: upper_width,
+                    web_thick,
+                    flange_thick: upper_thick,
+                }),
+            }
+        }
         t if t.ends_with("-BOX") => {
             let thick = a_(&["t", "t1"])?;
             Some(SectionShape::SteelBox {

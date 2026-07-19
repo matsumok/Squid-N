@@ -105,6 +105,20 @@ impl SectionShape {
                 2.0 * (width - thick) * thick,
                 h_web_shear_area(height, thick),
             ),
+            // 非対称組立 H（H 形と同規約）: 強軸せん断はウェブ、弱軸は上下フランジが負担。
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => (
+                height,
+                upper_width.max(lower_width),
+                upper_width * upper_thick + lower_width * lower_thick,
+                h_web_shear_area(height, web_thick),
+            ),
             SectionShape::RcRect { b, d, .. } => (d, b, b * d / KAPPA_RC, b * d / KAPPA_RC),
             SectionShape::RcCircle { d, .. } => (d, d, area / KAPPA_RC, area / KAPPA_RC),
             SectionShape::SrcRect {

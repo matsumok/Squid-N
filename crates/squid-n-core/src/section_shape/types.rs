@@ -87,6 +87,20 @@ pub enum SectionShape {
     ///
     /// `dia`: 直径 D [mm]。断面性能は中実円として算定する。
     SteelRoundBar { dia: f64 },
+    /// Steel welded built-up H with unequal flanges (非対称組立 H 形鋼). `StbSecBuild-H`。
+    ///
+    /// 上下フランジの幅・厚が異なる溶接組立断面。`height`: せい H（外〜外）、
+    /// `upper_width`/`upper_thick`: 上フランジ、`lower_width`/`lower_thick`: 下フランジ、
+    /// `web_thick`: ウェブ厚。上下フランジ＋ウェブの矩形分解＋平行軸で断面性能を算定する
+    /// （図心は Y 方向に偏心。左右対称）。上下同一寸法なら通常の `SteelH` と等価。
+    SteelBuiltH {
+        height: f64,
+        upper_width: f64,
+        upper_thick: f64,
+        lower_width: f64,
+        lower_thick: f64,
+        web_thick: f64,
+    },
     /// Steel cold-formed lipped channel (リップ溝形鋼). `StbSecRoll-LipC`。
     ///
     /// `height`: せい H [mm]（Y 方向）、`width`: フランジ幅 B [mm]（Z 方向。ウェブ外面〜
