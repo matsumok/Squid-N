@@ -19,7 +19,7 @@ use squid_n_math::sparse::sparse_matvec;
 
 /// 線形時刻歴応答解析（HHT-α 法、基盤一様加振）。
 ///
-/// β=0.25, γ=0.5（平均加速度法）で固定。
+/// Newmark パラメータは α に依存する: γ=1/2−α, β=(1−α)²/4（HHT 1977）。
 /// `initial_disp`/`initial_vel` は縮約空間（n_indep 長）の初期値。
 /// `hht.dt == 0.0` のときは `wave.dt` を採用する。
 /// α=0 で標準 Newmark-β（平均加速度法）に一致。
@@ -81,9 +81,13 @@ pub fn linear_hht_alpha_analysis(
     // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
     let m_r_theta = theta_influence_m(model, dofmap, &m_free);
 
-    // HHT-α は β=0.25, γ=0.5 で固定（平均加速度法ベース）
-    let beta = 0.25;
-    let gamma = 0.5;
+    // HHT-α の Newmark パラメータは α に依存する（Hilber-Hughes-Taylor 1977）:
+    //   γ = 1/2 − α,  β = (1 − α)²/4    （α ∈ [−1/3, 0]）
+    // これにより 2 次精度と高振動数モードの制御された数値減衰が得られる。
+    // 従来は α によらず β=0.25, γ=0.5 固定で、α≠0 でも減衰が付かず精度も 1 次に
+    // 落ちていた。α=0 では γ=0.5, β=0.25（平均加速度 Newmark）に一致する。
+    let gamma = 0.5 - alpha;
+    let beta = 0.25 * (1.0 - alpha) * (1.0 - alpha);
     let c1 = 1.0 / (beta * dt * dt);
     let c2 = gamma / (beta * dt);
     let c3 = 1.0 / (beta * dt);
@@ -163,6 +167,7 @@ pub fn linear_hht_alpha_analysis(
         c5,
         c6,
         alpha,
+        gamma,
         p_red_0,
         u,
         v,
@@ -193,6 +198,7 @@ fn run_steps_hht(
     c5: f64,
     c6: f64,
     alpha: f64,
+    gamma: f64,
     mut p_prev: Vec<f64>,
     mut u: Vec<f64>,
     mut v: Vec<f64>,
@@ -291,7 +297,7 @@ fn run_steps_hht(
         }
         let mut v_next = vec![0.0; n_indep];
         for i in 0..n_indep {
-            v_next[i] = v[i] + dt * ((1.0 - 0.5) * a[i] + 0.5 * a_next[i]);
+            v_next[i] = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_next[i]);
         }
 
         u = u_next;
