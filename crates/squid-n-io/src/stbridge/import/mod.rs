@@ -847,6 +847,22 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let story_index = build_index(raw_stories.iter().map(|s| s.file_id));
     let material_index = build_index(raw_materials.iter().map(|m| m.file_id));
 
+    // file id の一意性を検証する（fail-loud）。build_index は id を重複排除するが、
+    // raw_* は排除しないまま push されるため、重複 id があると model.nodes 等の
+    // 配列長が index 数を超え「配列添字 == id.index()」の不変条件が壊れ、部材が
+    // 別実体の節点/断面/材料を無言で参照する（ジオメトリ破損）。重複はエラーとする。
+    check_unique_ids("StbNode", raw_nodes.iter().map(|n| n.file_id), &node_index)?;
+    check_unique_ids(
+        "StbStory",
+        raw_stories.iter().map(|s| s.file_id),
+        &story_index,
+    )?;
+    check_unique_ids(
+        "StbMaterial/StbSecColumn_S ほか材料",
+        raw_materials.iter().map(|m| m.file_id),
+        &material_index,
+    )?;
+
     // 実 ST-Bridge の階所属（StbStory/StbNodeIdList）から file node id → file story id を作る。
     // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、無ければこの表を引く。
     let node_story_from_list: HashMap<u32, u32> = raw_stories
@@ -1183,6 +1199,24 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     }
 
     Ok((model, ImportReport { warnings }))
+}
+
+/// file id が一意であることを検証する（fail-loud）。要素数が重複排除後の
+/// index 数を超えていれば重複 id ありとしてエラーを返す。
+fn check_unique_ids(
+    kind: &str,
+    ids: impl Iterator<Item = u32>,
+    index: &HashMap<u32, u32>,
+) -> Result<(), StbError> {
+    let count = ids.count();
+    if count > index.len() {
+        return Err(StbError::Parse(format!(
+            "{kind} の file id が重複しています（{count} 要素に対し一意 id は {} 個）。\
+             id は一意である必要があります。",
+            index.len()
+        )));
+    }
+    Ok(())
 }
 
 /// file id の集合を昇順・重複排除して 0 始まり連番へ写像する（file id → 新 index）。

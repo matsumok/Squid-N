@@ -149,6 +149,51 @@ impl Reducer {
             }
         }
 
+        // 連鎖拘束の合成: あるスレーブ DOF のマスターがさらに別拘束のスレーブを
+        // 兼ねる場合（剛床スレーブが剛リンク/MPC のマスターを兼ねる等）、各従属行を
+        // 独立 DOF のみで表すよう推移的に代入する。従来は未合成で、被参照の従属 DOF に
+        // 偽の独立番号が割り当てられ、連鎖側の拘束が無言で破れていた。非連鎖の通常
+        // ケースでは 1 パスで変化なし（既存挙動と一致）。
+        fn merge(row: &mut Vec<(usize, f64)>, idx: usize, coef: f64) {
+            if let Some(e) = row.iter_mut().find(|(j, _)| *j == idx) {
+                e.1 += coef;
+            } else {
+                row.push((idx, coef));
+            }
+        }
+        // 非巡回な拘束連鎖は連鎖長回で収束する。上限はサイクル入力への安全弁。
+        let max_pass = t_rows.len() + 1;
+        for _ in 0..max_pass {
+            let mut changed = false;
+            for i in 0..t_rows.len() {
+                if is_indep[i] {
+                    continue;
+                }
+                // 従属 DOF（自己以外）を参照している行のみ展開する。
+                if t_rows[i].iter().any(|&(j, _)| j != i && !is_indep[j]) {
+                    let old = std::mem::take(&mut t_rows[i]);
+                    let mut newrow: Vec<(usize, f64)> = Vec::new();
+                    for (j, c) in old {
+                        if is_indep[j] || j == i {
+                            merge(&mut newrow, j, c);
+                        } else {
+                            // マスター j 自身が従属 → その行を係数 c 倍で代入。
+                            let sub = t_rows[j].clone();
+                            for (k, ck) in sub {
+                                merge(&mut newrow, k, c * ck);
+                            }
+                        }
+                    }
+                    newrow.retain(|&(_, c)| c.abs() > 1e-15);
+                    t_rows[i] = newrow;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
         let mut new_indep = vec![usize::MAX; t_rows.len()];
         let mut counter = 0usize;
         for i in 0..t_rows.len() {
@@ -451,5 +496,53 @@ mod tests {
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         assert!(reducer.n_indep < reducer.n_free);
+    }
+
+    /// 連鎖拘束（スレーブのマスターがさらに別拘束のスレーブ）の合成を検証する。
+    /// node1.Ux = node0.Ux（MPC）、node2.Ux = node1.Ux（MPC）の連鎖では、
+    /// node2.Ux は推移的に node0.Ux に一致しなければならない。従来は node2 が
+    /// node1 の従属自由度へ偽の独立番号で結び付き、連鎖が無言で破れていた。
+    #[test]
+    fn test_chained_mpc_constraints_compose_transitively() {
+        let mut model = make_3node_model();
+        model.nodes[0].restraint = Dof6Mask::FREE; // 3 節点とも自由に
+                                                   // node1.Ux = node0.Ux
+        model.constraints.push(Constraint::Mpc {
+            master: NodeId(1),
+            terms: vec![(NodeId(0), squid_n_core::dof::Dof::Ux, 1.0)],
+        });
+        // node2.Ux = node1.Ux（node1 は上の MPC のスレーブ＝連鎖）
+        model.constraints.push(Constraint::Mpc {
+            master: NodeId(2),
+            terms: vec![(NodeId(1), squid_n_core::dof::Dof::Ux, 1.0)],
+        });
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+
+        // 各ノードの Ux グローバル DOF = node_index * DOF_PER_NODE。
+        let a0 = dofmap.active(0).unwrap() as usize; // node0 Ux
+        let a1 = dofmap.active(DOF_PER_NODE).unwrap() as usize; // node1 Ux
+        let a2 = dofmap.active(2 * DOF_PER_NODE).unwrap() as usize; // node2 Ux
+
+        // node0.Ux は独立（行は自身への単位行）。その独立番号にだけ単位値を与える。
+        assert_eq!(reducer.t_rows[a0].len(), 1);
+        let idx0 = reducer.t_rows[a0][0].0;
+        let mut u_indep = vec![0.0; reducer.n_indep];
+        u_indep[idx0] = 1.0;
+        let u_free = reducer.expand_u(&u_indep);
+
+        assert!((u_free[a0] - 1.0).abs() < 1e-12, "node0.Ux={}", u_free[a0]);
+        assert!(
+            (u_free[a1] - 1.0).abs() < 1e-12,
+            "node1.Ux={} should follow node0",
+            u_free[a1]
+        );
+        assert!(
+            (u_free[a2] - 1.0).abs() < 1e-12,
+            "node2.Ux={} should follow node0 transitively",
+            u_free[a2]
+        );
+        // 連鎖で独立 DOF が 2 個（node1.Ux, node2.Ux）減る。
+        assert_eq!(reducer.n_indep, reducer.n_free - 2);
     }
 }

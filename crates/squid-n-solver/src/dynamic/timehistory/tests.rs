@@ -973,6 +973,66 @@ fn test_hht_alpha_sdof_free_vibration() {
     assert_eq!(result_hht.time.len(), n_steps + 1);
 }
 
+/// HHT-α が α<0 で高振動数（粗い Δt）モードに数値減衰を付与すること。
+/// 無減衰 SDOF 自由振動で、α=0（平均加速度・エネルギー保存）は振幅が保たれ、
+/// α=−0.1 は数値減衰で振幅が明確に減衰する。従来は β=0.25,γ=0.5 固定のため
+/// α≠0 でも意図した数値減衰が付かなかった（γ=1/2−α, β=(1−α)²/4 で修正）。
+#[test]
+fn test_hht_alpha_adds_numerical_dissipation() {
+    let model = sdof_model();
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    // 無減衰（h=0）で物理減衰を排し、数値減衰のみを見る。
+    let omega = (1000.0_f64 / 1.0).sqrt(); // ≈31.62 rad/s, T≈0.199s
+    let damping = Damping::StiffnessProportional {
+        h: 0.0,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+
+    // ωΔt≈0.63（粗め）で HHT の数値減衰が効く領域。100 周期程度回す。
+    let dt = 0.02;
+    let n_steps = 1000;
+    let wave = zero_wave(dt, n_steps);
+
+    // 終盤 20% の振幅（|node_disp| の最大）を代表振幅とする。
+    let late_amplitude = |alpha: f64| -> f64 {
+        let hht = HhtCfg { alpha, dt };
+        let r = linear_hht_alpha_analysis(
+            &model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &hht,
+            &damping,
+            &[1.0],
+            &[0.0],
+            false,
+        )
+        .expect("hht");
+        let nd = &r.history.node_disp;
+        assert!(!nd.is_empty(), "node_disp history should be recorded");
+        let start = nd.len() * 4 / 5;
+        nd[start..].iter().fold(0.0_f64, |m, &x| m.max(x.abs()))
+    };
+
+    let amp_conservative = late_amplitude(0.0);
+    let amp_dissipative = late_amplitude(-0.1);
+
+    // α=0（平均加速度）はエネルギー保存で終盤も振幅がほぼ保たれる。
+    assert!(
+        amp_conservative > 0.9,
+        "α=0 should conserve amplitude (average-acceleration): {amp_conservative}"
+    );
+    // α=−0.1 は数値減衰で終盤振幅が明確に低下する。
+    assert!(
+        amp_dissipative < 0.8 * amp_conservative,
+        "HHT-α (α=−0.1) should add numerical dissipation: \
+         late amplitude {amp_dissipative} vs α=0 {amp_conservative}"
+    );
+}
+
 /// Y 方向のみの加振（accel_x 全ゼロ、accel_y 正弦波）で記録方向が自動的に
 /// Y へ切り替わり（`record_dir_y == true`）、代表応答（`node_disp`）が
 /// 非ゼロになることを検証する。Y 方向にのみ自由度を持つ SDOF モデル

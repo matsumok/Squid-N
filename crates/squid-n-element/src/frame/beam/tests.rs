@@ -487,6 +487,86 @@ fn test_beam_torsion_stiffness() {
 }
 
 #[test]
+fn test_rigid_zone_preserves_rigid_body_rotation() {
+    // 剛域変換は剛体運動不変性を保たねばならない: 要素全体を剛体回転させると
+    // 可撓部にひずみは生じず、節点力はゼロでなければならない。
+    // 剛域腕の運動学 u_flex = u_node + θ×r（i端 r=+li·ex, j端 r=-lj·ex）より
+    // uy_i'=uy_i+li·rz_i, uz_i'=uz_i-li·ry_i, uy_j'=uy_j-lj·rz_j, uz_j'=uz_j+lj·ry_j。
+    // 従来はこの 4 項の符号がすべて逆で、剛体回転に対し偽の材端モーメント・
+    // せん断（~1e7 オーダ）を生じていた。
+    let mut beam = make_test_beam();
+    beam.j = 5.0e8; // ねじり剛性を与える（回転自由度の一般性確保）
+    beam.rigid = RigidZone {
+        length_i: 300.0,
+        length_j: 300.0,
+        ..Default::default()
+    };
+    let k = beam.local_stiffness();
+
+    // 局所 z 軸まわりに節点 i を中心とする剛体回転 θ:
+    // uy_j = θ·L、rz_i = rz_j = θ、その他 0。
+    let theta = 1.0; // 線形剛性なので大きさは任意（剛体モードは厳密に核）
+    let l = beam.length;
+    let u = [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        theta, // 節点 i
+        0.0,
+        theta * l,
+        0.0,
+        0.0,
+        0.0,
+        theta, // 節点 j
+    ];
+    // f = K·u（剛体回転なので ≈ 0 でなければならない）。
+    let mut fmax = 0.0_f64;
+    for i in 0..12 {
+        let mut fi = 0.0;
+        for j in 0..12 {
+            fi += k.get(i, j) * u[j];
+        }
+        fmax = fmax.max(fi.abs());
+    }
+    // 代表剛性スケール（曲げ対角）に対して十分小さいこと。
+    let scale = k.get(1, 1).abs().max(1.0);
+    assert!(
+        fmax / scale < 1e-9,
+        "rigid-body z-rotation must produce ~zero nodal force: fmax={fmax}, scale={scale}"
+    );
+
+    // 同様に局所 y 軸まわりの剛体回転（uz_j = -θ·L、ry_i=ry_j=θ）。
+    let u_y = [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        theta,
+        0.0, // 節点 i
+        0.0,
+        0.0,
+        -theta * l,
+        0.0,
+        theta,
+        0.0, // 節点 j
+    ];
+    let mut fmax_y = 0.0_f64;
+    for i in 0..12 {
+        let mut fi = 0.0;
+        for j in 0..12 {
+            fi += k.get(i, j) * u_y[j];
+        }
+        fmax_y = fmax_y.max(fi.abs());
+    }
+    assert!(
+        fmax_y / scale < 1e-9,
+        "rigid-body y-rotation must produce ~zero nodal force: fmax_y={fmax_y}, scale={scale}"
+    );
+}
+
+#[test]
 fn test_torsion_not_stiffened_by_rigid_zone() {
     // ねじりは剛域で増大させない（軸剛性と同じく節点間長 L 基準 GJ/L）。
     // 剛域を入れても剛性は GJ/l_flex ではなく GJ/L のまま。

@@ -199,8 +199,11 @@ pub fn lumped_mass_time_history(
             let v_tr: Vec<f64> = (0..n)
                 .map(|i| v_prev[i] + dt * ((1.0 - gamma) * a_prev[i] + gamma * a_tr[i]))
                 .collect();
-            // 減衰力 C·v、C=a1·K_t（三重対角）。C·v を層剛性から直接計算。
-            let cv = tridiag_stiffness_matvec(&kt, &v_tr, a1);
+            // 減衰力 C·v、C=a1·K_init（初期剛性比例・一定）。C·v を初期層剛性から
+            // 直接計算する。従来は接線剛性 kt を用いており、降伏で層剛性が低下すると
+            // 減衰も比例して失われる接線剛性比例減衰になっていた（docstring の
+            // 初期剛性比例 C=(2h/ω1)·K_init と不整合。非弾性応答を過大評価する非安全側）。
+            let cv = tridiag_stiffness_matvec(&k_init, &v_tr, a1);
             // 残差 r = p − M·a − C·v − f_int。
             let mut r = vec![0.0; n];
             let mut rnorm = 0.0;
@@ -213,7 +216,8 @@ pub fn lumped_mass_time_history(
                 break;
             }
             // 有効接線 Keff = c1·M + c2·C + K_t（三重対角）。
-            let (low, diag, up) = effective_tridiagonal(&mass, &kt, a1, c1, c2);
+            // 接線 K_t は kt、減衰 C=a1·K_init は初期剛性 k_init から組む。
+            let (low, diag, up) = effective_tridiagonal(&mass, &kt, &k_init, a1, c1, c2);
             let du = solve_tridiagonal(&low, &diag, &up, &r);
             for i in 0..n {
                 u_tr[i] += du[i];
@@ -295,10 +299,14 @@ fn tridiag_stiffness_matvec(kt: &[f64], x: &[f64], scale: f64) -> Vec<f64> {
     y
 }
 
-/// 有効接線 `Keff = c1·M + c2·(a1·K) + K` の三重対角成分（下・主・上）。
+/// 有効接線 `Keff = c1·M + c2·C + K_t` の三重対角成分（下・主・上）。
+/// 接線剛性 `kt` は復元力 K_t（係数 1）に、初期剛性 `k_damp`(=k_init) は
+/// 初期剛性比例減衰 `C=a1·K_init`（係数 c2）に用いる。両者は降伏後に異なる
+/// （従来は両方に kt を用いており接線剛性比例減衰になっていた）。
 fn effective_tridiagonal(
     mass: &[f64],
     kt: &[f64],
+    k_damp: &[f64],
     a1: f64,
     c1: f64,
     c2: f64,
@@ -307,16 +315,61 @@ fn effective_tridiagonal(
     let mut low = vec![0.0; n];
     let mut diag = vec![0.0; n];
     let mut up = vec![0.0; n];
-    // 剛性倍率: K 自身は係数 1、減衰 C=a1·K は係数 c2 → 合計 (1 + c2·a1)。
-    let ks = 1.0 + c2 * a1;
+    // 剛性倍率: 接線 K_t は係数 1、減衰 C=a1·K_init は係数 c2·a1。
+    let cd = c2 * a1;
     for i in 0..n {
-        let ki = kt[i];
-        let ki1 = if i + 1 < n { kt[i + 1] } else { 0.0 };
-        diag[i] = c1 * mass[i] + ks * (ki + ki1);
+        let kti = kt[i];
+        let kti1 = if i + 1 < n { kt[i + 1] } else { 0.0 };
+        let kdi = k_damp[i];
+        let kdi1 = if i + 1 < n { k_damp[i + 1] } else { 0.0 };
+        diag[i] = c1 * mass[i] + (kti + kti1) + cd * (kdi + kdi1);
         if i + 1 < n {
-            up[i] = -ks * ki1;
-            low[i + 1] = -ks * ki1;
+            let off = kti1 + cd * kdi1;
+            up[i] = -off;
+            low[i + 1] = -off;
         }
     }
     (low, diag, up)
+}
+
+#[cfg(test)]
+mod damping_tests {
+    use super::*;
+
+    /// 有効接線の減衰項は初期剛性 k_init から組む（接線 kt ではない）。
+    /// 降伏後（kt ≪ k_init）で両者は大きく異なるため、分離を検証する。
+    #[test]
+    fn test_effective_tridiagonal_damping_uses_initial_stiffness() {
+        // 1 質点、降伏後: 接線 kt=1、初期 k_init=100。
+        let mass = [2.0];
+        let kt = [1.0];
+        let k_init = [100.0];
+        let (a1, c1, c2) = (0.1, 4.0, 2.0);
+        let cd = c2 * a1; // 0.2
+
+        let (_low, diag, _up) = effective_tridiagonal(&mass, &kt, &k_init, a1, c1, c2);
+        // Keff = c1·M + K_t + (c2·a1)·K_init = 8 + 1 + 0.2·100 = 29。
+        let expected = c1 * mass[0] + kt[0] + cd * k_init[0];
+        assert!(
+            (diag[0] - expected).abs() < 1e-12,
+            "diag={} expected={} (減衰は初期剛性ベース)",
+            diag[0],
+            expected
+        );
+        // 接線剛性でしか組まない旧実装は 8 + (1+c2·a1)·1 = 9.2 で明確に異なる。
+        let buggy = c1 * mass[0] + (1.0 + cd) * kt[0];
+        assert!((diag[0] - buggy).abs() > 10.0);
+    }
+
+    /// 減衰力 C·v も初期剛性から評価される（tridiag_stiffness_matvec の直接検証）。
+    #[test]
+    fn test_damping_force_matvec_scales_stiffness() {
+        // 2 質点 K=[1,1] の三重対角 [[2,-1],[-1,1]]·v をスケール a1 倍。
+        let k = [1.0, 1.0];
+        let v = [1.0, 0.0];
+        let a1 = 0.5;
+        let cv = tridiag_stiffness_matvec(&k, &v, a1);
+        // 行0: a1·((1+1)·1 − 1·0) = 0.5·2 = 1.0、行1: a1·(−1·1) = −0.5。
+        assert!((cv[0] - 1.0).abs() < 1e-12 && (cv[1] + 0.5).abs() < 1e-12);
+    }
 }

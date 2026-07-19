@@ -453,7 +453,11 @@ impl EditCommand for InsertMember {
         let mut elem = self.elem.clone();
         elem.id = id;
         model.elements.insert(self.index, elem);
-        for (lci, li, load) in &self.member_loads {
+        // 部材荷重は削除時に「縮んでいく配列でのインデックス」を昇順で記録している。
+        // 正しく復元するには逆順（最後に削除したものから）で挿入する必要がある。
+        // 従来は前方順に挿入しており、同一部材を参照する複数荷重の順序が入れ替わり、
+        // undo が削除前の状態を正確に復元できていなかった。
+        for (lci, li, load) in self.member_loads.iter().rev() {
             if let Some(lc) = model.load_cases.get_mut(*lci) {
                 let pos = (*li).min(lc.member.len());
                 lc.member.insert(pos, load.clone());
