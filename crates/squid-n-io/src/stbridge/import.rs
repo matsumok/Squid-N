@@ -125,6 +125,16 @@ struct RawSlab {
     boundary: Vec<u32>,
 }
 
+/// 取り込み途中の壁（節点参照は file id。`StbWall` + `StbNodeIdOrder`）。
+struct RawWall {
+    /// 断面参照（`id_section`。`StbSecWall_RC` の file id）。負値/未指定は `None`。
+    section_fid: Option<u32>,
+    /// 材料参照（`id_material`）。負値/未指定は `None`。
+    material_fid: Option<u32>,
+    /// 境界節点ループ（`StbNodeIdOrder`。file node id 列）。
+    boundary: Vec<u32>,
+}
+
 /// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
 enum RcGeom {
     Rect { b: f64, d: f64 },
@@ -167,6 +177,11 @@ enum CurSec {
         file_id: u32,
         thickness: Option<f64>,
     },
+    /// RC 壁断面（`StbSecWall_RC`）。子の図形要素から厚さを集める。
+    Wall {
+        file_id: u32,
+        thickness: Option<f64>,
+    },
 }
 
 /// 取り込み時に欠落・近似した内容の報告（データ欠損を顕在化させる）。
@@ -186,16 +201,14 @@ impl ImportReport {
 /// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に警告対象とするもの
 /// （構造ラッパ等は対象外。実データを欠落させる部材・断面のみ列挙する）。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
-    // 部材（面要素・基礎・開口。StbSlab は対応済み）
-    "StbWall",
+    // 部材（面要素・基礎・開口。StbSlab・StbWall は対応済み）
     "StbFooting",
     "StbPile",
     "StbFoundationColumn",
     "StbStripFooting",
     "StbParapet",
     "StbOpen",
-    // 断面（壁・スラブ・基礎・開口。鋼ブレース断面 StbSecBrace_S・StbSecSlab_RC は対応済み）
-    "StbSecWall_RC",
+    // 断面（基礎・開口。鋼ブレース断面 StbSecBrace_S・StbSecSlab_RC・StbSecWall_RC は対応済み）
     "StbSecSlab_S",
     "StbSecSlabDeck",
     "StbSecFoundation_RC",
@@ -237,10 +250,13 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     let mut pending_members: Vec<PendingMember> = Vec::new();
     let mut steel_lib: HashMap<String, SectionShape> = HashMap::new();
     let mut cur = CurSec::None;
-    // スラブ関連の中間状態。
+    // スラブ・壁関連の中間状態。
     let mut raw_slabs: Vec<RawSlab> = Vec::new();
     let mut slab_sec_thickness: HashMap<u32, f64> = HashMap::new();
     let mut cur_slab: Option<RawSlab> = None;
+    let mut raw_walls: Vec<RawWall> = Vec::new();
+    let mut wall_sec_thickness: HashMap<u32, f64> = HashMap::new();
+    let mut cur_wall: Option<RawWall> = None;
     let mut in_node_id_order = false;
 
     loop {
@@ -543,10 +559,42 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                                 .or(*thickness);
                         }
                     }
+                    // --- 壁断面（StbSecWall_RC）: 厚さを子要素から集める ---
+                    "StbSecWall_RC" => {
+                        cur = CurSec::Wall {
+                            file_id: get_u32(&a, "id")?,
+                            thickness: get_f64_any(&a, &["thickness", "t", "depth", "D"]).ok(),
+                        };
+                    }
+                    "StbSecWall_RC_Straight" | "StbSecFigureWall_RC" => {
+                        if let CurSec::Wall { thickness, .. } = &mut cur {
+                            *thickness = get_f64_any(&a, &["thickness", "t", "depth", "D"])
+                                .ok()
+                                .or(*thickness);
+                        }
+                    }
                     // --- スラブ（StbSlab）: 境界節点ループを StbNodeIdOrder から集める ---
                     "StbSlab" => {
+                        // 自己終了 <StbWall/> 等で残った兄弟状態をクリアし、境界ノードの
+                        // 取り違えを防ぐ（StbSlab/StbWall は入れ子にならない）。
+                        cur_wall = None;
                         cur_slab = Some(RawSlab {
                             section_fid: match get_i64(&a, "id_section") {
+                                Some(s) if s >= 0 => Some(s as u32),
+                                _ => None,
+                            },
+                            boundary: Vec::new(),
+                        });
+                    }
+                    // --- 壁（StbWall）: 境界節点ループを StbNodeIdOrder から集める ---
+                    "StbWall" => {
+                        cur_slab = None;
+                        cur_wall = Some(RawWall {
+                            section_fid: match get_i64(&a, "id_section") {
+                                Some(s) if s >= 0 => Some(s as u32),
+                                _ => None,
+                            },
+                            material_fid: match get_i64(&a, "id_material") {
                                 Some(s) if s >= 0 => Some(s as u32),
                                 _ => None,
                             },
@@ -557,9 +605,14 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                         in_node_id_order = true;
                     }
                     // 節点ループを子要素形式（<StbNodeId id="…"/>）で持つ方言に対応。
+                    // スラブ・壁のうち現在開いている方の境界へ追加する。
                     "StbNodeId" => {
-                        if let (Some(slab), Ok(id)) = (cur_slab.as_mut(), get_u32(&a, "id")) {
-                            slab.boundary.push(id);
+                        if let Ok(id) = get_u32(&a, "id") {
+                            if let Some(slab) = cur_slab.as_mut() {
+                                slab.boundary.push(id);
+                            } else if let Some(wall) = cur_wall.as_mut() {
+                                wall.boundary.push(id);
+                            }
                         }
                     }
                     // 未対応の部材・断面（壁・基礎等）はデータ欠落として集計する。
@@ -678,12 +731,26 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             slab_sec_thickness.insert(file_id, t);
                         }
                     }
+                    "StbSecWall_RC" => {
+                        if let CurSec::Wall {
+                            file_id,
+                            thickness: Some(t),
+                        } = std::mem::replace(&mut cur, CurSec::None)
+                        {
+                            wall_sec_thickness.insert(file_id, t);
+                        }
+                    }
                     "StbNodeIdOrder" => {
                         in_node_id_order = false;
                     }
                     "StbSlab" => {
                         if let Some(slab) = cur_slab.take() {
                             raw_slabs.push(slab);
+                        }
+                    }
+                    "StbWall" => {
+                        if let Some(wall) = cur_wall.take() {
+                            raw_walls.push(wall);
                         }
                     }
                     _ => {}
@@ -693,13 +760,21 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             // 節点 id は数字と空白のみで XML 実体参照を含まないため、そのまま UTF-8
             // 解釈でよい。CDATA 形式（<![CDATA[0 1 2 3]]>）にも対応する。
             Event::Text(t) if in_node_id_order => {
-                if let Some(slab) = cur_slab.as_mut() {
-                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), slab);
+                let boundary = cur_slab
+                    .as_mut()
+                    .map(|s| &mut s.boundary)
+                    .or(cur_wall.as_mut().map(|w| &mut w.boundary));
+                if let Some(b) = boundary {
+                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), b);
                 }
             }
             Event::CData(t) if in_node_id_order => {
-                if let Some(slab) = cur_slab.as_mut() {
-                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), slab);
+                let boundary = cur_slab
+                    .as_mut()
+                    .map(|s| &mut s.boundary)
+                    .or(cur_wall.as_mut().map(|w| &mut w.boundary));
+                if let Some(b) = boundary {
+                    push_node_id_tokens(&String::from_utf8_lossy(t.as_ref()), b);
                 }
             }
             _ => {}
@@ -907,6 +982,79 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     if skipped_slabs > 0 {
         warnings.push(format!(
             "境界節点が解決できない、または頂点数が不足するスラブを {skipped_slabs} 件スキップしました"
+        ));
+    }
+
+    // 壁（StbWall）。境界節点を正規化し、壁要素（ElementKind::Wall）として取り込む。
+    // 厚さ（StbSecWall_RC）は t>0 のとき厚さ専用の Section を末尾に追加して参照する
+    // （壁自重は section.thickness を用いるため）。3頂点未満・存在しない節点を含む壁は
+    // スキップして報告する。
+    let mut skipped_walls = 0u32;
+    for rw in raw_walls {
+        let mut boundary: smallvec::SmallVec<[NodeId; 8]> =
+            smallvec::SmallVec::with_capacity(rw.boundary.len());
+        let mut resolved = true;
+        for fid in &rw.boundary {
+            match node_index.get(fid) {
+                Some(&ni) => boundary.push(NodeId(ni)),
+                None => {
+                    resolved = false;
+                    break;
+                }
+            }
+        }
+        if !resolved || boundary.len() < 3 {
+            skipped_walls += 1;
+            continue;
+        }
+        // 厚さ >0 のときのみ厚さ専用断面を作成して参照する。
+        let section = rw
+            .section_fid
+            .and_then(|fid| wall_sec_thickness.get(&fid).copied())
+            .filter(|t| *t > 0.0)
+            .map(|t| {
+                let sid = SectionId(model.sections.len() as u32);
+                model.sections.push(Section {
+                    id: sid,
+                    name: format!("Wall t{}", t),
+                    area: 0.0,
+                    iy: 0.0,
+                    iz: 0.0,
+                    j: 0.0,
+                    depth: 0.0,
+                    width: 0.0,
+                    as_y: 0.0,
+                    as_z: 0.0,
+                    panel_thickness: None,
+                    thickness: Some(t),
+                    shape: None,
+                });
+                sid
+            });
+        let material = rw
+            .material_fid
+            .and_then(|fid| material_index.get(&fid).copied())
+            .map(MaterialId);
+        let id = ElemId(model.elements.len() as u32);
+        model.elements.push(ElementData {
+            id,
+            kind: ElementKind::Wall,
+            nodes: boundary,
+            section,
+            material,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    if skipped_walls > 0 {
+        warnings.push(format!(
+            "境界節点が解決できない、または頂点数が不足する壁を {skipped_walls} 件スキップしました"
         ));
     }
 
@@ -1325,11 +1473,11 @@ fn make_member(
 }
 
 /// `StbNodeIdOrder` の内容文字列（空白区切りの節点 id 列）を解析し、
-/// 数値として読める token を境界へ追加する（`RawSlab.boundary`）。
-fn push_node_id_tokens(text: &str, slab: &mut RawSlab) {
+/// 数値として読める token を境界（`boundary`）へ追加する（スラブ・壁共用）。
+fn push_node_id_tokens(text: &str, boundary: &mut Vec<u32>) {
     for tok in text.split_whitespace() {
         if let Ok(id) = tok.parse::<u32>() {
-            slab.boundary.push(id);
+            boundary.push(id);
         }
     }
 }

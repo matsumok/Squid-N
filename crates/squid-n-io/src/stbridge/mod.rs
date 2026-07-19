@@ -1228,7 +1228,7 @@ mod tests {
         );
     }
 
-    /// 未対応要素（壁・基礎）は警告として報告され、無言で欠落しない。
+    /// 未対応要素（基礎・杭）は警告として報告され、無言で欠落しない。
     #[test]
     fn test_import_report_lists_unsupported_elements() {
         let xml = r#"<?xml version="1.0"?>
@@ -1239,8 +1239,8 @@ mod tests {
   </StbNodes>
   <StbMembers>
     <StbColumn id="0" id_node_bottom="0" id_node_top="1"/>
-    <StbWall id="1" name="W1"/>
-    <StbWall id="2" name="W2"/>
+    <StbFooting id="1" name="F1"/>
+    <StbFooting id="2" name="F2"/>
   </StbMembers>
 </StbModel></ST_BRIDGE>"#;
         let (m, report) = import_stbridge_with_report(xml).expect("import");
@@ -1248,7 +1248,10 @@ mod tests {
         assert_eq!(m.elements.len(), 1, "対応する柱のみ取り込む");
         assert!(!report.is_clean());
         let joined = report.warnings.join(" | ");
-        assert!(joined.contains("StbWall×2"), "壁2件の欠落を報告: {joined}");
+        assert!(
+            joined.contains("StbFooting×2"),
+            "基礎2件の欠落を報告: {joined}"
+        );
     }
 
     /// StbSlab（境界節点ループ StbNodeIdOrder）と StbSecSlab_RC（厚さ）を取り込む。
@@ -1343,6 +1346,160 @@ mod tests {
             vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             "自己終了タグ後の無関係テキストを取り込まない"
         );
+    }
+
+    /// StbWall（境界節点ループ）と StbSecWall_RC（厚さ）を壁要素として取り込む。
+    #[test]
+    fn test_import_wall_with_node_order_and_thickness() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="0" Z="3000"/>
+    <StbNode id="3" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecWall_RC id="9" name="W1">
+      <StbSecFigureWall_RC>
+        <StbSecWall_RC_Straight thickness="200"/>
+      </StbSecFigureWall_RC>
+    </StbSecWall_RC>
+  </StbSections>
+  <StbMembers>
+    <StbWall id="0" name="W1" id_section="9" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbWall>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        let walls: Vec<_> = m
+            .elements
+            .iter()
+            .filter(|e| e.kind == squid_n_core::model::ElementKind::Wall)
+            .collect();
+        assert_eq!(walls.len(), 1, "壁を1件取り込む");
+        let w = walls[0];
+        assert_eq!(
+            w.nodes.as_slice(),
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            "境界節点ループが順序どおり"
+        );
+        let sec = w.section.and_then(|s| m.sections.get(s.index()));
+        assert_eq!(
+            sec.and_then(|s| s.thickness),
+            Some(200.0),
+            "壁断面の厚さを解決"
+        );
+        assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
+    }
+
+    /// 自己終了 <StbSlab/> の後の StbWall の節点ループが、陳腐化したスラブ状態に
+    /// 取り込まれず正しく壁へ入ること（レビュー指摘の回帰テスト）。
+    #[test]
+    fn test_self_closing_slab_does_not_steal_wall_nodes() {
+        let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="0" Z="3000"/>
+    <StbNode id="3" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMembers>
+    <StbSlab id="0" name="S0" id_section="1"/>
+    <StbWall id="1" name="W1" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbWall>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+        let (m, _report) = import_stbridge_with_report(xml).expect("import");
+        assert!(m.validate().is_ok(), "{:?}", m.validate());
+        let walls: Vec<_> = m
+            .elements
+            .iter()
+            .filter(|e| e.kind == squid_n_core::model::ElementKind::Wall)
+            .collect();
+        assert_eq!(walls.len(), 1, "壁が取り込まれる（節点を横取りされない）");
+        assert_eq!(
+            walls[0].nodes.as_slice(),
+            &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        );
+    }
+
+    /// 壁（境界＋厚さ）を含むモデルが export→import で往復すること。
+    #[test]
+    fn test_wall_roundtrip_export_import() {
+        use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
+        let mut model = Model::default();
+        for (i, (x, z)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
+            .into_iter()
+            .enumerate()
+        {
+            model.nodes.push(squid_n_core::model::Node {
+                id: NodeId(i as u32),
+                coord: [x, 0.0, z],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+            });
+        }
+        // 厚さ 250 の壁断面と、それを参照する壁要素。
+        model.sections.push(squid_n_core::model::Section {
+            id: SectionId(0),
+            name: "W".into(),
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: Some(250.0),
+            shape: None,
+        });
+        model.elements.push(ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        for mode in [SectionExportMode::Raw, SectionExportMode::Standard] {
+            let xml = export_stbridge_with(&model, mode).expect("export");
+            let (m2, _report) = import_stbridge_with_report(&xml).expect("import");
+            assert!(m2.validate().is_ok(), "{mode:?}: {:?}", m2.validate());
+            let walls: Vec<_> = m2
+                .elements
+                .iter()
+                .filter(|e| e.kind == ElementKind::Wall)
+                .collect();
+            assert_eq!(walls.len(), 1, "{mode:?}: 壁1件");
+            assert_eq!(
+                walls[0].nodes.as_slice(),
+                &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                "{mode:?}: 境界が往復"
+            );
+            let t = walls[0].section.and_then(|s| m2.sections.get(s.index()));
+            assert_eq!(
+                t.and_then(|s| s.thickness),
+                Some(250.0),
+                "{mode:?}: 厚さが往復"
+            );
+        }
     }
 
     /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。

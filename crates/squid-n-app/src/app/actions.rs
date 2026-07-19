@@ -1612,10 +1612,156 @@ impl App {
             &mf_slices,
             self.design_term == LoadTerm::Long,
         ));
+        // 床の中での小梁・スラブ設計（全体 FEM から独立。小梁は大梁を分割しない）。
+        let (joist_checks, slab_checks) = self.floor_design_checks();
+
         if let Some(bundle) = self.results.as_mut() {
             bundle.checks = checks;
             bundle.joint_checks = joint_checks;
+            bundle.joist_checks = joist_checks;
+            bundle.slab_checks = slab_checks;
         }
+    }
+
+    /// 床の中での小梁・スラブ設計を算定する（`run_design_check` から呼ぶ）。
+    ///
+    /// - 小梁: 支持2節点間を単純支持梁とし、床用積載（令85条1項の床用）＋固定荷重の
+    ///   等分布 w·spacing で曲げ・たわみを検定する。反力は大梁へ CMQ として伝達する
+    ///   前提のため、小梁は大梁を分割しない。実部材化された小梁（支持間に実 Beam が
+    ///   存在）は全体 FEM で検定するため対象外。断面未割当の小梁もスキップする。
+    /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
+    ///   必要鉄筋量を算定する（鋼小梁・SD295 鉄筋の既定値を用いる）。
+    pub(crate) fn floor_design_checks(
+        &self,
+    ) -> (Vec<crate::app::JoistCheck>, Vec<crate::app::SlabCheck>) {
+        use squid_n_core::model::LoadPurpose;
+        use squid_n_design_jp::floor as fd;
+
+        let mut joist_checks = Vec::new();
+        let mut slab_checks = Vec::new();
+
+        let beam_between = |a: NodeId, b: NodeId| -> bool {
+            self.model.elements.iter().any(|e| {
+                e.kind == squid_n_core::model::ElementKind::Beam
+                    && e.nodes.len() == 2
+                    && ((e.nodes[0] == a && e.nodes[1] == b)
+                        || (e.nodes[0] == b && e.nodes[1] == a))
+            })
+        };
+
+        for slab in &self.model.slabs {
+            // 床設計は床用積載（最大）＋固定荷重を用いる。
+            let w = slab.intensity(LoadPurpose::Floor);
+
+            let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
+            let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
+                let sec = self.model.sections.get(sid.index())?;
+                // 強軸断面係数 Z = Iy / (depth/2)。
+                Some(if sec.depth > 0.0 {
+                    sec.iy / (sec.depth / 2.0)
+                } else {
+                    0.0
+                })
+            };
+
+            // --- 小梁: 交差があれば床格子サブモデル（二方向）で、無ければ単純支持梁で検定 ---
+            let grillage = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)
+                .and_then(|g| {
+                    crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
+                        .ok()
+                        .map(|sol| (g, sol))
+                });
+            if let Some((g, sol)) = grillage {
+                // 格子 FEM の部材力・たわみで各小梁を検定（十字梁の二方向挙動を反映）。
+                for (jidx, span, m, q, defl) in crate::floor_grillage::joist_design_forces(&g, &sol)
+                {
+                    let Some(j) = slab.joists.get(jidx) else {
+                        continue;
+                    };
+                    let Some(sid) = j.section else { continue };
+                    let Some(z) = z_of(sid) else { continue };
+                    let r = fd::design_joist_from_forces(
+                        span,
+                        w * j.spacing,
+                        m,
+                        q,
+                        defl,
+                        z,
+                        sigma_allow,
+                        fd::DEFLECTION_LIMIT_DENOM,
+                    );
+                    joist_checks.push((slab.id, jidx, r));
+                }
+            } else {
+                // 交差なし: 各小梁を独立した単純支持梁として検定。
+                for (ji, j) in slab.joists.iter().enumerate() {
+                    let (a, b) = (j.support[0], j.support[1]);
+                    if a == b || beam_between(a, b) {
+                        // 実部材化済み or 退化した小梁は床設計の対象外。
+                        continue;
+                    }
+                    let Some(sid) = j.section else { continue };
+                    let Some(z) = z_of(sid) else { continue };
+                    let Some(sec) = self.model.sections.get(sid.index()) else {
+                        continue;
+                    };
+                    let (Some(na), Some(nb)) = (
+                        self.model.nodes.get(a.index()),
+                        self.model.nodes.get(b.index()),
+                    ) else {
+                        continue;
+                    };
+                    let span = {
+                        let d = [
+                            nb.coord[0] - na.coord[0],
+                            nb.coord[1] - na.coord[1],
+                            nb.coord[2] - na.coord[2],
+                        ];
+                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                    };
+                    if span <= 1e-9 {
+                        continue;
+                    }
+                    let r = fd::design_joist_simple(
+                        span,
+                        w * j.spacing,
+                        z,
+                        sec.iy,
+                        fd::STEEL_YOUNG,
+                        sigma_allow,
+                        fd::DEFLECTION_LIMIT_DENOM,
+                    );
+                    joist_checks.push((slab.id, ji, r));
+                }
+            }
+
+            // --- スラブ（一方向版） ---
+            if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
+                use squid_n_core::model::OneWayDir;
+                // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
+                // 一方向指定が無い（両方向）場合は安全側に短辺で設計する。
+                let span = match slab.one_way {
+                    Some(OneWayDir::X) => lx,
+                    Some(OneWayDir::Y) => ly,
+                    None => lx.min(ly),
+                };
+                let thickness = slab.thickness.unwrap_or(self.model.slab_thickness);
+                if span > 1e-9 && thickness > 0.0 {
+                    // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。
+                    let r = fd::design_slab_oneway(
+                        span,
+                        w,
+                        8.0,
+                        thickness,
+                        fd::SLAB_DEFAULT_COVER,
+                        fd::REBAR_FT_LONG_SD295,
+                        fd::SLAB_J_RATIO,
+                    );
+                    slab_checks.push((slab.id, r));
+                }
+            }
+        }
+        (joist_checks, slab_checks)
     }
 
     /// 全スラブの床荷重を大梁（および小梁経由の節点反力）へ分配し、
@@ -1635,10 +1781,63 @@ impl App {
         self.beam_loads = self.slab_beam_loads(|slab| slab.dead_intensity());
     }
 
+    /// 交差小梁スラブについて、床格子サブモデル（二方向）の**支点反力**を大梁接続点
+    /// への集中荷重（下向き）として返す（床 Phase F-3b）。`None` の場合は呼び出し側が
+    /// 既存の平行小梁モデル（`distribute_rect_with_joists` の点反力）を用いる。
+    ///
+    /// 反力は面荷重強度 `w` に線形なので各荷重ケースの `w` で解き直す。格子の各小梁は
+    /// 平行モデルと同じ `w·spacing` を負担するため、支点反力の総和は平行モデルの小梁
+    /// 反力総和（`w·Σ spacing·L`）と厳密に一致する（総和保存）。相違は交点での荷重
+    /// 分担の精度のみ。実部材化された小梁を含むスラブは、実 Beam が本体 FEM で荷重を
+    /// 伝達し二重計上になるため対象外（`None`）とする。
+    pub(crate) fn slab_grillage_node_reactions(
+        &self,
+        slab: &squid_n_core::model::Slab,
+        w: f64,
+    ) -> Option<Vec<(NodeId, f64)>> {
+        // `distribute_slab_w` が小梁二段階伝達（点反力 Node＋境界 Edge）を採るスラブに
+        // 限定する。隅・片持ち・辺支持・非矩形・分配法が三角/一方向以外のスラブは
+        // 小梁が使われず全面積が Edge/隅集中で分配されるため、格子反力を上乗せすると
+        // 二重計上（または隅集中荷重の取りこぼし）になる。
+        if !squid_n_load::floor::uses_joist_distribution(&self.model, slab) {
+            return None;
+        }
+        // 実部材化された小梁を含む場合は対象外（本体 FEM と二重計上を避ける）。
+        let materialized = |a: NodeId, b: NodeId| -> bool {
+            self.model.elements.iter().any(|e| {
+                e.kind == squid_n_core::model::ElementKind::Beam
+                    && e.nodes.len() == 2
+                    && ((e.nodes[0] == a && e.nodes[1] == b)
+                        || (e.nodes[0] == b && e.nodes[1] == a))
+            })
+        };
+        if slab
+            .joists
+            .iter()
+            .any(|j| materialized(j.support[0], j.support[1]))
+        {
+            return None;
+        }
+        let g = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)?;
+        let sol = crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0)).ok()?;
+        // 支点反力 Fz（上向き正）＝大梁が受け取る下向き荷重の大きさ。
+        Some(
+            g.support_origin
+                .iter()
+                .map(|(n, id)| (*id, sol.reactions[*n][2]))
+                .collect(),
+        )
+    }
+
     /// 各スラブについて面荷重強度 `w_of(slab)`（N/mm²）を境界へ分配し、
     /// `LoadTarget::Edge` を実 `ElemId` に対応付けた `BeamLoad` 列を返す。
     /// 対応する梁が無い辺の荷重は捨てる。`refresh_beam_loads`（DL）と
     /// `sync_slab_loads_action`（LL）の共通経路（令85条1項の DL/LL 分離）。
+    ///
+    /// 交差小梁スラブ（軸平行・全仮想）は、平行小梁モデルの小梁点反力
+    /// （`LoadTarget::Node`）を床格子サブモデルの支点反力で置換する（床 Phase F-3b。
+    /// 総和は保存し、交点での荷重分担のみ高精度化）。境界大梁の残り負担
+    /// （`LoadTarget::Edge`）や実部材化小梁（`LoadTarget::Span`）はそのまま。
     fn slab_beam_loads(
         &self,
         w_of: impl Fn(&squid_n_core::model::Slab) -> f64,
@@ -1663,10 +1862,15 @@ impl App {
                     .map(|e| e.id)
             };
             let w = w_of(slab);
+            // 交差小梁スラブは格子サブモデルの支点反力で小梁点反力を置換する（F-3b）。
+            let grillage_reactions = self.slab_grillage_node_reactions(slab, w);
             for mut bl in squid_n_load::floor::distribute_slab_w(&self.model, slab, w) {
                 match bl.target {
                     squid_n_load::floor::LoadTarget::Node(_) => {
-                        beam_loads.push(bl);
+                        // 格子が有効なら平行小梁モデルの点反力は捨てる（格子反力で置換）。
+                        if grillage_reactions.is_none() {
+                            beam_loads.push(bl);
+                        }
                     }
                     squid_n_load::floor::LoadTarget::Edge(k) => {
                         if k >= n {
@@ -1688,6 +1892,25 @@ impl App {
                         bl.elem = elem;
                         beam_loads.push(bl);
                     }
+                }
+            }
+            // 格子反力を大梁接続点への下向き集中荷重として追加（点反力の置換）。
+            if let Some(reactions) = grillage_reactions {
+                for (node, r) in reactions {
+                    if r.abs() <= 1e-9 {
+                        continue;
+                    }
+                    beam_loads.push(squid_n_load::floor::BeamLoad {
+                        elem: ElemId(u32::MAX),
+                        target: squid_n_load::floor::LoadTarget::Node(node),
+                        shape: squid_n_load::floor::LoadShape::Point { p: r, x: 0.0 },
+                        cmq: squid_n_load::floor::Cmq {
+                            c_i: 0.0,
+                            c_j: 0.0,
+                            q_i: r,
+                            q_j: 0.0,
+                        },
+                    });
                 }
             }
         }

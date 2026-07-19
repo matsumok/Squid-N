@@ -115,10 +115,15 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
                 }
                 row.col(|ui| {
                     let sec_id = app.model.sections[i].id;
-                    let in_use = app.model.elements.iter().any(|e| e.section == Some(sec_id));
+                    let in_use = app.model.elements.iter().any(|e| e.section == Some(sec_id))
+                        || app
+                            .model
+                            .slabs
+                            .iter()
+                            .any(|s| s.joists.iter().any(|j| j.section == Some(sec_id)));
                     let btn = ui.add_enabled(!in_use, egui::Button::new("🗑"));
                     if in_use {
-                        btn.on_hover_text("部材から参照中のため削除できません");
+                        btn.on_hover_text("部材・小梁から参照中のため削除できません");
                     } else if btn.clicked() {
                         pending_delete = Some(sec_id);
                     }

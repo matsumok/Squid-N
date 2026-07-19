@@ -24,6 +24,8 @@ pub struct SlabDraft {
     pub joist_supports: [Option<NodeId>; 2],
     /// 小梁の負担幅 spacing の入力文字列（**UI 表示は mm**、内部も mm）。
     pub joist_spacing: String,
+    /// 小梁の断面（床の中での小梁設計用。`None` は断面未割当）。
+    pub joist_section: Option<squid_n_core::ids::SectionId>,
 }
 
 impl Default for SlabDraft {
@@ -37,6 +39,7 @@ impl Default for SlabDraft {
             joist_target: None,
             joist_supports: [None; 2],
             joist_spacing: "0".to_string(),
+            joist_section: None,
         }
     }
 }
@@ -466,13 +469,53 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
     } else {
         for (k, j) in joists.iter().enumerate() {
             ui.horizontal(|ui| {
+                let sec = j
+                    .section
+                    .map(|s| format!("S{}", s.0))
+                    .unwrap_or_else(|| "断面なし".to_string());
                 ui.label(format!(
-                    "小梁{}: 支持 N{}–N{}, 負担幅 {:.0} mm",
-                    k, j.support[0].0, j.support[1].0, j.spacing
+                    "小梁{}: 支持 N{}–N{}, 負担幅 {:.0} mm, 断面 {}",
+                    k, j.support[0].0, j.support[1].0, j.spacing, sec
                 ));
+                // 交差接合の指定: 剛接十字（既定）か、他の小梁への受け/架け（ピン）か。
+                // 「受け:小梁c」を選ぶとこの小梁が架け梁となり、交点で小梁c にピン接合で
+                // 載る（曲げは伝えず鉛直せん断のみ。交差しない相手を選んでも無効）。
+                let cur = match j.pinned_onto {
+                    Some(c) => format!("受け:小梁{c}"),
+                    None => "剛接十字".to_string(),
+                };
+                egui::ComboBox::from_id_salt(format!("joist_pin_{k}"))
+                    .selected_text(cur)
+                    .show_ui(ui, |ui| {
+                        let mut sel = j.pinned_onto;
+                        ui.selectable_value(&mut sel, None, "剛接十字");
+                        for c in 0..joists.len() {
+                            if c == k {
+                                continue;
+                            }
+                            ui.selectable_value(&mut sel, Some(c), format!("受け:小梁{c}"));
+                        }
+                        if sel != j.pinned_onto {
+                            let mut v = joists.clone();
+                            v[k].pinned_onto = sel;
+                            new_joists = Some(v);
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "剛接十字＝交点で二方向曲げ連続（たわみ抑制）。受け/架け＝架け梁が受け梁にピンで載る（鉛直せん断のみ伝達）。",
+                    );
                 if ui.button("🗑").on_hover_text("この小梁を削除").clicked() {
                     let mut v = joists.clone();
                     v.remove(k);
+                    // 削除で小梁インデックスがずれるため、pinned_onto を補正する。
+                    for jj in v.iter_mut() {
+                        match jj.pinned_onto {
+                            Some(c) if c == k => jj.pinned_onto = None,
+                            Some(c) if c > k => jj.pinned_onto = Some(c - 1),
+                            _ => {}
+                        }
+                    }
                     new_joists = Some(v);
                 }
             });
@@ -544,6 +587,25 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
         }
         ui.label("負担幅 [mm]:");
         ui.add(egui::TextEdit::singleline(&mut app.slab_draft.joist_spacing).desired_width(80.0));
+        ui.label("断面:")
+            .on_hover_text("床の中での小梁設計（単純支持梁の曲げ・たわみ検定）に用いる断面");
+        let sec_text = app
+            .slab_draft
+            .joist_section
+            .map(|s| format!("S{}", s.0))
+            .unwrap_or_else(|| "―".to_string());
+        egui::ComboBox::from_id_salt("joist_section")
+            .selected_text(sec_text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut app.slab_draft.joist_section, None, "―");
+                for sec in &app.model.sections {
+                    ui.selectable_value(
+                        &mut app.slab_draft.joist_section,
+                        Some(sec.id),
+                        format!("S{} {}", sec.id.0, sec.name),
+                    );
+                }
+            });
     });
 
     let s0 = app.slab_draft.joist_supports[0];
@@ -573,6 +635,8 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
             dir,
             spacing,
             support: [a, b],
+            section: app.slab_draft.joist_section,
+            pinned_onto: None,
         })
     })();
 

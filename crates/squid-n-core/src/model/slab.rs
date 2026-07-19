@@ -107,6 +107,16 @@ pub struct JoistLine {
     pub dir: [f64; 2],
     pub spacing: f64,
     pub support: [NodeId; 2],
+    /// 小梁の断面参照（床の中での小梁設計に用いる。単純支持梁として検定する）。
+    /// `None`（旧スキーマ・未設定）は断面未割当（設計対象外）。
+    #[serde(default)]
+    pub section: Option<crate::ids::SectionId>,
+    /// 交差する相手小梁（同一スラブの `joists` インデックス）へ**ピン接合で載る**
+    /// 場合の受け梁の指定（この小梁＝架け梁）。`Some(受け梁index)` のとき、その交点で
+    /// この小梁の端部は曲げを解放し（単純支持）、受け梁へ鉛直反力のみ伝える。
+    /// `None`（既定）は交点で曲げ連続＝**剛接十字**（二方向格子）。
+    #[serde(default)]
+    pub pinned_onto: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

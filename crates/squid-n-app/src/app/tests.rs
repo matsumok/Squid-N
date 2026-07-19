@@ -2213,6 +2213,145 @@ fn test_sync_slab_loads_action_separates_dead_and_live() {
     );
 }
 
+/// 床 Phase F-3b: 交差小梁スラブは床格子サブモデルの支点反力を大梁接続点へ渡す。
+/// 支点反力総和は平行小梁モデルの小梁反力総和（w·Σspacing·L）と一致し（総和保存）、
+/// 実部材化された小梁を含むスラブは二重計上回避のため対象外（None）になる。
+#[test]
+fn test_slab_grillage_node_reactions_total_and_gate() {
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{
+        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
+        JoistLine, LocalAxis, Node, Section, Slab,
+    };
+
+    let mk_node = |id: u32, x: f64, y: f64| Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let section = Section {
+        id: SectionId(0),
+        name: "H".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    };
+    let spacing = 2000.0_f64;
+    let slab = Slab {
+        usage: None,
+        edge_supported: None,
+        thickness: None,
+        kind: Default::default(),
+        one_way: None,
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        joists: vec![
+            JoistLine {
+                dir: [0.0, 1.0],
+                spacing,
+                support: [NodeId(4), NodeId(5)], // 縦（x=2000）
+                section: Some(SectionId(0)),
+                pinned_onto: None,
+            },
+            JoistLine {
+                dir: [1.0, 0.0],
+                spacing,
+                support: [NodeId(6), NodeId(7)], // 横（y=2000）
+                section: Some(SectionId(0)),
+                pinned_onto: None,
+            },
+        ],
+        loads: vec![AreaLoad {
+            kind: "DL".into(),
+            value: 0.005,
+        }],
+        method: DistributionMethod::TriTrapezoid,
+    };
+    let model = squid_n_core::model::Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, 4000.0, 0.0),
+            mk_node(2, 4000.0, 4000.0),
+            mk_node(3, 0.0, 4000.0),
+            mk_node(4, 2000.0, 0.0),
+            mk_node(5, 2000.0, 4000.0),
+            mk_node(6, 0.0, 2000.0),
+            mk_node(7, 4000.0, 2000.0),
+        ],
+        elements: vec![
+            mk_beam(0, 0, 1),
+            mk_beam(1, 1, 2),
+            mk_beam(2, 2, 3),
+            mk_beam(3, 3, 0),
+        ],
+        sections: vec![section],
+        slabs: vec![slab],
+        ..Default::default()
+    };
+    model.validate().expect("交差小梁モデルは validate を通る");
+    let mut app = App {
+        model,
+        ..App::default()
+    };
+
+    let w = 0.005_f64;
+    let reactions = app
+        .slab_grillage_node_reactions(&app.model.slabs[0], w)
+        .expect("交差格子の支点反力が得られるはず");
+    // 4 支点（N4..N7）へ配分。
+    assert_eq!(reactions.len(), 4, "支点は4節点");
+    let total: f64 = reactions.iter().map(|(_, r)| r).sum();
+    let expected = w * spacing * 4000.0 * 2.0; // w·spacing·L × 2本
+    assert!(
+        (total - expected).abs() / expected < 1e-6,
+        "格子支点反力総和={total} 期待(平行モデル小梁反力総和)={expected}"
+    );
+
+    // 実部材化された小梁を含むと二重計上回避のため None（本体 FEM が伝達）。
+    app.model.elements.push(mk_beam(4, 4, 5)); // N4-N5 に実 Beam
+    assert!(
+        app.slab_grillage_node_reactions(&app.model.slabs[0], w)
+            .is_none(),
+        "実部材化小梁を含むスラブは格子荷重の対象外（None）"
+    );
+
+    // 分配法が小梁二段階伝達（三角/一方向）でないスラブは、distribute_slab_w が
+    // 小梁点反力を出さず全面積を境界へ Edge 分配するため、格子反力を上乗せすると
+    // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
+    app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
+    app.model.slabs[0].method = DistributionMethod::TributaryArea;
+    assert!(
+        app.slab_grillage_node_reactions(&app.model.slabs[0], w)
+            .is_none(),
+        "分配法が三角/一方向でないスラブは格子荷重の対象外（二重計上回避）"
+    );
+}
+
 /// 床 Phase A-3: 用途を設定したスラブは地震用積載（LiveSeismic）ケースも同期され、
 /// 地震用重量の重力ケース選択（`gravity_cases_for_seismic_weight`）が
 /// 骨組用 Live ではなく地震用 LiveSeismic を採用することを確認する
@@ -2334,6 +2473,292 @@ fn test_gravity_cases_excludes_auto_frame_live_when_no_seismic() {
     assert!(
         !gravity.contains(&live_id),
         "自動生成の骨組用 Live(床積載)は地震用重量にフォールバックしてはならない"
+    );
+}
+
+/// 床 Phase E: 床の中での小梁・スラブ設計。断面を割り当てた小梁は単純支持梁として
+/// 検定され、矩形スラブは一方向版として設計曲げ・必要鉄筋量が算定される。
+#[test]
+fn test_floor_design_checks_joist_and_slab() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{JoistLine, Section, SlabUsage};
+
+    let mut model = make_square_slab_test_model();
+    // 事務室用途（床用積載 2900 N/m² = 2.9e-3 N/mm²）＋固定荷重 0.005。
+    model.slabs[0].usage = Some(SlabUsage::Office);
+    model.slabs[0].thickness = Some(150.0);
+    // 鋼小梁の断面（Iy=1e8 mm⁴, せい 400mm → Z=5e5 mm³）。
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    });
+    // 対辺の中間節点 N4(2000,0)・N5(2000,4000) を追加し、その間に小梁を架ける
+    // （境界大梁で直接結ばれていない＝実部材化されていない現実的な小梁）。
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    model.nodes.push(mk_mid(4, 2000.0, 0.0));
+    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    // 支持 N4(2000,0)–N5(2000,4000)、スパン 4000、負担幅 2000、断面 S0。
+    model.slabs[0].joists.push(JoistLine {
+        dir: [0.0, 1.0],
+        spacing: 2000.0,
+        support: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        pinned_onto: None,
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "断面付き小梁が1件設計される");
+    let (_sid, _ji, jr) = &joists[0];
+    // w = (固定0.005 + 床用積載2.9e-3) × spacing2000。M = wL²/8。
+    let w_udl = (0.005 + 2.9e-3) * 2000.0;
+    assert!((jr.w - w_udl).abs() / w_udl < 1e-9, "w={}", jr.w);
+    assert!((jr.m_max - w_udl * 4000.0 * 4000.0 / 8.0).abs() < 1.0);
+    assert!(jr.span > 0.0 && jr.bending_ratio > 0.0);
+
+    assert_eq!(slabs.len(), 1, "矩形スラブが1件設計される");
+    let (_sid, sr) = &slabs[0];
+    assert!((sr.span - 4000.0).abs() < 1e-6, "短辺スパン");
+    assert!(sr.moment > 0.0 && sr.as_req_per_m > 0.0);
+    assert!((sr.effective_depth - 120.0).abs() < 1e-6, "d=t-かぶり");
+}
+
+/// 実部材化された小梁は全体 FEM で検定するため、床設計（小梁）の対象外になる。
+#[test]
+fn test_floor_design_skips_materialized_joist() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, JoistLine, LocalAxis, Section,
+    };
+
+    let mut model = make_square_slab_test_model();
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H".into(),
+        area: 1.0,
+        iy: 1.0e8,
+        iz: 1.0,
+        j: 1.0,
+        depth: 400.0,
+        width: 1.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    });
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    model.nodes.push(mk_mid(4, 2000.0, 0.0));
+    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
+    model.slabs[0].joists.push(JoistLine {
+        dir: [0.0, 1.0],
+        spacing: 2000.0,
+        support: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        pinned_onto: None,
+    });
+    // 支持 N4–N5 を両端に持つ実 Beam を追加（実部材化相当）。
+    let next = model.elements.len() as u32;
+    model.elements.push(ElementData {
+        id: ElemId(next),
+        kind: ElementKind::Beam,
+        nodes: [NodeId(4), NodeId(5)].into_iter().collect(),
+        section: Some(SectionId(0)),
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert!(
+        joists.is_empty(),
+        "実部材化された小梁は床設計の対象外（全体 FEM で検定）"
+    );
+}
+
+/// 床 Phase F: 交差小梁（十字）のスラブは床格子サブモデル（二方向）で検定される。
+/// 2本の交差小梁が両方とも設計され、対称配置なので検定比が一致する。
+#[test]
+fn test_floor_design_uses_grillage_for_crossing_joists() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{JoistLine, Section, SlabUsage};
+
+    let mut model = make_square_slab_test_model();
+    model.slabs[0].usage = Some(SlabUsage::Office);
+    // 鋼小梁断面。
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    });
+    // 対辺の中点 N4..N7 を追加し、十字に交差する2本の小梁を配置。
+    let mk = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    model.nodes.push(mk(4, 2000.0, 0.0));
+    model.nodes.push(mk(5, 2000.0, 4000.0));
+    model.nodes.push(mk(6, 0.0, 2000.0));
+    model.nodes.push(mk(7, 4000.0, 2000.0));
+    model.slabs[0].joists = vec![
+        JoistLine {
+            dir: [0.0, 1.0],
+            spacing: 2000.0,
+            support: [NodeId(4), NodeId(5)],
+            section: Some(SectionId(0)),
+            pinned_onto: None,
+        },
+        JoistLine {
+            dir: [1.0, 0.0],
+            spacing: 2000.0,
+            support: [NodeId(6), NodeId(7)],
+            section: Some(SectionId(0)),
+            pinned_onto: None,
+        },
+    ];
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 2, "交差2小梁が格子で設計される");
+    // FEM 由来の検定比（曲げ・たわみ）が正で、対称配置なので一致。
+    assert!(joists[0].2.ratio > 0.0 && joists[1].2.ratio > 0.0);
+    assert!(
+        (joists[0].2.ratio - joists[1].2.ratio).abs() / joists[0].2.ratio < 1e-3,
+        "対称な十字は検定比が一致: {} vs {}",
+        joists[0].2.ratio,
+        joists[1].2.ratio
+    );
+    // 曲げモーメントも FEM 実値（>0）。
+    assert!(joists[0].2.m_max > 0.0);
+}
+
+/// 床 Phase E レビュー指摘: スラブ設計のスパンは一方向指定に一致する
+/// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
+#[test]
+fn test_slab_design_span_respects_one_way() {
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, Slab};
+
+    // lx=6000（辺0方向, X）、ly=3000（辺3方向, Y）の矩形スラブ。
+    let mk_node = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    let base_slab = |one_way: Option<OneWayDir>| Slab {
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        joists: vec![],
+        loads: vec![AreaLoad {
+            kind: "DL".into(),
+            value: 0.005,
+        }],
+        method: DistributionMethod::OneWay,
+        kind: Default::default(),
+        one_way,
+        edge_supported: None,
+        usage: None,
+        thickness: Some(150.0),
+    };
+    let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
+        nodes: vec![
+            mk_node(0, 0.0, 0.0),
+            mk_node(1, 6000.0, 0.0),
+            mk_node(2, 6000.0, 3000.0),
+            mk_node(3, 0.0, 3000.0),
+        ],
+        slabs: vec![base_slab(one_way)],
+        ..Default::default()
+    };
+
+    // 一方向 X → スパン = lx = 6000（長辺）。
+    let app_x = App {
+        model: mk_model(Some(OneWayDir::X)),
+        ..App::default()
+    };
+    let (_j, slabs_x) = app_x.floor_design_checks();
+    assert!(
+        (slabs_x[0].1.span - 6000.0).abs() < 1e-6,
+        "X一方向は長辺6000で設計"
+    );
+
+    // 一方向 Y → スパン = ly = 3000（短辺）。
+    let app_y = App {
+        model: mk_model(Some(OneWayDir::Y)),
+        ..App::default()
+    };
+    let (_j, slabs_y) = app_y.floor_design_checks();
+    assert!(
+        (slabs_y[0].1.span - 3000.0).abs() < 1e-6,
+        "Y一方向は短辺3000で設計"
+    );
+
+    // 指定なし → 短辺 min(6000,3000)=3000（安全側）。
+    let app_n = App {
+        model: mk_model(None),
+        ..App::default()
+    };
+    let (_j, slabs_n) = app_n.floor_design_checks();
+    assert!(
+        (slabs_n[0].1.span - 3000.0).abs() < 1e-6,
+        "両方向は短辺3000で設計"
     );
 }
 

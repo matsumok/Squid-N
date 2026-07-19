@@ -257,7 +257,7 @@ impl EditCommand for DeleteSection {
         if idx >= model.sections.len() || model.sections[idx].id != self.id {
             return Box::new(Noop);
         }
-        if model.elements.iter().any(|e| e.section == Some(self.id)) {
+        if section_in_use(model, self.id) {
             return Box::new(Noop);
         }
         let removed = model.sections.remove(idx);
@@ -315,4 +315,21 @@ fn shift_section_ids(model: &mut Model, mut f: impl FnMut(&mut SectionId)) {
             f(sid);
         }
     }
+    // 小梁（床設計用）の断面参照も追従させる（陳腐化した参照を防ぐ）。
+    for slab in &mut model.slabs {
+        for j in &mut slab.joists {
+            if let Some(sid) = &mut j.section {
+                f(sid);
+            }
+        }
+    }
+}
+
+/// 指定断面を参照している要素または小梁が存在するか（削除ガード用）。
+fn section_in_use(model: &Model, id: SectionId) -> bool {
+    model.elements.iter().any(|e| e.section == Some(id))
+        || model
+            .slabs
+            .iter()
+            .any(|s| s.joists.iter().any(|j| j.section == Some(id)))
 }

@@ -187,12 +187,29 @@ impl Model {
                     )));
                 }
             }
-            for j in &slab.joists {
+            for (ji, j) in slab.joists.iter().enumerate() {
                 for &nid in &j.support {
                     if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
                         return Err(CoreError::DanglingRef(format!(
                             "Slab {} joist support -> Node {}",
                             slab.id.0, nid.0
+                        )));
+                    }
+                }
+                if let Some(sid) = j.section {
+                    if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Slab {} joist -> Section {}",
+                            slab.id.0, sid.0
+                        )));
+                    }
+                }
+                // ピン受け/架けの相手小梁インデックスは同一スラブ内の別小梁を指す。
+                if let Some(c) = j.pinned_onto {
+                    if c >= slab.joists.len() || c == ji {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Slab {} joist {} pinned_onto -> joist {}",
+                            slab.id.0, ji, c
                         )));
                     }
                 }

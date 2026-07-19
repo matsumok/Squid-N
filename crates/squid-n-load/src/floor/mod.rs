@@ -19,12 +19,12 @@ mod rect;
 mod rigid_zone;
 mod types;
 
-pub use geometry::polygon_area;
+pub use geometry::{polygon_area, slab_dimensions};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
 
 use cantilever::{distribute_cantilever, distribute_corner};
-use geometry::{boundary_coords, slab_dimensions};
+use geometry::boundary_coords;
 use polygon::{distribute_polygon, distribute_polygon_supported};
 use rect::{distribute_rect, distribute_rect_with_joists};
 use squid_n_core::model::{DistributionMethod, Model, Slab, SlabKind};
@@ -64,6 +64,33 @@ use fem::{fem_trapezoid, fem_triangle, fem_uniform};
 pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
     // 従来互換: `slab.loads`（固定荷重 DL）の総和を分配する。
     distribute_slab_w(model, slab, slab.dead_intensity())
+}
+
+/// [`distribute_slab_w`] がこのスラブで**小梁二段階伝達**（`distribute_rect_with_joists`。
+/// 小梁点反力 `LoadTarget::Node` ＋境界残り `LoadTarget::Edge` を出力）を採る条件を返す。
+///
+/// 呼び出し側（床格子サブモデルで小梁点反力を置換したい層）が、平行小梁モデルの
+/// 出力形状（Node ＋ remainder Edge）を前提にできるかを判定するために公開する。
+/// この条件を満たさないスラブ（隅・片持ち・辺支持・非矩形・分配法が三角/一方向以外）
+/// では小梁は使われず全面積が Edge/隅集中で分配されるため、格子反力を上乗せすると
+/// 二重計上になる。分岐は [`distribute_slab_w`] と厳密に一致させること。
+pub fn uses_joist_distribution(model: &Model, slab: &Slab) -> bool {
+    if slab.boundary.len() < 3 || slab.joists.is_empty() {
+        return false;
+    }
+    if slab.kind != SlabKind::Interior {
+        return false;
+    }
+    if slab.edge_supported.is_some() {
+        return false;
+    }
+    if slab_dimensions(model, slab).is_none() {
+        return false; // 非矩形（多角形経路）。
+    }
+    matches!(
+        slab.method,
+        DistributionMethod::TriTrapezoid | DistributionMethod::OneWay
+    )
 }
 
 /// 指定した面荷重強度 `w`（N/mm²）のみをスラブ境界へ分配する。
