@@ -157,7 +157,12 @@ pub fn pushover_analysis_recording(
             let snap = StateSnapshot::capture(&behaviors);
             let f_ext: Vec<f64> = q.iter().map(|&qi| qi * current_lambda).collect();
             let mut converged = false;
-            let mut last_du_free: Vec<f64> = Vec::new();
+            // このステップ内の全 Newton 修正量の累積（＝ステップ変位増分）。
+            // 従来は last_du_free に「最後の修正量」だけを保持しており、
+            // 収束に 2 反復以上要する塑性ステップで途中の修正量が total_disp から
+            // 脱落し、荷重−変位曲線の変位軸が過小評価されていた（要素内部状態は
+            // 全修正量を累積しているため base_shear は正しく、変位のみ不整合）。
+            let mut step_du_free = vec![0.0; n_active];
 
             for _iter in 0..20 {
                 let k_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
@@ -182,7 +187,9 @@ pub fn pushover_analysis_recording(
                     .solve(&r_red)
                     .map_err(|e| format!("solve: {:?}", e))?;
                 let du_free = reducer.expand_u(&du_red);
-                last_du_free = du_free.clone();
+                for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+                    *acc += d;
+                }
 
                 let model_ref: &Model = model;
                 for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
@@ -204,7 +211,7 @@ pub fn pushover_analysis_recording(
                 for b in behaviors.iter_mut() {
                     b.commit_state();
                 }
-                for (&du, td) in last_du_free.iter().zip(total_disp.iter_mut()) {
+                for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                     *td += du;
                 }
                 let roof = get_roof_disp(&total_disp, model, dofmap, dir);
@@ -279,7 +286,8 @@ pub fn pushover_analysis_recording(
                 for _attempt in 0..5 {
                     let snap = StateSnapshot::capture(&behaviors);
                     let mut converged = false;
-                    let mut last_du_free = Vec::new();
+                    // 荷重制御フェーズと同じく、ステップ内の全 Newton 修正量を累積する。
+                    let mut step_du_free = vec![0.0; n_active];
 
                     for _iter in 0..20 {
                         let k_free = assemble_k(
@@ -316,7 +324,9 @@ pub fn pushover_analysis_recording(
                         solver.factorize(&k_red).map_err(|e| format!("{:?}", e))?;
                         let du_red = solver.solve(&r_red).map_err(|e| format!("{:?}", e))?;
                         let du_free = reducer.expand_u(&du_red);
-                        last_du_free = du_free.clone();
+                        for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+                            *acc += d;
+                        }
 
                         let model_ref: &Model = model;
                         for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
@@ -338,7 +348,7 @@ pub fn pushover_analysis_recording(
                         for b in behaviors.iter_mut() {
                             b.commit_state();
                         }
-                        for (&du, td) in last_du_free.iter().zip(total_disp.iter_mut()) {
+                        for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                             *td += du;
                         }
                         let roof = get_roof_disp(&total_disp, model, dofmap, dir);

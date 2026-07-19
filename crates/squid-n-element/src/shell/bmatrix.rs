@@ -124,9 +124,15 @@ impl ShellElement {
 
         let jac_here = jacobian(xi, eta, nodes_coords);
         let jit = jacobian_inv_transpose(&jac_here);
+        // 共変せん断ひずみ e_cov=[e_ξζ; e_ηζ] からデカルト γ=[γ_xz; γ_yz] へ。
+        // タイイング点での前方射影が e_cov = J·γ（J=jacobian、行が共変基底）で
+        // あるため、逆変換は γ = J⁻¹·e_cov。jit=J⁻ᵀ なので J⁻¹ は jit の列アクセス
+        // で得る（dshape_cart のデカルト微分と同一の規約）。従来は jit の行アクセス
+        // ＝ J⁻ᵀ·e_cov を適用しており、非対称ヤコビアン（歪んだ四辺形）で
+        // 一定せん断を再現できなかった（test_mitc4_constant_shear_patch_skewed）。
         for j in 0..ncols {
-            b[j] = jit[0][0] * b_cov_mitc[j] + jit[0][1] * b_cov_mitc[ncols + j];
-            b[ncols + j] = jit[1][0] * b_cov_mitc[j] + jit[1][1] * b_cov_mitc[ncols + j];
+            b[j] = jit[0][0] * b_cov_mitc[j] + jit[1][0] * b_cov_mitc[ncols + j];
+            b[ncols + j] = jit[0][1] * b_cov_mitc[j] + jit[1][1] * b_cov_mitc[ncols + j];
         }
 
         b

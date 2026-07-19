@@ -80,21 +80,22 @@ impl BeamElement {
             };
         }
         // Tr: 12×12 — flex端自由度(i', j') → 節点自由度(i, j)
-        // i' = i を li だけずらし, j' = j を lj だけずらす
-        // Tr はほとんど単位行列。i端: ux_i'=ux_i, uy_i'=uy_i-li*rz_i, uz_i'=uz_i+li*ry_i,
-        //   rx_i'=rx_i, ry_i'=ry_i, rz_i'=rz_i
-        // j端: ux_j'=ux_j, uy_j'=uy_j+lj*rz_j, uz_j'=uz_j-lj*ry_j,
-        //   rx_j'=rx_j, ry_j'=ry_j, rz_j'=rz_j
+        // 剛域腕の運動学 u_flex = u_node + θ_node × r。可撓端は i 端で節点から
+        // 内側へ +li·ex（j 端で −lj·ex）にあるため r_i=(+li,0,0), r_j=(−lj,0,0)。
+        // θ×r を成分展開すると（ex は局所 x）:
+        //   i端: ux_i'=ux_i, uy_i'=uy_i+li*rz_i, uz_i'=uz_i-li*ry_i, 回転は不変
+        //   j端: ux_j'=ux_j, uy_j'=uy_j-lj*rz_j, uz_j'=uz_j+lj*ry_j, 回転は不変
+        // （剛体回転で K·u≈0 となる符号。test_rigid_zone_preserves_rigid_body_rotation）
         let mut tr = LocalMat::zeros(12);
         for i in 0..12 {
             tr.set(i, i, 1.0);
         }
-        // i端 (index 0..5): uy方向(1) ← rz方向(5) の項
-        tr.set(1, 5, -li);
-        tr.set(2, 4, li);
-        // j端 (index 6..11): uy方向(7) ← rz方向(11) の項
-        tr.set(7, 11, lj);
-        tr.set(8, 10, -lj);
+        // i端 (index 0..5): uy(1)←rz(5), uz(2)←ry(4)
+        tr.set(1, 5, li);
+        tr.set(2, 4, -li);
+        // j端 (index 6..11): uy(7)←rz(11), uz(8)←ry(10)
+        tr.set(7, 11, -lj);
+        tr.set(8, 10, lj);
 
         // K_node = Tr^T * K_flex * Tr
         let mut tmp = LocalMat::zeros(12);

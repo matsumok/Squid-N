@@ -553,6 +553,52 @@ fn test_patch_membrane_distorted() {
 /// 曲げパッチ：歪みメッシュで定曲率場 → 内部節点が場を機械精度で再現。
 /// MITC4 の合否ゲート（薄板でロッキングしないことの根拠）。
 #[test]
+fn test_mitc4_constant_shear_patch_skewed() {
+    // MITC4 は任意形状で一定横せん断場を厳密に再現しなければならない。
+    // w=0・θx=0・θy=a（一定）は γ_xz = ∂w/∂x + θy = a, γ_yz = ∂w/∂y − θx = 0 の
+    // 一定せん断場に相当する。平行四辺形（ヤコビアン非対称）で検証する。
+    //
+    // 回帰: 共変→デカルト射影 γ = J⁻¹·e_cov を、従来は jit(=J⁻ᵀ) の行アクセスで
+    // (J⁻ᵀ)·e として適用していた（正: 列アクセス ＝ J⁻¹·e）。ヤコビアンが
+    // 非対称な歪んだ四辺形でのみ顕在化し（矩形では jit が対角のため一致）、
+    // 一定せん断パッチテストが破れていた。
+    let coords = [
+        [0.0, 0.0, 0.0],
+        [100.0, 0.0, 0.0],
+        [150.0, 80.0, 0.0],
+        [50.0, 80.0, 0.0],
+    ];
+    let shell = make_shell_on(coords, [0, 1, 2, 3]);
+    let a = 1.0e-3;
+    // 24 自由度ベクトル: 各節点の θy(=Ry, col+4) に a、他は 0。
+    let mut u = [0.0f64; 24];
+    for node in 0..4 {
+        u[node * 6 + 4] = a;
+    }
+    // 複数の評価点（ガウス点）で一定せん断が厳密に再現されること。
+    for &(xi, eta, _w) in &[
+        (-0.577_350_269_2f64, -0.577_350_269_2f64, 1.0),
+        (0.577_350_269_2, -0.577_350_269_2, 1.0),
+        (0.577_350_269_2, 0.577_350_269_2, 1.0),
+        (-0.577_350_269_2, 0.577_350_269_2, 1.0),
+        (0.0, 0.0, 1.0),
+    ] {
+        let b = shell.shear_b_mitc4(xi, eta, &coords);
+        let mut gxz = 0.0;
+        let mut gyz = 0.0;
+        for j in 0..24 {
+            gxz += b[j] * u[j];
+            gyz += b[24 + j] * u[j];
+        }
+        assert!(
+            (gxz - a).abs() < 1e-12 && gyz.abs() < 1e-12,
+            "constant transverse shear must be reproduced on a skewed quad at ({xi},{eta}): \
+             γ_xz={gxz} (want {a}), γ_yz={gyz} (want 0)"
+        );
+    }
+}
+
+#[test]
 fn test_patch_bending_distorted() {
     let (coords, elems) = distorted_patch();
     let (k, ndof) = assemble_dense(&coords, &elems);

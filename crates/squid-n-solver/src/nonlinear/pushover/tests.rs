@@ -169,6 +169,59 @@ fn test_pushover_single_column_forms_hinge() {
 }
 
 #[test]
+fn test_pushover_load_control_endpoint_is_mesh_independent() {
+    // 荷重制御プッシュオーバーの終点（λ=1、base_shear=一定）の頂部変位は、
+    // 物理的には荷重増分ステップ数に依存しない。各ステップの Newton 反復で
+    // 「最後の修正量」だけを total_disp へ加算していた回帰バグでは、塑性域
+    // （1 ステップに複数反復を要する）で途中の修正量が脱落し、終点変位が
+    // ステップ数に依存して過小評価されていた（20 ステップで約 5% 過小、
+    // ステップを細かくするほど真値へ漸近）。全反復修正量を累積する修正後は
+    // ステップ数によらず同一終点となる。
+    //
+    // 本モデルは弾性降伏変位 ≈69mm（Qy=My/L≈13.05kN、k=3EI/L³≈189.8N/mm）で、
+    // λ=1 の base_shear=16000N は降伏後（塑性域）にあり複数反復ステップを含む。
+    let run = |steps: usize| -> (f64, f64) {
+        let mut model = single_column_model(235.0, 80_000.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            steps,
+            0.0,
+            false,
+            false,
+            0.0,
+        )
+        .expect("pushover should run end-to-end");
+        let last = result.capacity_curve.last().unwrap();
+        (last.roof_disp, last.base_shear)
+    };
+    let (roof_20, base_20) = run(20);
+    let (roof_80, base_80) = run(80);
+
+    // 前提: いずれも同一の終局荷重（λ=1）まで到達している。
+    assert!((base_20 - 16_000.0).abs() < 1.0, "base_20={base_20}");
+    assert!((base_80 - 16_000.0).abs() < 1.0, "base_80={base_80}");
+    // 前提: 終点は弾性降伏変位を超えており、塑性域＝複数反復ステップを含む。
+    assert!(
+        roof_20 > 69.0,
+        "endpoint must be inelastic: roof_20={roof_20}"
+    );
+
+    // 本題: 荷重ステップ数によらず終点頂部変位が一致すること（相対差 < 0.1%）。
+    let rel_diff = (roof_20 - roof_80).abs() / roof_80;
+    assert!(
+        rel_diff < 1e-3,
+        "load-control endpoint roof disp must be mesh-independent: \
+         roof(20 steps)={roof_20}, roof(80 steps)={roof_80}, rel_diff={rel_diff:.4}; \
+         a step-count dependence indicates dropped Newton corrections in total_disp"
+    );
+}
+
+#[test]
 fn test_pushover_requires_seismic_weight() {
     // 地震重量未定義ではエラーを返す（入力検証）。
     let mut model = single_column_model(235.0, 0.0);
