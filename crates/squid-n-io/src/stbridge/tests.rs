@@ -598,6 +598,26 @@ fn test_standard_roundtrip_rc_beam_rebar() {
     );
 }
 
+/// file id が重複する STB は fail-loud でエラーにする（無言のジオメトリ破損防止）。
+/// 重複 id があると「配列添字 == id.index()」の不変条件が壊れ、部材が別実体の
+/// 節点を参照してしまうため、取り込み時に検出してエラーとする。
+#[test]
+fn test_import_duplicate_node_id_is_error() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="0" X="1000" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+  </StbNodes>
+</StbModel></ST_BRIDGE>"#;
+    let r = import_stbridge(xml);
+    assert!(
+        r.is_err(),
+        "重複 file id はエラーにすべき（無言のジオメトリ破損を防ぐ）"
+    );
+}
+
 /// 配筋要素の無い（幾何のみの）RC 断面ファイルも、無筋相当の既定配筋で読める。
 #[test]
 fn test_import_rc_without_bar_arrangement_uses_default() {

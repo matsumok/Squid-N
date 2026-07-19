@@ -286,6 +286,73 @@ fn test_add_delete_member_load_roundtrip() {
 }
 
 #[test]
+fn test_delete_member_undo_preserves_member_load_order() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCase, MemberLoad, MemberLoadKind};
+    let mk_elem = |id: u32| ElementData {
+        id: squid_n_core::ids::ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mk_load = |elem: u32, w: f64| MemberLoad {
+        elem: squid_n_core::ids::ElemId(elem),
+        dir: [0.0, 0.0, -1.0],
+        kind: MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 1000.0,
+            w1: w,
+            w2: w,
+        },
+    };
+    let w1_of = |l: &MemberLoad| match l.kind {
+        MemberLoadKind::Distributed { w1, .. } => w1,
+        _ => 0.0,
+    };
+
+    let mut model = empty_model();
+    model.elements = vec![mk_elem(0), mk_elem(1), mk_elem(2)];
+    // 荷重順 [e0:1, e1:2, e2:3, e1:4]。elem1 に 2 つの荷重が離れて存在する。
+    model.load_cases.push(LoadCase {
+        kind: Default::default(),
+        id: LoadCaseId(0),
+        name: "lc".into(),
+        nodal: vec![],
+        member: vec![
+            mk_load(0, 1.0),
+            mk_load(1, 2.0),
+            mk_load(2, 3.0),
+            mk_load(1, 4.0),
+        ],
+    });
+
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(DeleteMember { id: ElemId(1) }));
+    // elem1 の荷重（w=2,4）が除去され、残りは [1,3]。
+    let after: Vec<f64> = model.load_cases[0].member.iter().map(w1_of).collect();
+    assert_eq!(after, vec![1.0, 3.0]);
+
+    stack.undo(&mut model);
+    // undo は削除前の順序 [1,2,3,4] を厳密に復元しなければならない
+    // （前方順挿入では [1,2,4,3] と入れ替わっていた）。
+    let restored: Vec<f64> = model.load_cases[0].member.iter().map(w1_of).collect();
+    assert_eq!(
+        restored,
+        vec![1.0, 2.0, 3.0, 4.0],
+        "undo は部材荷重の順序を厳密に復元する"
+    );
+}
+
+#[test]
 fn test_add_delete_member_roundtrip() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
