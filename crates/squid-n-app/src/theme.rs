@@ -79,6 +79,17 @@ pub fn lighten(c: Color32, t: f32) -> Color32 {
     Color32::from_rgb(mix(c.r()), mix(c.g()), mix(c.b()))
 }
 
+/// テーブル行（ヘッダ・本文とも）の上下余白。行高がフォントの行高ちょうどだと
+/// セル内の文字が枠線に接して窮屈に見えるため、視認性のために少し余裕を持たせる。
+const TABLE_ROW_PADDING_PX: f32 = 3.0;
+
+/// テーブルの標準行高。本文フォントの行高＋ [`TABLE_ROW_PADDING_PX`]。
+/// 固定 px 値（旧 18px 等）では日本語フォントの行高（Body 13pt で約 19px）に足りず
+/// 文字の下側が見切れるため、実測から算定する。ヘッダにも同じ値を使う。
+pub fn table_row_height(ui: &egui::Ui) -> f32 {
+    ui.text_style_height(&TextStyle::Body) + TABLE_ROW_PADDING_PX
+}
+
 /// 検定比などの「状態」を §3 のセマンティック 3 色へ写像する。
 /// 良好(≤0.8)=緑／注意(≤1.0)=黄／超過(>1.0)=赤。
 pub fn status_color(ratio: f64) -> Color32 {

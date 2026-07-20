@@ -149,6 +149,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 ("Qsu[kN]", "Qsu/Qmu", "Qbu[kN]", "Qbu/Qmu")
             };
+            let row_h = crate::theme::table_row_height(ui);
             TableBuilder::new(ui)
                 .id_salt("ultimate_checks")
                 .striped(true)
@@ -161,7 +162,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 .column(Column::initial(80.0))
                 .column(Column::initial(72.0))
                 .column(Column::initial(50.0))
-                .header(20.0, |mut h| {
+                .header(row_h, |mut h| {
                     for t in &[
                         "部材",
                         "種別",
@@ -179,7 +180,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 })
                 .body(|body| {
-                    body.rows(18.0, checks.len(), |mut row| {
+                    body.rows(row_h, checks.len(), |mut row| {
                         let i = row.index();
                         let c = &checks[i];
                         row.col(|ui| {
@@ -280,6 +281,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             ui.add_space(4.0);
+            let row_h = crate::theme::table_row_height(ui);
             TableBuilder::new(ui)
                 .id_salt("cft_ultimate_checks")
                 .striped(true)
@@ -291,7 +293,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 .column(Column::initial(90.0))
                 .column(Column::initial(72.0))
                 .column(Column::initial(50.0))
-                .header(20.0, |mut h| {
+                .header(row_h, |mut h| {
                     for t in &[
                         "部材",
                         "分類",
@@ -308,7 +310,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 })
                 .body(|body| {
-                    body.rows(18.0, checks.len(), |mut row| {
+                    body.rows(row_h, checks.len(), |mut row| {
                         let i = row.index();
                         let c = &checks[i];
                         row.col(|ui| {

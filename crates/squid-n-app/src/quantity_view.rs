@@ -114,12 +114,13 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             QuantityGrouping::SteelBySection => {
                 let rows = takeoff.steel_by_section();
+                let row_h = crate::theme::table_row_height(ui);
                 TableBuilder::new(ui)
                     .striped(true)
                     .column(Column::initial(220.0))
                     .column(Column::initial(100.0))
                     .column(Column::initial(100.0))
-                    .header(20.0, |mut h| {
+                    .header(row_h, |mut h| {
                         for t in &["断面", "長さ [m]", "重量 [t]"] {
                             h.col(|ui| {
                                 ui.strong(*t);
@@ -127,7 +128,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                         }
                     })
                     .body(|body| {
-                        body.rows(18.0, rows.len(), |mut row| {
+                        body.rows(row_h, rows.len(), |mut row| {
                             let it = &rows[row.index()];
                             row.col(|ui| {
                                 ui.label(&it.section_name);
@@ -143,12 +144,13 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             QuantityGrouping::RebarByDia => {
                 let rows = takeoff.rebar_by_dia();
+                let row_h = crate::theme::table_row_height(ui);
                 TableBuilder::new(ui)
                     .striped(true)
                     .column(Column::initial(120.0))
                     .column(Column::initial(120.0))
                     .column(Column::initial(100.0))
-                    .header(20.0, |mut h| {
+                    .header(row_h, |mut h| {
                         for t in &["呼び径", "長さ [m]", "重量 [t]"] {
                             h.col(|ui| {
                                 ui.strong(*t);
@@ -156,7 +158,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                         }
                     })
                     .body(|body| {
-                        body.rows(18.0, rows.len(), |mut row| {
+                        body.rows(row_h, rows.len(), |mut row| {
                             let (dia, len, w) = rows[row.index()];
                             row.col(|ui| {
                                 if dia > 0.0 {
@@ -179,6 +181,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                     });
             }
             QuantityGrouping::Detail => {
+                let row_h = crate::theme::table_row_height(ui);
                 TableBuilder::new(ui)
                     .striped(true)
                     .column(Column::initial(60.0)) // ID
@@ -191,7 +194,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                     .column(Column::initial(80.0)) // 鉄筋
                     .column(Column::initial(80.0)) // 鉄骨
                     .column(Column::initial(80.0)) // 継手
-                    .header(20.0, |mut h| {
+                    .header(row_h, |mut h| {
                         for t in &[
                             "ID",
                             "階",
@@ -210,7 +213,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                         }
                     })
                     .body(|body| {
-                        body.rows(18.0, takeoff.items.len(), |mut row| {
+                        body.rows(row_h, takeoff.items.len(), |mut row| {
                             let it = &takeoff.items[row.index()];
                             row.col(|ui| match it.elem {
                                 Some(id) => {
@@ -287,6 +290,7 @@ fn totals_table(
     totals: QuantityTotals,
 ) {
     let n = rows.len();
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::initial(90.0))
@@ -295,7 +299,7 @@ fn totals_table(
         .column(Column::initial(80.0))
         .column(Column::initial(80.0))
         .column(Column::initial(80.0))
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &[
                 key_label,
                 "ｺﾝｸﾘｰﾄ [m³]",
@@ -310,7 +314,7 @@ fn totals_table(
             }
         })
         .body(|body| {
-            body.rows(18.0, n + 1, |mut row| {
+            body.rows(row_h, n + 1, |mut row| {
                 let i = row.index();
                 if i < n {
                     let (name, t) = &rows[i];
