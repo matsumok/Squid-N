@@ -13,7 +13,7 @@
 
 use crate::app::App;
 use crate::theme;
-use crate::viewer::{project, q_axis_angle, q_mul, q_norm, CameraState};
+use crate::viewer::{project, CameraState};
 use squid_n_core::section_shape::SectionShape;
 use squid_n_section::mn_surface::{
     build_simple_spring_surface, build_surface, m_phi_curve, m_theta_curve, plastic_fibers,
@@ -509,14 +509,9 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
 
     let mut cam = app.mn_view.camera.clone();
     if response.dragged_by(egui::PointerButton::Primary) {
-        // アークボール回転（viewer と同じ感度 0.005/px）
+        // ターンテーブル回転（viewer と同じ操作感。N 軸＝Z を画面上で縦に保つ）
         let d = response.drag_delta();
-        const ROT_SENS: f32 = 0.005;
-        let dq = q_mul(
-            q_axis_angle([0.0, 1.0, 0.0], d.x * ROT_SENS),
-            q_axis_angle([1.0, 0.0, 0.0], d.y * ROT_SENS),
-        );
-        cam.rot = q_norm(q_mul(dq, cam.rot));
+        cam.turntable_drag(d.x, d.y);
     }
     if response.dragged_by(egui::PointerButton::Secondary) {
         let d = response.drag_delta();
