@@ -131,6 +131,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     let mut focus: Option<squid_n_core::ids::ElemId> = None;
     let mut jump_to_section: Option<(squid_n_core::ids::SectionId, squid_n_core::ids::ElemId)> =
         None;
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -147,7 +148,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(18.0, n, |mut row| {
+            body.rows(row_h, n, |mut row| {
                 let i = row.index();
                 let (elem_id, pos, ratio, ok, basis) = &checks[i];
                 let is_focus = app.nav.focus_member == Some(*elem_id);
@@ -219,6 +220,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         ui.strong("接合部・耐震壁の検定");
         let ng = joint_checks.iter().filter(|(_, _, _, ok, _)| !ok).count();
         ui.label(format!("{} 箇所を検定、NG {} 件", joint_checks.len(), ng));
+        let row_h = crate::theme::table_row_height(ui);
         TableBuilder::new(ui)
             .striped(true)
             .id_salt("joint_checks")
@@ -235,7 +237,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             })
             .body(|body| {
-                body.rows(18.0, joint_checks.len(), |mut row| {
+                body.rows(row_h, joint_checks.len(), |mut row| {
                     let (node_id, label, ratio, ok, basis) = &joint_checks[row.index()];
                     row.col(|ui| {
                         ui.label(node_id.0.to_string());
@@ -397,6 +399,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             &ctx,
         );
 
+        let row_h = crate::theme::table_row_height(ui);
         TableBuilder::new(ui)
             .striped(true)
             .column(Column::auto())
@@ -428,7 +431,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             })
             .body(|body| {
-                body.rows(18.0, metrics.len(), |mut row| {
+                body.rows(row_h, metrics.len(), |mut row| {
                     let m = &metrics[row.index()];
                     row.col(|ui| {
                         ui.label(&m.name);
@@ -535,6 +538,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             }
         }
         Ok((result, story_ranks)) => {
+            let row_h = crate::theme::table_row_height(ui);
             TableBuilder::new(ui)
                 .striped(true)
                 .column(Column::auto())
@@ -562,7 +566,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 })
                 .body(|body| {
-                    body.rows(18.0, result.stories.len(), |mut row| {
+                    body.rows(row_h, result.stories.len(), |mut row| {
                         let i = row.index();
                         let s = &result.stories[i];
                         let name = app

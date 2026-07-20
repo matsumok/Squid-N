@@ -138,11 +138,12 @@ impl App {
                 .id_salt("nav_members");
             header.show(ui, |ui| {
                 use egui_extras::{Column, TableBuilder};
+                let row_h = crate::theme::table_row_height(ui);
                 TableBuilder::new(ui)
                     .striped(true)
                     .column(Column::auto())
                     .column(Column::remainder())
-                    .header(16.0, |mut h| {
+                    .header(row_h, |mut h| {
                         h.col(|ui| {
                             ui.strong("ID");
                         });
@@ -152,7 +153,7 @@ impl App {
                     })
                     .body(|body| {
                         let n = self.model.elements.len();
-                        body.rows(18.0, n, |mut row| {
+                        body.rows(row_h, n, |mut row| {
                             let idx = row.index();
                             let elem = self.model.elements[idx].clone();
                             let is_focus = self.nav.focus_member == Some(elem.id);

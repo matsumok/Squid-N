@@ -149,6 +149,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 ("Qsu[kN]", "Qsu/Qmu", "Qbu[kN]", "Qbu/Qmu")
             };
+            let row_h = crate::theme::table_row_height(ui);
             TableBuilder::new(ui)
                 .id_salt("ultimate_checks")
                 .striped(true)
@@ -179,7 +180,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 })
                 .body(|body| {
-                    body.rows(18.0, checks.len(), |mut row| {
+                    body.rows(row_h, checks.len(), |mut row| {
                         let i = row.index();
                         let c = &checks[i];
                         row.col(|ui| {
@@ -280,6 +281,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             ui.add_space(4.0);
+            let row_h = crate::theme::table_row_height(ui);
             TableBuilder::new(ui)
                 .id_salt("cft_ultimate_checks")
                 .striped(true)
@@ -308,7 +310,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 })
                 .body(|body| {
-                    body.rows(18.0, checks.len(), |mut row| {
+                    body.rows(row_h, checks.len(), |mut row| {
                         let i = row.index();
                         let c = &checks[i];
                         row.col(|ui| {
