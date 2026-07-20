@@ -2177,6 +2177,18 @@ impl App {
         (nodal, member)
     }
 
+    /// CMQ 図（ビューア）の描画ソース: `self.beam_loads`（`refresh_beam_loads` 適用後の
+    /// 固定荷重（DL）分配）を `slab_load_case_content` で主架構の部材荷重へ変換し、
+    /// `MemberLoad` 側だけを返す（`NodalLoad`＝柱節点などは CMQ 図の描画対象外）。
+    /// これにより、小梁の点反力・大梁中間区間の部分分布荷重が主架構の大梁へ集約された
+    /// 状態（大梁1本=部材荷重の集合）で描画でき、実部材化された小梁やスラブは
+    /// 自然に描画対象から外れる（小梁・柱には `MemberLoad` が付かないため）。
+    /// 呼び出し元（ビューア）が gui フィーチャ限定のため、gui 無効時は dead_code になる。
+    #[cfg(feature = "gui")]
+    pub(crate) fn cmq_display_member_loads(&self) -> Vec<squid_n_core::model::MemberLoad> {
+        self.slab_load_case_content(&self.beam_loads).1
+    }
+
     /// 重力系の標準荷重ケース（DL・LL(架構用)・LL(地震用)）へ自動計算値を同期する
     /// （レビュー §1.1: 面荷重→大梁分配の結果を応力解析へ接続する最重要修正／
     /// 床 Phase A-2: 令85条1項の DL/LL 分離／照合レビュー: ③梁自重・②壁荷重の
