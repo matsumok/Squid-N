@@ -5382,7 +5382,6 @@ dependencies = [
  "squid-n-material",
  "squid-n-math",
  "squid-n-section",
- "squid-n-skeleton",
  "thiserror 1.0.69",
 ]
 

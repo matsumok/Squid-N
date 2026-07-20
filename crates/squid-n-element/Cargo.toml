@@ -10,7 +10,6 @@ squid-n-core   = { path = "../squid-n-core" }
 squid-n-math   = { path = "../squid-n-math" }
 squid-n-material = { path = "../squid-n-material" }
 squid-n-section = { path = "../squid-n-section" }
-squid-n-skeleton = { path = "../squid-n-skeleton" }
 serde     = { workspace = true }
 smallvec  = { workspace = true }
 thiserror = { workspace = true }

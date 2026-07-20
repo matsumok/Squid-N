@@ -935,6 +935,155 @@ fn test_vertical_column_rz_nonsingular() {
     let _ = expected_kt;
 }
 
+/// 回帰テスト: 剛体回転（両端に同じ回転角 θ、曲率ゼロ）だけを与えても
+/// 内力が発生しないこと（客観性）。かつて曲げ剛性へ並列加算していた独立
+/// せん断ばねは、端部並進差 uy_j−uy_i=θ・L を誤ってせん断変形とみなし
+/// 偽の内力を出していた（GAs/L・θL のオーダー、有効せん断断面積が大きい
+/// 断面ほど顕著）。
+#[test]
+fn test_fiber_rigid_rotation_produces_no_force() {
+    // 有効せん断断面積を大きく取り、旧実装ならせん断ばね寄与が支配的に
+    // なる条件（矩形断面 500x500 相当）で検証する。
+    let mut model = build_test_model(Some(78846.15));
+    model.sections[0].as_y = 208333.0;
+    model.sections[0].as_z = 208333.0;
+    model.sections[0].depth = 500.0;
+    model.sections[0].width = 500.0;
+    model.sections[0].area = 250000.0;
+    model.sections[0].iy = 5.2083333e9;
+    model.sections[0].iz = 5.2083333e9;
+
+    let mut fiber = FiberBeam::new(&model.elements[0], &model);
+    let ctx = Ctx { model: &model };
+
+    let theta = 1.0e-4;
+    let l = 3000.0;
+    let du = LocalVec {
+        data: SmallVec::from_slice(&[
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            theta,
+            0.0,
+            theta * l,
+            0.0,
+            0.0,
+            0.0,
+            theta,
+        ]),
+    };
+    fiber.update_state(&du, false, &ctx);
+    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    // 許容値 1.0 の根拠: 旧実装の偽せん断力は GAs/L・θL ≈ 1.6e6 N、正常時は
+    // 丸め誤差（~1e-7）で、判定は 6 桁以上の余裕を持つ。並進 [N]・回転 [N·mm]
+    // の単位混在は、双方とも「ほぼゼロ vs 1e6 以上」の判別であり問題にならない。
+    for (i, v) in f.data.iter().enumerate() {
+        assert!(
+            v.abs() < 1.0,
+            "剛体回転のみで内力が発生した（客観性違反）: dof {i} = {v}"
+        );
+    }
+}
+
+/// 回帰テスト: 弾性状態の初期横剛性が Euler-Bernoulli 理論値と一致すること。
+/// かつての並列せん断ばね（GAs/L を並進 DOF へ直接加算）は片持ち先端剛性を
+/// 理論値の数十倍にしていた。本テストは i 端固定の片持ち縮約剛性
+/// k = 1/(L³/3EI)（先端モーメントフリー）を照合し、GAs/L オーダーの
+/// 過大剛性の再混入を検出する。
+#[test]
+fn test_fiber_initial_lateral_stiffness_matches_euler_theory() {
+    let mut model = build_test_model(Some(78846.15));
+    model.sections[0].as_y = 208333.0;
+    model.sections[0].as_z = 208333.0;
+    model.sections[0].depth = 500.0;
+    model.sections[0].width = 500.0;
+    model.sections[0].area = 250000.0;
+    model.sections[0].iy = 5.2083333e9;
+    model.sections[0].iz = 5.2083333e9;
+
+    let mut fiber = FiberBeam::new(&model.elements[0], &model);
+    let ctx = Ctx { model: &model };
+    let zero = LocalVec {
+        data: SmallVec::from_elem(0.0, 12),
+    };
+    fiber.update_state(&zero, false, &ctx); // 初期弾性接線をキャッシュへ
+    let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+
+    // 片持ち（i端固定）の j 端 [uy, rz] 2x2 ブロックを縮約し、
+    // 先端モーメントフリーの並進剛性 k_tip = det/K(rz,rz) を求める。
+    let a = k.get(7, 7);
+    let b = k.get(7, 11);
+    let c = k.get(11, 11);
+    let k_tip = (a * c - b * b) / c;
+
+    let e = 205000.0;
+    let l: f64 = 3000.0;
+    let ei = e * 5.2083333e9;
+    let k_euler = 3.0 * ei / l.powi(3);
+    // ファイバー離散化（12x20 格子の図心集中）による EI の僅かな目減り
+    // （1−1/nd² ≈ 0.9975）を含めて 1% 以内で一致すること。
+    // 旧実装の並列せん断ばね混入時は k_tip ≈ GAs/L ≈ 46×k_euler となり大きく外れる。
+    approx::assert_relative_eq!(k_tip, k_euler, max_relative = 0.01);
+}
+
+/// 整合性テスト: 接線剛性 K が内力 f_int の微分 ∂f/∂u と一致すること
+/// （有限差分照合）。K ≠ ∂f/∂u の要素が混ざると Newton 反復が二次収束せず
+/// 幾何級数的収束（比一定）に退化するため、ソルバ収束性の前提として検証する。
+/// trial は committed 状態から評価される（path 非依存）ため、摂動ごとに
+/// 要素を作り直して評価する。
+#[test]
+fn test_fiber_tangent_consistent_with_internal_force() {
+    let model = build_test_model(Some(78846.15));
+    let ctx = Ctx { model: &model };
+    let state = ElemState::default();
+    let h = 1e-6;
+    // 弾性域の代表的な変形状態（並進 [mm]・回転 [rad] 混在）
+    let u0: [f64; 12] = [
+        0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
+    ];
+
+    let mut b0 = FiberBeam::new(&model.elements[0], &model);
+    b0.update_state(
+        &LocalVec {
+            data: SmallVec::from_slice(&u0),
+        },
+        false,
+        &ctx,
+    );
+    let f0 = b0.internal_force(&state, &ctx);
+    let k = b0.tangent_stiffness(&state, &ctx);
+    let kmax = (0..12)
+        .flat_map(|i| (0..12).map(move |j| (i, j)))
+        .map(|(i, j)| k.get(i, j).abs())
+        .fold(0.0_f64, f64::max);
+
+    for j in 0..12 {
+        let mut up = u0;
+        up[j] += h;
+        let mut bp = FiberBeam::new(&model.elements[0], &model);
+        bp.update_state(
+            &LocalVec {
+                data: SmallVec::from_slice(&up),
+            },
+            false,
+            &ctx,
+        );
+        let fp = bp.internal_force(&state, &ctx);
+        for i in 0..12 {
+            let fd = (fp.data[i] - f0.data[i]) / h;
+            let err = (fd - k.get(i, j)).abs() / kmax;
+            assert!(
+                err < 1e-6,
+                "K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
+                k.get(i, j),
+                fd
+            );
+        }
+    }
+}
+
 #[test]
 fn test_fiber_beam_checkpoint_roundtrip() {
     let mut fiber = make_test_fiber_beam(Some(0.0));
