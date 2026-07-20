@@ -31,6 +31,7 @@ fn make_test_beam() -> crate::beam::BeamElement {
         section: None,
         material: None,
         committed_disp: [0.0; 12],
+        trial_disp: [0.0; 12],
     }
 }
 
@@ -298,17 +299,36 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
     restored.deserialize_checkpoint(&checkpoint).unwrap();
     let snap_after = restored.snapshot_state();
 
-    // スナップショットの型で比較（Vec<Box<dyn UniaxialMaterial>>, f64, f64, f64, f64）
-    let before = snap_before
-        .downcast_ref::<(Vec<Box<dyn UniaxialMaterial>>, f64, f64, f64, f64)>()
-        .unwrap();
-    let after = snap_after
-        .downcast_ref::<(Vec<Box<dyn UniaxialMaterial>>, f64, f64, f64, f64)>()
-        .unwrap();
+    // スナップショットの型で比較（回転状態 + 弾性梁の committed/trial 変位）
+    type Snap = (
+        Vec<Box<dyn UniaxialMaterial>>,
+        f64,
+        f64,
+        f64,
+        f64,
+        [f64; 12],
+        [f64; 12],
+    );
+    let before = snap_before.downcast_ref::<Snap>().unwrap();
+    let after = snap_after.downcast_ref::<Snap>().unwrap();
     assert_relative_eq!(before.1, after.1, epsilon = 1e-12);
     assert_relative_eq!(before.2, after.2, epsilon = 1e-12);
     assert_relative_eq!(before.3, after.3, epsilon = 1e-12);
     assert_relative_eq!(before.4, after.4, epsilon = 1e-12);
+    // 弾性梁部分の変位もチェックポイントを往復して保存されること
+    // （update_state で非零になっているため、欠落していればここで検出される）。
+    assert!(
+        before.5.iter().any(|v| v.abs() > 1e-15),
+        "前提: committed が非零"
+    );
+    assert!(
+        before.6.iter().any(|v| v.abs() > 1e-15),
+        "前提: trial が非零"
+    );
+    for i in 0..12 {
+        assert_relative_eq!(before.5[i], after.5[i], epsilon = 1e-12);
+        assert_relative_eq!(before.6[i], after.6[i], epsilon = 1e-12);
+    }
 }
 #[test]
 fn test_mn_interaction_reduces_spring_yield() {
@@ -333,12 +353,22 @@ fn test_mn_interaction_reduces_spring_yield() {
     assert_relative_eq!(spring_fy(&*elem.spring_i), 0.5 * my0, max_relative = 1e-9);
     assert_relative_eq!(spring_fy(&*elem.spring_j), 0.5 * my0, max_relative = 1e-9);
 
-    // 引張でも同じ低減（|N| 基準）。trial は非累積（rot と同様に committed 基準）
+    // トライアル追従化により反復中の増分は累積されるため、+0.5 を追加すると
+    // 累積軸変位は 0 に戻り、低減も解除される（Newton 反復として正しい挙動）。
     let du_t = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du_t, false, &ctx);
-    assert_relative_eq!(spring_fy(&*elem.spring_i), 0.5 * my0, max_relative = 1e-9);
+    assert_relative_eq!(spring_fy(&*elem.spring_i), my0, max_relative = 1e-9);
+
+    // 引張でも同じ低減（|N| 基準）: 新しい要素に引張変位 +0.5mm を与えて検証。
+    let elastic_t = make_test_beam();
+    let spring_ti = Box::new(Bilinear::new(1.0e12, my0, 0.01));
+    let spring_tj = Box::new(Bilinear::new(1.0e12, my0, 0.01));
+    let mut elem_t = ConcentratedSpringBeam::new_one_component(elastic_t, spring_ti, spring_tj)
+        .with_mn_interaction(my0, n_allow);
+    elem_t.update_state(&du_t, false, &ctx);
+    assert_relative_eq!(spring_fy(&*elem_t.spring_i), 0.5 * my0, max_relative = 1e-9);
 }
 
 #[test]

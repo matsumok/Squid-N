@@ -37,6 +37,7 @@ fn make_test_beam_element(as_val: f64) -> crate::beam::BeamElement {
         section: None,
         material: None,
         committed_disp: [0.0; 12],
+        trial_disp: [0.0; 12],
     }
 }
 

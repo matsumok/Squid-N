@@ -47,8 +47,11 @@ pub struct NodalSpringElement {
     pub k: [f64; 6],
     /// 局所座標系。2 節点が同一座標（零長バネ）の場合は単位回転（全体座標系＝局所座標系）。
     pub axis: LocalFrame,
-    /// 確定変位（線形要素の内力計算用。グローバル座標系で蓄積）。
+    /// 確定変位（グローバル座標系）。commit_state で trial_disp から確定される。
     pub committed_disp: [f64; 12],
+    /// トライアル変位（グローバル座標系）。Newton 反復中も蓄積され、
+    /// internal_force はこちらを参照する（beam/behavior.rs と同じ規約）。
+    pub trial_disp: [f64; 12],
 }
 
 /// 2 節点間距離が実質ゼロとみなす閾値 [mm]。
@@ -92,6 +95,7 @@ impl NodalSpringElement {
             k,
             axis,
             committed_disp: [0.0; 12],
+            trial_disp: [0.0; 12],
         }
     }
 
@@ -138,7 +142,7 @@ impl ElementBehavior for NodalSpringElement {
     }
 
     fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
-        // 線形弾性: f = K_global · u（truss.rs の committed_disp 方式に倣う）。
+        // 線形弾性: f = K_global · u（トライアル追従。truss.rs と同じ規約）。
         let k = self.axis.to_global(&self.local_stiffness());
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
@@ -146,7 +150,7 @@ impl ElementBehavior for NodalSpringElement {
         for i in 0..12 {
             let mut s = 0.0;
             for j in 0..12 {
-                s += k.get(i, j) * self.committed_disp[j];
+                s += k.get(i, j) * self.trial_disp[j];
             }
             f.data[i] = s;
         }
@@ -154,11 +158,53 @@ impl ElementBehavior for NodalSpringElement {
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        if commit {
-            for i in 0..12 {
-                self.committed_disp[i] += du.data[i];
-            }
+        for i in 0..12 {
+            self.trial_disp[i] += du.data[i];
         }
+        if commit {
+            self.committed_disp = self.trial_disp;
+        }
+    }
+
+    fn commit_state(&mut self) {
+        self.committed_disp = self.trial_disp;
+    }
+
+    fn revert_state(&mut self) {
+        self.trial_disp = self.committed_disp;
+    }
+
+    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
+        Box::new((self.committed_disp, self.trial_disp))
+    }
+
+    fn restore_state(&mut self, state: &dyn std::any::Any) {
+        if let Some((committed, trial)) = state.downcast_ref::<([f64; 12], [f64; 12])>() {
+            self.committed_disp = *committed;
+            self.trial_disp = *trial;
+        }
+    }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        // トライアル追従化により変位が蓄積されるようになったため、
+        // チェックポイントに committed/trial の両変位を含める（レジューム時に
+        // 変位 0 から再計算されて内力が不整合になるのを防ぐ）。
+        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
+        if data.is_empty() {
+            return Ok(());
+        }
+        let (committed, trial): ([f64; 12], [f64; 12]) = bincode::deserialize(data)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        self.committed_disp = committed;
+        self.trial_disp = trial;
+        Ok(())
     }
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {

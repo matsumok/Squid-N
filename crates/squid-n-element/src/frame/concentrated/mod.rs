@@ -73,13 +73,11 @@ impl ConcentratedSpringBeam {
         self
     }
 
-    /// 現在の軸力 [N]（引張正）。確定変位（＋任意の増分）から
-    /// 弾性部の軸ひずみを取り出して評価する。
+    /// 現在の軸力 [N]（引張正）。トライアル変位（＋任意の増分）から
+    /// 弾性部の軸ひずみを取り出して評価する。Newton 反復中の累積修正量も
+    /// 反映される（トライアル追従）。
     fn current_axial_force(&self, du_local: Option<&[f64; 12]>) -> f64 {
-        let ul = self
-            .elastic
-            .axis
-            .rotate_to_local(&self.elastic.committed_disp);
+        let ul = self.elastic.axis.rotate_to_local(&self.elastic.trial_disp);
         let mut d = ul[6] - ul[0];
         if let Some(du) = du_local {
             d += du[6] - du[0];
@@ -248,10 +246,11 @@ impl ElementBehavior for ConcentratedSpringBeam {
                 "TwoComponent spring model is not yet implemented (P5 §3). Use OneComponent."
             ),
         };
-        // committed_disp はグローバル系のため、グローバル剛性で内力を評価する。
+        // trial_disp はグローバル系のため、グローバル剛性で内力を評価する
+        // （トライアル追従。Newton 反復中の未確定変位も反映する）。
         let k_node = self.elastic.axis.to_global(&k_local);
 
-        let u = &self.elastic.committed_disp;
+        let u = &self.elastic.trial_disp;
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
         };
@@ -303,19 +302,31 @@ impl ElementBehavior for ConcentratedSpringBeam {
     fn snapshot_state(&self) -> Box<dyn Any> {
         let materials: Vec<Box<dyn UniaxialMaterial>> =
             vec![self.spring_i.clone_box(), self.spring_j.clone_box()];
+        // 弾性梁部分の変位状態（committed/trial）もスナップショットへ含める。
+        // これを欠くと、非収束ステップのロールバック（restore_state）後に
+        // 弾性部のトライアル変位だけが失敗した反復の値のまま残ってしまう。
         Box::new((
             materials,
             self.rot_i,
             self.rot_j,
             self.trial_rot_i,
             self.trial_rot_j,
+            self.elastic.committed_disp,
+            self.elastic.trial_disp,
         ))
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some(snapshot) =
-            state.downcast_ref::<(Vec<Box<dyn UniaxialMaterial>>, f64, f64, f64, f64)>()
-        {
+        type Snapshot = (
+            Vec<Box<dyn UniaxialMaterial>>,
+            f64,
+            f64,
+            f64,
+            f64,
+            [f64; 12],
+            [f64; 12],
+        );
+        if let Some(snapshot) = state.downcast_ref::<Snapshot>() {
             if snapshot.0.len() == 2 {
                 self.spring_i = snapshot.0[0].clone_box();
                 self.spring_j = snapshot.0[1].clone_box();
@@ -324,6 +335,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
             self.rot_j = snapshot.2;
             self.trial_rot_i = snapshot.3;
             self.trial_rot_j = snapshot.4;
+            self.elastic.committed_disp = snapshot.5;
+            self.elastic.trial_disp = snapshot.6;
         }
     }
 
@@ -344,15 +357,9 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct ConcentratedSpringCheckpoint {
-            rot_i: f64,
-            rot_j: f64,
-            trial_rot_i: f64,
-            trial_rot_j: f64,
-            spring_i: Vec<u8>,
-            spring_j: Vec<u8>,
-        }
+        // 弾性梁部分の変位（committed/trial）もチェックポイントへ含める。
+        // これを欠くと、レジューム時に弾性部の内力が変位 0 から再計算されて
+        // 不整合になる（snapshot_state と同じ理由。FiberBeam の直列化と同規約）。
         let cp = ConcentratedSpringCheckpoint {
             rot_i: self.rot_i,
             rot_j: self.rot_j,
@@ -360,6 +367,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
             trial_rot_j: self.trial_rot_j,
             spring_i: self.spring_i.serialize_state(),
             spring_j: self.spring_j.serialize_state(),
+            elastic_committed_disp: self.elastic.committed_disp,
+            elastic_trial_disp: self.elastic.trial_disp,
         };
         bincode::serialize(&cp).expect("serialize checkpoint")
     }
@@ -368,15 +377,6 @@ impl ElementBehavior for ConcentratedSpringBeam {
         &mut self,
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct ConcentratedSpringCheckpoint {
-            rot_i: f64,
-            rot_j: f64,
-            trial_rot_i: f64,
-            trial_rot_j: f64,
-            spring_i: Vec<u8>,
-            spring_j: Vec<u8>,
-        }
         let cp: ConcentratedSpringCheckpoint = bincode::deserialize(data)
             .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
         self.rot_i = cp.rot_i;
@@ -385,8 +385,23 @@ impl ElementBehavior for ConcentratedSpringBeam {
         self.trial_rot_j = cp.trial_rot_j;
         self.spring_i.deserialize_state(&cp.spring_i)?;
         self.spring_j.deserialize_state(&cp.spring_j)?;
+        self.elastic.committed_disp = cp.elastic_committed_disp;
+        self.elastic.trial_disp = cp.elastic_trial_disp;
         Ok(())
     }
+}
+
+/// [`ConcentratedSpringBeam`] のチェックポイント形式（serialize/deserialize 共用）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ConcentratedSpringCheckpoint {
+    rot_i: f64,
+    rot_j: f64,
+    trial_rot_i: f64,
+    trial_rot_j: f64,
+    spring_i: Vec<u8>,
+    spring_j: Vec<u8>,
+    elastic_committed_disp: [f64; 12],
+    elastic_trial_disp: [f64; 12],
 }
 
 #[cfg(test)]

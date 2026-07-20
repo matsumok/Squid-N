@@ -383,6 +383,7 @@ impl BeamElement {
             section: data.section,
             material: data.material,
             committed_disp: [0.0; 12],
+            trial_disp: [0.0; 12],
         }
     }
 }

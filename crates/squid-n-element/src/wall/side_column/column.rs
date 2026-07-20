@@ -143,8 +143,8 @@ impl ElementBehavior for InPlaneReleasedColumn {
     }
 
     fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
-        // committed_disp はグローバル系で蓄積される（BeamElement と同じ規約）ため、
-        // 解放後の局所剛性をグローバルへ回した K で内力を評価する。
+        // trial_disp はグローバル系で蓄積される（BeamElement と同じトライアル追従規約）
+        // ため、解放後の局所剛性をグローバルへ回した K で内力を評価する。
         let k = self.inner.axis.to_global(&self.released_local_stiffness());
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
@@ -152,7 +152,7 @@ impl ElementBehavior for InPlaneReleasedColumn {
         for i in 0..12 {
             let mut s = 0.0;
             for j in 0..12 {
-                s += k.get(i, j) * self.inner.committed_disp[j];
+                s += k.get(i, j) * self.inner.trial_disp[j];
             }
             f.data[i] = s;
         }
@@ -161,6 +161,33 @@ impl ElementBehavior for InPlaneReleasedColumn {
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
         self.inner.update_state(du, commit, ctx);
+    }
+
+    fn commit_state(&mut self) {
+        self.inner.commit_state();
+    }
+
+    fn revert_state(&mut self) {
+        self.inner.revert_state();
+    }
+
+    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
+        self.inner.snapshot_state()
+    }
+
+    fn restore_state(&mut self, state: &dyn std::any::Any) {
+        self.inner.restore_state(state);
+    }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        self.inner.serialize_checkpoint()
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        self.inner.deserialize_checkpoint(data)
     }
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
