@@ -1156,6 +1156,11 @@ fn diagram_offset_dir(p_i: [f64; 3], p_j: [f64; 3], ref_vector: [f64; 3]) -> [f6
     squid_n_element::transform::LocalFrame::from_nodes(p_i, p_j, ref_vector).rot[1]
 }
 
+/// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
+fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
+    ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2) + (p_j[2] - p_i[2]).powi(2)).sqrt()
+}
+
 /// 3D 位置 `base3` から `dir3` 方向へ `off_world` だけ張り出した点を投影する。
 fn project_offset(
     base3: [f64; 3],
@@ -1236,6 +1241,9 @@ fn draw_force_diagram(
         }
         let p_i = coords3[n0];
         let p_j = coords3[n1];
+        if member_len3(p_i, p_j) < 1e-9 {
+            continue; // ゼロ長部材（同一節点間）は材軸が定まらず図を描けない
+        }
         let ey = diagram_offset_dir(p_i, p_j, elem.local_axis.ref_vector);
         let p0 = {
             let p = project(p_i, center3, cam, scale, screen_center);
@@ -1367,6 +1375,9 @@ fn draw_cmq_diagram(
         }
         let p_i = coords3[n0];
         let p_j = coords3[n1];
+        if member_len3(p_i, p_j) < 1e-9 {
+            continue; // ゼロ長スパン（同一節点間）は材軸が定まらず図を描けない
+        }
         let ref_vec = ref_vec.unwrap_or_else(|| {
             let dxy = ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2)).sqrt();
             if dxy < 1.0 {
