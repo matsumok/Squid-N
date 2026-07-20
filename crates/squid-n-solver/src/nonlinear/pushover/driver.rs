@@ -164,11 +164,9 @@ pub fn pushover_analysis_recording(
             // 全修正量を累積しているため base_shear は正しく、変位のみ不整合）。
             let mut step_du_free = vec![0.0; n_active];
 
-            // Newton 反復上限: 本ドライバは弾性要素（BeamElement・集中ばね梁）の内力が
-            // commit までトライアル変位を反映しない準ニュートン形式のため、収束は
-            // 線形（幾何級数）で、縮小率は弾性要素が全体剛性に占める割合で決まる。
-            // 強軸剛性の軸対応修正で弾性梁の面内剛性が正しく（大きく）なり、
-            // 20 回では不足するケースがあるため 50 回とする。
+            // Newton 反復上限。全要素がトライアル追従（internal_force が反復中の
+            // 未確定変位を反映する）となったため、弾性支配の状態ではほぼ 1〜2 回で
+            // 収束する。上限 50 は塑性進行時（接線更新を要する反復）の余裕。
             for _iter in 0..50 {
                 let k_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
                 let k_red = reducer.reduce_k(&k_free);

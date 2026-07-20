@@ -68,6 +68,7 @@ mod tests {
             section: None,
             material: None,
             committed_disp: [0.0; 12],
+            trial_disp: [0.0; 12],
         };
         InPlaneReleasedColumn::new(inner, release_axis)
     }

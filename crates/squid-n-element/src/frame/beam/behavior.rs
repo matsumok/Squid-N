@@ -79,8 +79,10 @@ impl ElementBehavior for BeamElement {
     }
 
     fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
-        // committed_disp はグローバル系で蓄積されるため、グローバル剛性で内力を評価する。
+        // trial_disp はグローバル系で蓄積されるため、グローバル剛性で内力を評価する。
         // f_global = (R^T·K_local·R)·u_global
+        // Newton 反復中の未確定変位も反映する（トライアル追従。committed のみを
+        // 参照すると反復中に内力が凍結し、収束が準ニュートンに劣化する）。
         let k = self.axis.to_global(&self.local_stiffness());
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
@@ -88,7 +90,7 @@ impl ElementBehavior for BeamElement {
         for i in 0..12 {
             let mut s = 0.0;
             for j in 0..12 {
-                s += k.get(i, j) * self.committed_disp[j];
+                s += k.get(i, j) * self.trial_disp[j];
             }
             f.data[i] = s;
         }
@@ -97,9 +99,29 @@ impl ElementBehavior for BeamElement {
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
         for i in 0..12 {
-            if commit {
-                self.committed_disp[i] += du.data[i];
-            }
+            self.trial_disp[i] += du.data[i];
+        }
+        if commit {
+            self.committed_disp = self.trial_disp;
+        }
+    }
+
+    fn commit_state(&mut self) {
+        self.committed_disp = self.trial_disp;
+    }
+
+    fn revert_state(&mut self) {
+        self.trial_disp = self.committed_disp;
+    }
+
+    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
+        Box::new((self.committed_disp, self.trial_disp))
+    }
+
+    fn restore_state(&mut self, state: &dyn std::any::Any) {
+        if let Some((committed, trial)) = state.downcast_ref::<([f64; 12], [f64; 12])>() {
+            self.committed_disp = *committed;
+            self.trial_disp = *trial;
         }
     }
 

@@ -166,6 +166,8 @@ fn test_build_behavior_concentrated_spring_uses_spring_beam() {
             f64,
             f64,
             f64,
+            [f64; 12],
+            [f64; 12],
         )>()
         .is_some();
     assert!(
@@ -228,6 +230,8 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
             f64,
             f64,
             f64,
+            [f64; 12],
+            [f64; 12],
         )>()
         .is_some();
     assert!(

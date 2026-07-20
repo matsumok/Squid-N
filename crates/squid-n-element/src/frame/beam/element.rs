@@ -41,6 +41,12 @@ pub struct BeamElement {
     pub eval_sections: Vec<f64>,
     pub section: Option<squid_n_core::ids::SectionId>,
     pub material: Option<squid_n_core::ids::MaterialId>,
-    /// 確定変位（線形要素の内力計算用。非線形では ElemState が保持）
+    /// 確定変位（グローバル系）。commit_state で trial_disp から確定される。
     pub committed_disp: [f64; 12],
+    /// トライアル変位（グローバル系）。Newton 反復中（update_state の
+    /// commit=false）も蓄積され、internal_force はこちらを参照する。
+    /// これを欠くと弾性要素の内力が反復中凍結し、非線形解析の収束が
+    /// 線形（準ニュートン）に劣化するうえ、弾性要素が復元力を負担しない
+    /// 誤った釣合いに収束する。
+    pub trial_disp: [f64; 12],
 }

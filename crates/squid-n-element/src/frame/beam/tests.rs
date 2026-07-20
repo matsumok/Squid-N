@@ -29,6 +29,7 @@ fn make_test_beam() -> BeamElement {
         section: None,
         material: None,
         committed_disp: [0.0; 12],
+        trial_disp: [0.0; 12],
     }
 }
 
@@ -2377,4 +2378,63 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
 
     // 鉛直曲げ剛性 > 水平曲げ剛性（強軸 ≫ 弱軸）であること
     assert!(k.get(1, 1) > k.get(2, 2) * 5.0);
+}
+
+/// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
+/// 反映され、commit_state で確定、revert_state / restore_state でロールバック
+/// できること。旧実装は commit=false の du を捨てており、非線形ドライバの規律
+/// 「反復中 update_state(du,false) → 収束時 commit_state()」では弾性要素の内力が
+/// 一切更新されなかった（Newton 収束の劣化と、弾性要素が復元力を負担しない
+/// 誤った釣合いの原因）。
+#[test]
+fn test_beam_trial_displacement_tracking() {
+    use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
+    let mut beam = make_test_beam();
+    let model = Model::default();
+    let ctx = Ctx { model: &model };
+    let state = ElemState::default();
+
+    // 初期状態: 内力ゼロ
+    assert!(beam
+        .internal_force(&state, &ctx)
+        .data
+        .iter()
+        .all(|v| v.abs() < 1e-12));
+
+    let mut du = LocalVec {
+        data: smallvec::SmallVec::from_elem(0.0, 12),
+    };
+    du.data[6] = 1.0; // j端 軸方向 1mm
+    let snap = beam.snapshot_state();
+    beam.update_state(&du, false, &ctx);
+
+    // commit 前でも内力へ反映される（トライアル追従）
+    let f = beam.internal_force(&state, &ctx);
+    let ea_over_l = beam.e * beam.a / beam.length;
+    assert!(
+        (f.data[6] - ea_over_l).abs() / ea_over_l < 1e-12,
+        "f6={} expected EA/L={}",
+        f.data[6],
+        ea_over_l
+    );
+
+    // commit_state で確定
+    beam.commit_state();
+    assert!((beam.committed_disp[6] - 1.0).abs() < 1e-15);
+
+    // さらに反復 → revert_state で確定値へ戻る
+    beam.update_state(&du, false, &ctx);
+    assert!((beam.trial_disp[6] - 2.0).abs() < 1e-15);
+    beam.revert_state();
+    assert!((beam.trial_disp[6] - 1.0).abs() < 1e-15);
+
+    // restore_state でスナップショット時点（初期状態）へ完全ロールバック
+    beam.restore_state(&*snap);
+    assert!(beam
+        .internal_force(&state, &ctx)
+        .data
+        .iter()
+        .all(|v| v.abs() < 1e-12));
+    assert!(beam.committed_disp.iter().all(|v| *v == 0.0));
+    assert!(beam.trial_disp.iter().all(|v| *v == 0.0));
 }
