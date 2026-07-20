@@ -19,6 +19,7 @@ mod rect;
 mod rigid_zone;
 mod types;
 
+pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
 pub use geometry::{polygon_area, slab_dimensions};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};

@@ -62,6 +62,18 @@ pub enum ViewMode {
     Cmq,
 }
 
+/// CMQ 図で表示する成分（C: 固定端モーメント／M: 単純梁中央モーメント／Q: せん断）。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CmqComponent {
+    /// 固定端モーメント C 図
+    #[default]
+    C,
+    /// 単純梁としての曲げモーメント M 図（中央モーメントの目安）
+    M,
+    /// せん断 Q 図
+    Q,
+}
+
 // ===== クォータニオン（3Dカメラ回転用, [w, x, y, z]）=====
 // mn_view（M-N相関曲面ビュー）でも同じ操作感の3Dカメラを実装するため、
 // これらのヘルパは pub(crate) として公開し再利用する。
@@ -412,6 +424,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode = app.view_mode;
     let mut deform_scale = app.deform_scale;
     let mut mode_idx = app.view_mode_idx;
+    let mut cmq_component = app.cmq_component;
 
     // --- コントロール ---
     // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
@@ -444,6 +457,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.add(egui::Slider::new(&mut deform_scale, 1.0..=10000.0).logarithmic(true));
         });
     }
+    if mode == ViewMode::Cmq {
+        ui.horizontal(|ui| {
+            ui.label("成分:");
+            ui.selectable_value(&mut cmq_component, CmqComponent::C, "C(モーメント)");
+            ui.selectable_value(&mut cmq_component, CmqComponent::M, "M(中央)");
+            ui.selectable_value(&mut cmq_component, CmqComponent::Q, "Q(せん断)");
+        });
+    }
     if mode == ViewMode::Mode {
         let n_modes = app
             .results
@@ -472,6 +493,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     app.view_mode = mode;
     app.deform_scale = deform_scale;
     app.view_mode_idx = mode_idx;
+    app.cmq_component = cmq_component;
 
     // CMQ 図はモデル編集に常に追従させるため、表示中は毎フレーム再計算する
     // （スラブ数は小さい前提）。
@@ -968,7 +990,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 荷重分配オブジェクト（解析部材ではない）であることが分かるよう、
     // 構造部材（実線・青/グレー系）と異なる暖色半透明フィル＋破線のフォーマットで描く。
     // 部材線・断面ソリッドより先に描き、架構が床の上に重なるようにする。
-    draw_slabs_and_joists(&painter, app, &pts);
+    // CMQ 図は全体解析（主架構）に関するものなので、小梁・スラブは表示しない。
+    if mode != ViewMode::Cmq {
+        draw_slabs_and_joists(&painter, app, &pts);
+    }
 
     // --- 断面ソリッド ---
     // 節点・部材線より先に描き、線・シンボル類は上に重ねる（材軸が見えるように）。
@@ -1300,11 +1325,139 @@ fn draw_force_diagram(
     );
 }
 
-/// 部材ローカルに沿って CMQ 図（両端の固定端モーメント C とせん断 Q）を描く。
+/// CMQ 図の描画対象となる主架構の大梁か（`ElementKind::Beam` かつ、実部材化された
+/// 小梁でない）。実部材化小梁は `slab.joists` の support 節点対に一致する Beam 要素
+/// として判定する（`squid-n-load` の `beam_between` と同じ判定規則）。CMQ は全体解析
+/// （主架構の応力）に関する図なので、二次部材（小梁・間柱）は対象外とする。
+fn is_primary_beam_for_cmq(
+    model: &squid_n_core::model::Model,
+    elem: &squid_n_core::model::ElementData,
+) -> bool {
+    if elem.kind != squid_n_core::model::ElementKind::Beam || elem.nodes.len() != 2 {
+        return false;
+    }
+    let (n0, n1) = (elem.nodes[0], elem.nodes[1]);
+    let is_materialized_joist = model.slabs.iter().any(|slab| {
+        slab.joists.iter().any(|j| {
+            (j.support[0] == n0 && j.support[1] == n1) || (j.support[0] == n1 && j.support[1] == n0)
+        })
+    });
+    !is_materialized_joist
+}
+
+/// 一つの主架構の大梁（`ElemId`）に載る全 `MemberLoadKind` を束ねたグループ。
+struct CmqElemGroup {
+    n0: usize,
+    n1: usize,
+    ref_vec: [f64; 3],
+    /// C/M/Q 評価用。グループ内の全 `MemberLoad` の荷重種別（`MemberLoadKind`）。
+    loads: Vec<squid_n_core::model::MemberLoadKind>,
+}
+
+/// `app.cmq_display_member_loads()`（主架構変換後の部材荷重）を要素（大梁）単位で
+/// グループ化する。大梁の中間区間（小梁がとりつく位置）の荷重も同じ `ElemId` に
+/// 変換されているため、大梁1本=1グループになる。小梁・柱・スラブには `MemberLoad`
+/// が付かない（または実部材化小梁として `is_primary_beam_for_cmq` で除外される）ため
+/// 自然に描画対象から外れる。描画順は初出順（`app.beam_loads` に現れた順）で安定する。
+fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
+    let member_loads = app.cmq_display_member_loads();
+    let mut order: Vec<squid_n_core::ids::ElemId> = Vec::new();
+    let mut groups: std::collections::HashMap<squid_n_core::ids::ElemId, CmqElemGroup> =
+        std::collections::HashMap::new();
+    for ml in member_loads {
+        let Some(elem) = app.model.elements.iter().find(|e| e.id == ml.elem) else {
+            continue;
+        };
+        if !is_primary_beam_for_cmq(&app.model, elem) {
+            continue;
+        }
+        let group = groups.entry(ml.elem).or_insert_with(|| {
+            order.push(ml.elem);
+            CmqElemGroup {
+                n0: elem.nodes[0].index(),
+                n1: elem.nodes[1].index(),
+                ref_vec: elem.local_axis.ref_vector,
+                loads: Vec::new(),
+            }
+        });
+        group.loads.push(ml.kind);
+    }
+    order
+        .into_iter()
+        .filter_map(|id| groups.remove(&id))
+        .collect()
+}
+
+/// グループ内の全荷重の両端固定端モーメントを合算する（C 図）。
+fn sum_fixed_end_moments(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> (f64, f64) {
+    loads
+        .iter()
+        .map(|ld| squid_n_load::floor::fixed_end_moments(ld, l))
+        .fold((0.0, 0.0), |(ai, aj), (ci, cj)| (ai + ci, aj + cj))
+}
+
+/// グループ内の全荷重の単純梁反力を合算する（Q 図）。
+fn sum_simple_reactions(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> (f64, f64) {
+    loads
+        .iter()
+        .map(|ld| squid_n_load::floor::simple_reactions(ld, l))
+        .fold((0.0, 0.0), |(ai, aj), (ri, rj)| (ai + ri, aj + rj))
+}
+
+/// M（単純梁中央モーメント）図の折れ線サンプリング位置 ξ∈[0,1] を返す。
+/// 等分割に加え、`loads` に含まれる区間分布荷重の両端 a/L, b/L・集中荷重の a/L を
+/// 折れ点として正確に出すため追加する。
+fn cmq_m_sample_xis(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> Vec<f64> {
+    use squid_n_core::model::MemberLoadKind;
+    const N: usize = 32;
+    let mut xis: Vec<f64> = (0..=N).map(|k| k as f64 / N as f64).collect();
+    if l > 1e-9 {
+        for load in loads {
+            match *load {
+                MemberLoadKind::Point { a, .. } => xis.push((a / l).clamp(0.0, 1.0)),
+                MemberLoadKind::Distributed { a, b, .. } => {
+                    xis.push((a / l).clamp(0.0, 1.0));
+                    xis.push((b / l).clamp(0.0, 1.0));
+                }
+            }
+        }
+    }
+    xis.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xis.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    xis
+}
+
+/// ポリゴンを塗り（`convex_polygon`, `Stroke::NONE`）と輪郭（閉じない折れ線
+/// `Shape::line`）に分けて描画する。塗り+輪郭を1シェイプにする従来方式（閉路）だと、
+/// p0/p1 で軸線と曲線が浅い角度で接する折り返し点の epaint マイター結合が発散し、
+/// 部材軸方向に画面外まで伸びるスパイク描画になるため、輪郭は閉じない折れ線にする。
+fn paint_diagram_polygon(
+    painter: &egui::Painter,
+    points: Vec<egui::Pos2>,
+    fill: egui::Color32,
+    stroke_color: egui::Color32,
+) {
+    painter.add(egui::Shape::convex_polygon(
+        points.clone(),
+        fill,
+        egui::Stroke::NONE,
+    ));
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5_f32, stroke_color),
+    ));
+}
+
+/// 部材ローカルに沿って CMQ 図（両端固定端モーメント C・単純梁中央モーメント M・
+/// せん断 Q）を描く。
 ///
 /// N/Q/M 図と同様、張り出し方向は要素ローカル y 軸（曲げ平面内）をワールド空間で
 /// とってから投影する。CMQ は鉛直床荷重による強軸曲げのため、水平梁では鉛直面内の
 /// 図となり、ビューを回転しても要素座標系に固定される。
+///
+/// 描画ソースは `app.beam_loads`（スラブ・小梁の生の荷重分配）ではなく、主架構へ
+/// 変換後の部材荷重（[`group_member_loads_by_elem`]）。これにより大梁1本=1図形になり
+/// （小梁がとりつく大梁で図が分裂しない）、小梁・スラブは自然に描画対象から外れる。
 #[allow(clippy::too_many_arguments)]
 fn draw_cmq_diagram(
     painter: &egui::Painter,
@@ -1335,58 +1488,65 @@ fn draw_cmq_diagram(
         return;
     }
 
-    let max_c = app
-        .beam_loads
+    // 主架構へ変換後の部材荷重を要素（大梁）単位でグループ化し、座標が有効
+    // （範囲内・非ゼロ長）なものだけを対象にする。
+    let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(app)
+        .into_iter()
+        .filter(|g| {
+            g.n0 < coords3.len()
+                && g.n1 < coords3.len()
+                && member_len3(coords3[g.n0], coords3[g.n1]) >= 1e-9
+        })
+        .collect();
+
+    let max_c = groups
         .iter()
-        .map(|bl| bl.cmq.c_i.abs().max(bl.cmq.c_j.abs()))
+        .map(|g| {
+            let l = member_len3(coords3[g.n0], coords3[g.n1]);
+            let (c_i, c_j) = sum_fixed_end_moments(&g.loads, l);
+            c_i.abs().max(c_j.abs())
+        })
         .fold(0.0_f64, f64::max);
-    let max_q = app
-        .beam_loads
+    let max_q = groups
         .iter()
-        .map(|bl| bl.cmq.q_i.abs().max(bl.cmq.q_j.abs()))
+        .map(|g| {
+            let l = member_len3(coords3[g.n0], coords3[g.n1]);
+            let (q_i, q_j) = sum_simple_reactions(&g.loads, l);
+            q_i.abs().max(q_j.abs())
+        })
         .fold(0.0_f64, f64::max);
-    if max_c < 1e-12 && max_q < 1e-12 {
+    // M（単純梁中央モーメント）の最大値: スパンをサンプリングして評価する。
+    let max_m = groups
+        .iter()
+        .map(|g| {
+            let l = member_len3(coords3[g.n0], coords3[g.n1]);
+            cmq_m_sample_xis(&g.loads, l)
+                .into_iter()
+                .fold(0.0_f64, |acc, xi| {
+                    acc.max(squid_n_load::floor::simple_beam_moment_at(&g.loads, l, xi * l).abs())
+                })
+        })
+        .fold(0.0_f64, f64::max);
+    if max_c < 1e-12 && max_q < 1e-12 && max_m < 1e-12 {
         return;
     }
     // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
     let c_amp = 60.0 / max_c.max(1e-12) / scale as f64;
     let q_amp = 60.0 / max_q.max(1e-12) / scale as f64;
+    let m_amp = 60.0 / max_m.max(1e-12) / scale as f64;
 
-    for bl in &app.beam_loads {
-        // 描画スパンの両端節点: 実部材に解決済みなら部材の両端とその局所座標系、
-        // 未解決の節点対（二次部材（小梁）上の辺・大梁の中間区間）は節点対そのものに
-        // 沿って描き、既定の参照ベクトル（水平材=鉛直上基準、鉛直材=X 基準）を使う。
-        let endpoints = match app.model.elements.iter().find(|e| e.id == bl.elem) {
-            Some(elem) if elem.nodes.len() >= 2 => Some((
-                elem.nodes[0].index(),
-                elem.nodes[1].index(),
-                Some(elem.local_axis.ref_vector),
-            )),
-            _ => match bl.target {
-                squid_n_load::floor::LoadTarget::Span([a, b]) => Some((a.index(), b.index(), None)),
-                _ => None,
-            },
-        };
-        let Some((n0, n1, ref_vec)) = endpoints else {
-            continue;
-        };
-        if n0 >= coords3.len() || n1 >= coords3.len() {
-            continue;
-        }
-        let p_i = coords3[n0];
-        let p_j = coords3[n1];
-        if member_len3(p_i, p_j) < 1e-9 {
-            continue; // ゼロ長スパン（同一節点間）は材軸が定まらず図を描けない
-        }
-        let ref_vec = ref_vec.unwrap_or_else(|| {
-            let dxy = ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2)).sqrt();
-            if dxy < 1.0 {
-                [1.0, 0.0, 0.0]
-            } else {
-                [0.0, 0.0, 1.0]
-            }
-        });
-        let ey = diagram_offset_dir(p_i, p_j, ref_vec);
+    // 張り出し量がこの px 未満の図形は描かない。60px 正規化に対して荷重が
+    // 相対的に極小のスパン（ペントハウス階の梁など）は、ほぼ潰れた（自己折り返しの）
+    // ポリゴンになり、epaint のストローク描画（マイター結合）が折り返し点で発散して
+    // 部材軸方向に画面外まで伸びるスパイク描画になるため、視認不能な図形は
+    // 端から描かずスキップする。
+    const MIN_DIAGRAM_PX: f32 = 0.5;
+
+    for g in &groups {
+        let p_i = coords3[g.n0];
+        let p_j = coords3[g.n1];
+        let l = member_len3(p_i, p_j);
+        let ey = diagram_offset_dir(p_i, p_j, g.ref_vec);
         let p0 = {
             let p = project(p_i, center3, cam, scale, screen_center);
             egui::pos2(p[0], p[1])
@@ -1396,75 +1556,120 @@ fn draw_cmq_diagram(
             egui::pos2(p[0], p[1])
         };
 
-        // C 図（モーメント）: 両端の c_i, c_j を結ぶ折れ線ポリゴン（-ey 側=梁下側）
-        let c_poly = vec![
-            p0,
-            project_offset(
-                p_i,
-                ey,
-                -bl.cmq.c_i * c_amp,
-                center3,
-                cam,
-                scale,
-                screen_center,
-            ),
-            project_offset(
-                p_j,
-                ey,
-                -bl.cmq.c_j * c_amp,
-                center3,
-                cam,
-                scale,
-                screen_center,
-            ),
-            p1,
-        ];
-        // C 図（モーメント）= 通常データ（青）
-        painter.add(egui::Shape::convex_polygon(
-            c_poly,
-            theme::translucent(theme::DATA_BLUE, 60),
-            egui::Stroke::new(1.5_f32, theme::DATA_BLUE),
-        ));
-
-        // Q 図（せん断）: 両端の q_i, q_j を結ぶ折れ線ポリゴン（反対側 +ey 側に描画）
-        let q_poly = vec![
-            p0,
-            project_offset(
-                p_i,
-                ey,
-                bl.cmq.q_i * q_amp,
-                center3,
-                cam,
-                scale,
-                screen_center,
-            ),
-            project_offset(
-                p_j,
-                ey,
-                bl.cmq.q_j * q_amp,
-                center3,
-                cam,
-                scale,
-                screen_center,
-            ),
-            p1,
-        ];
-        // Q 図（せん断）= 良好系（緑）。C（青）と弁別する
-        painter.add(egui::Shape::convex_polygon(
-            q_poly,
-            theme::translucent(theme::GOOD_GREEN, 60),
-            egui::Stroke::new(1.5_f32, theme::GOOD_GREEN),
-        ));
+        match app.cmq_component {
+            CmqComponent::C => {
+                let (c_i, c_j) = sum_fixed_end_moments(&g.loads, l);
+                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
+                let peak_px = (60.0 * c_i.abs().max(c_j.abs()) / max_c.max(1e-12)) as f32;
+                if peak_px < MIN_DIAGRAM_PX {
+                    continue;
+                }
+                // C 図（モーメント）: 両端の合算 c_i, c_j を結ぶ折れ線ポリゴン（-ey 側=梁下側）。
+                // c_i/c_j は固定端モーメントの符号規約上、両端で逆符号（i端+, j端-）で
+                // 保持されているため、j 端は符号反転して i 端と同じ側（-ey 側）に描く。
+                let c_poly = vec![
+                    p0,
+                    project_offset(p_i, ey, -c_i * c_amp, center3, cam, scale, screen_center),
+                    project_offset(p_j, ey, c_j * c_amp, center3, cam, scale, screen_center),
+                    p1,
+                ];
+                // C 図（モーメント）= 通常データ（青）
+                paint_diagram_polygon(
+                    painter,
+                    c_poly,
+                    theme::translucent(theme::DATA_BLUE, 60),
+                    theme::DATA_BLUE,
+                );
+            }
+            CmqComponent::M => {
+                // M 図（単純梁としての中央モーメント）: スパンを分割サンプリングし、
+                // グループ内の全荷重の simple_beam_moment_at を合算した値を、N/Q/M 図と
+                // 同じ規約（正の sagging モーメントが梁下側=-ey 側）でプロットする。
+                // 区間分布荷重の境界・集中荷重は折れ点 ξ=a/L, b/L を含める。
+                let xis = cmq_m_sample_xis(&g.loads, l);
+                // 先に値と対応するワールド位置を求め、ピーク px を判定してから描画する
+                let mut val_max = 0.0_f64;
+                let samples: Vec<(f64, [f64; 3])> = xis
+                    .into_iter()
+                    .map(|xi| {
+                        let val = squid_n_load::floor::simple_beam_moment_at(&g.loads, l, xi * l);
+                        val_max = val_max.max(val.abs());
+                        let base3 = [
+                            p_i[0] + (p_j[0] - p_i[0]) * xi,
+                            p_i[1] + (p_j[1] - p_i[1]) * xi,
+                            p_i[2] + (p_j[2] - p_i[2]) * xi,
+                        ];
+                        (val, base3)
+                    })
+                    .collect();
+                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
+                let peak_px = (60.0 * val_max / max_m.max(1e-12)) as f32;
+                if peak_px < MIN_DIAGRAM_PX {
+                    continue;
+                }
+                let mut m_poly = Vec::with_capacity(samples.len() + 2);
+                m_poly.push(p0);
+                // 直前の点とスクリーン距離が近すぎるサンプル点は重複点として除外する
+                // （ゼロ長セグメントも epaint のマイター結合発散の原因になるため）。
+                // p0/p1 は常に残す。
+                const MIN_SEGMENT_PX: f32 = 0.25;
+                let mut last = p0;
+                for (val, base3) in samples {
+                    let pt =
+                        project_offset(base3, ey, -val * m_amp, center3, cam, scale, screen_center);
+                    if (pt.x - last.x).hypot(pt.y - last.y) < MIN_SEGMENT_PX {
+                        continue;
+                    }
+                    last = pt;
+                    m_poly.push(pt);
+                }
+                m_poly.push(p1);
+                // M 図（中央モーメント）= 強調紫。C（青）・Q（緑）と弁別する
+                paint_diagram_polygon(
+                    painter,
+                    m_poly,
+                    theme::translucent(theme::HILITE_PURPLE, 60),
+                    theme::HILITE_PURPLE,
+                );
+            }
+            CmqComponent::Q => {
+                let (q_i, q_j) = sum_simple_reactions(&g.loads, l);
+                // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
+                let peak_px = (60.0 * q_i.abs().max(q_j.abs()) / max_q.max(1e-12)) as f32;
+                if peak_px < MIN_DIAGRAM_PX {
+                    continue;
+                }
+                // Q 図（せん断）: 両端の合算 q_i, q_j を結ぶ折れ線ポリゴン（+ey 側に描画）
+                let q_poly = vec![
+                    p0,
+                    project_offset(p_i, ey, q_i * q_amp, center3, cam, scale, screen_center),
+                    project_offset(p_j, ey, q_j * q_amp, center3, cam, scale, screen_center),
+                    p1,
+                ];
+                // Q 図（せん断）= 良好系（緑）。C（青）と弁別する
+                paint_diagram_polygon(
+                    painter,
+                    q_poly,
+                    theme::translucent(theme::GOOD_GREEN, 60),
+                    theme::GOOD_GREEN,
+                );
+            }
+        }
     }
 
-    // 凡例
+    // 凡例（選択中の成分のみ表示）
+    let legend = match app.cmq_component {
+        CmqComponent::C => format!("CMQ図 C(max={:.2}) 青", max_c),
+        CmqComponent::M => format!("CMQ図 M(max={:.2}) 紫", max_m),
+        CmqComponent::Q => format!("CMQ図 Q(max={:.2}) 緑", max_q),
+    };
     painter.text(
         egui::pos2(
             painter.clip_rect().min.x + 10.0,
             painter.clip_rect().min.y + 10.0,
         ),
         egui::Align2::LEFT_TOP,
-        format!("CMQ図 C(max={:.2}) 青／Q(max={:.2}) 緑", max_c, max_q),
+        legend,
         egui::FontId::proportional(14.0),
         theme::GRAY_700,
     );

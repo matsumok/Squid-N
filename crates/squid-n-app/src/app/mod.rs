@@ -405,6 +405,9 @@ pub struct App {
     /// ビューアの表示モード
     #[cfg(feature = "gui")]
     pub view_mode: crate::viewer::ViewMode,
+    /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
+    #[cfg(feature = "gui")]
+    pub cmq_component: crate::viewer::CmqComponent,
     /// 変形図・モード形の倍率スライダー値
     #[cfg(feature = "gui")]
     pub deform_scale: f32,
@@ -548,6 +551,8 @@ impl Default for App {
             mn_view: crate::mn_view::MnViewState::default(),
             #[cfg(feature = "gui")]
             view_mode: crate::viewer::ViewMode::default(),
+            #[cfg(feature = "gui")]
+            cmq_component: crate::viewer::CmqComponent::default(),
             #[cfg(feature = "gui")]
             deform_scale: 100.0,
             #[cfg(feature = "gui")]

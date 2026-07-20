@@ -1,4 +1,5 @@
 use super::*;
+use squid_n_core::model::MemberLoadKind;
 
 #[test]
 fn test_fem_uniform() {
@@ -84,6 +85,229 @@ fn test_fem_trapezoid_numeric() {
         cmq.q_i + cmq.q_j,
         total
     );
+}
+
+/// `sum_fixed_end_moments` の合算値と `expected: Cmq` の c_i/c_j を相対誤差で照合する。
+fn assert_fem_matches(loads: &[MemberLoadKind], l: f64, expected: Cmq, label: &str) {
+    let (c_i, c_j): (f64, f64) = loads
+        .iter()
+        .map(|ld| fixed_end_moments(ld, l))
+        .fold((0.0, 0.0), |(ai, aj), (ci, cj)| (ai + ci, aj + cj));
+    assert!(
+        (c_i - expected.c_i).abs() / expected.c_i.abs().max(1e-9) < 1e-6,
+        "{label}: c_i={c_i} expected={}",
+        expected.c_i
+    );
+    assert!(
+        (c_j - expected.c_j).abs() / expected.c_j.abs().max(1e-9) < 1e-6,
+        "{label}: c_j={c_j} expected={}",
+        expected.c_j
+    );
+}
+
+#[test]
+fn test_fixed_end_moments_matches_fem_uniform() {
+    // emit_shape の Uniform{w} と同じ区間分割: 全長1区間
+    let w = 10.0_f64;
+    let l = 4000.0_f64;
+    let loads = vec![MemberLoadKind::Distributed {
+        a: 0.0,
+        b: l,
+        w1: w,
+        w2: w,
+    }];
+    assert_fem_matches(&loads, l, fem_uniform(w, l), "uniform");
+}
+
+#[test]
+fn test_fixed_end_moments_matches_fem_triangle() {
+    // emit_shape の Triangle{w0}（中央ピーク）と同じ区間分割: 2区間
+    let w0 = 10.0_f64;
+    let l = 4000.0_f64;
+    let mid = l / 2.0;
+    let loads = vec![
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: mid,
+            w1: 0.0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a: mid,
+            b: l,
+            w1: w0,
+            w2: 0.0,
+        },
+    ];
+    assert_fem_matches(&loads, l, fem_triangle(w0, l), "triangle");
+}
+
+#[test]
+fn test_fixed_end_moments_matches_fem_trapezoid() {
+    // emit_shape の Trapezoid{w0,a,b}（a: 両端立上り幅、b: 中央フラット幅）と
+    // 同じ区間分割: 3区間 [0,a]:0→w0 / [a,a+b]:w0→w0 / [a+b,L]:w0→0
+    let w0 = 7.0_f64;
+    let l = 5000.0_f64;
+    let a = 1500.0_f64;
+    let b = l - 2.0 * a;
+    let loads = vec![
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: a,
+            w1: 0.0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a,
+            b: a + b,
+            w1: w0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a: a + b,
+            b: l,
+            w1: w0,
+            w2: 0.0,
+        },
+    ];
+    assert_fem_matches(&loads, l, fem_trapezoid(w0, a, b, l), "trapezoid");
+}
+
+#[test]
+fn test_simple_beam_moment_at_uniform_midspan() {
+    let w = 10.0_f64;
+    let l = 4000.0_f64;
+    let loads = vec![MemberLoadKind::Distributed {
+        a: 0.0,
+        b: l,
+        w1: w,
+        w2: w,
+    }];
+    let expected_mid = w * l * l / 8.0;
+    assert!((simple_beam_moment_at(&loads, l, l / 2.0) - expected_mid).abs() / expected_mid < 1e-9);
+    // 端部はゼロ、対称性 M(x)=M(L−x)
+    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
+    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+    let x = 0.3 * l;
+    assert!(
+        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn test_simple_beam_moment_at_triangle_midspan() {
+    let w0 = 10.0_f64;
+    let l = 4000.0_f64;
+    let mid = l / 2.0;
+    let loads = vec![
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: mid,
+            w1: 0.0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a: mid,
+            b: l,
+            w1: w0,
+            w2: 0.0,
+        },
+    ];
+    let expected_mid = w0 * l * l / 12.0;
+    assert!((simple_beam_moment_at(&loads, l, mid) - expected_mid).abs() / expected_mid < 1e-9);
+    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
+    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+}
+
+#[test]
+fn test_simple_beam_moment_at_trapezoid_midspan() {
+    let w0 = 10.0_f64;
+    let l = 6000.0_f64;
+    let a = 1500.0_f64;
+    let b = l - 2.0 * a;
+    let loads = vec![
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: a,
+            w1: 0.0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a,
+            b: a + b,
+            w1: w0,
+            w2: w0,
+        },
+        MemberLoadKind::Distributed {
+            a: a + b,
+            b: l,
+            w1: w0,
+            w2: 0.0,
+        },
+    ];
+    // 中央値の閉形式 M0=w0(3L²−4a²)/24 と照合
+    let expected_mid = w0 * (3.0 * l * l - 4.0 * a * a) / 24.0;
+    let mid = simple_beam_moment_at(&loads, l, l / 2.0);
+    assert!(
+        (mid - expected_mid).abs() / expected_mid < 1e-9,
+        "台形中央値={mid} 期待値={expected_mid}"
+    );
+    // 端部はゼロ、対称性
+    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
+    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+    let x = 0.15 * l;
+    assert!(
+        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
+            < 1e-6
+    );
+}
+
+#[test]
+fn test_simple_reactions_and_moment_point_load() {
+    let p = 100.0_f64;
+    let l = 5000.0_f64;
+    let a = 2000.0_f64; // i 端から 2000 の非対称位置
+    let load = MemberLoadKind::Point { a, p };
+    // 反力 R_i=P·b/L, R_j=P·a/L
+    let b = l - a;
+    let (r_i, r_j) = simple_reactions(&load, l);
+    assert!((r_i - p * b / l).abs() / (p * b / l) < 1e-9);
+    assert!((r_j - p * a / l).abs() / (p * a / l) < 1e-9);
+    assert!((r_i + r_j - p).abs() < 1e-6, "反力の和は総荷重に一致する");
+
+    let loads = vec![load];
+    // 荷重点で M = P·a·b/L
+    let expected = p * a * b / l;
+    assert!((simple_beam_moment_at(&loads, l, a) - expected).abs() / expected < 1e-9);
+    // 端部はゼロ
+    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
+    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
+    // 区分線形: 荷重点手前でそれぞれ一定勾配
+    let x1 = 0.1 * l;
+    let x2 = 0.2 * l;
+    let slope = simple_beam_moment_at(&loads, l, x2) - simple_beam_moment_at(&loads, l, x1);
+    let expected_slope = r_i * (x2 - x1);
+    assert!((slope - expected_slope).abs() / expected_slope < 1e-6);
+}
+
+#[test]
+fn test_simple_beam_moment_at_symmetric_pair_of_asymmetric_points() {
+    // 個々には非対称な集中荷重でも、鏡映対で組み合わせれば合算モーメントは対称になる。
+    let p = 80.0_f64;
+    let l = 6000.0_f64;
+    let a = 1800.0_f64; // 非対称位置
+    let loads = vec![
+        MemberLoadKind::Point { a, p },
+        MemberLoadKind::Point { a: l - a, p },
+    ];
+    let x = 0.2 * l;
+    assert!(
+        (simple_beam_moment_at(&loads, l, x) - simple_beam_moment_at(&loads, l, l - x)).abs()
+            < 1e-6
+    );
+    assert!(simple_beam_moment_at(&loads, l, 0.0).abs() < 1e-6);
+    assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
 }
 
 fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
