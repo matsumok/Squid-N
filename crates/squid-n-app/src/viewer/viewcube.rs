@@ -235,15 +235,21 @@ mod tests {
     }
 
     #[test]
-    fn 真上真下へのスナップは旋回角を保持する() {
+    fn 真上真下へのスナップは正対する() {
+        // Top/Bottom は旋回角 0 の正対ビュー: ワールド X 軸が画面右を向く
         let mut cam = CameraState::default();
-        let yaw0 = cam.yaw;
         cam.snap_to_direction([0.0, 0.0, 1.0]); // Top
-        assert_eq!(cam.yaw, yaw0);
+        assert_eq!(cam.yaw, 0.0);
         assert!(cam.pitch.abs() < 1e-6);
-        cam.snap_to_direction([0.0, 0.0, -1.0]); // Bottom
-        assert_eq!(cam.yaw, yaw0);
+        let x = q_rotate(cam.rot, [1.0, 0.0, 0.0]);
+        assert!((x[0] - 1.0).abs() < 1e-5, "X 軸が画面右を向かない: {x:?}");
+
+        cam.turntable_drag(100.0, 0.0); // 旋回してから Bottom へ
+        cam.snap_to_direction([0.0, 0.0, -1.0]);
+        assert_eq!(cam.yaw, 0.0);
         assert!((cam.pitch + std::f32::consts::PI).abs() < 1e-6);
+        let x = q_rotate(cam.rot, [1.0, 0.0, 0.0]);
+        assert!((x[0] - 1.0).abs() < 1e-5, "X 軸が画面右を向かない: {x:?}");
     }
 
     #[test]

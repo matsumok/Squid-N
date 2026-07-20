@@ -168,7 +168,7 @@ impl CameraState {
 
     /// 視点方向 `d`（ワールド座標、原点から視点位置へ向かうベクトル）へ即時スナップする。
     /// ViewCube の面・コーナークリックから呼ばれる。`d` が鉛直（真上/真下）の場合、
-    /// 旋回角は定まらないため現在の `yaw` を保持する（Top/Bottom で平面の向きを変えない）。
+    /// 旋回角は方位角から定まらないため 0 とし、X 軸が画面右を向く正対の平面ビューにする。
     pub(crate) fn snap_to_direction(&mut self, d: [f32; 3]) {
         let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         if n < 1e-6 {
@@ -177,9 +177,11 @@ impl CameraState {
         let (dx, dy, dz) = (d[0] / n, d[1] / n, d[2] / n);
         // ターンテーブル rot = R_x(pitch)∘R_z(yaw) で q_rotate(rot, d) = [0,0,1]（視線正面）
         // となる角度: yaw は方位角 φ=atan2(dy,dx) から、pitch は仰角から定まる。
-        if dx.abs() > 1e-6 || dy.abs() > 1e-6 {
-            self.yaw = -std::f32::consts::FRAC_PI_2 - dy.atan2(dx);
-        }
+        self.yaw = if dx.abs() > 1e-6 || dy.abs() > 1e-6 {
+            -std::f32::consts::FRAC_PI_2 - dy.atan2(dx)
+        } else {
+            0.0
+        };
         self.pitch = dz.clamp(-1.0, 1.0).asin() - std::f32::consts::FRAC_PI_2;
         self.rot = Self::rot_from(self.yaw, self.pitch);
     }
