@@ -1627,51 +1627,102 @@ impl App {
     }
 
     /// 下部ステータスバー。
+    ///
+    /// 部材/節点/断面サマリは常に右端に見えている必要がある一方、左側（ファイル名・
+    /// 解析状況・エラーメッセージ）はいくらでも長くなりうる（特に ST-Bridge 取込警告は
+    /// 複数件を連結した長文）。`ui.horizontal` 1本に全部を並べると、horizontal レイアウトの
+    /// 子 `Ui` は主軸方向の幅を事実上無制限に確保するため、エラーメッセージに
+    /// `Label::truncate()` を付けても truncate の基準となる幅が無く効かず、右側のサマリと
+    /// 重なって表示されてしまう。そのためサマリの表示幅を先に採寸し、行を「左ゾーン
+    /// （明示的に幅を制限する）」と「右ゾーン（サマリ専用）」へ矩形分割してから描画する。
     pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.horizontal(|ui| {
-            // プロジェクトファイル名 + 未保存マーカー
-            let file_label = self
-                .project_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "(未保存プロジェクト)".to_string());
-            let marker = if self.staleness.unsaved_changes {
-                " ●"
-            } else {
-                ""
-            };
-            ui.label(format!("{}{}", file_label, marker));
-            ui.separator();
-            // バックグラウンド解析ジョブの実行状況
-            if let Some(job) = &self.job {
-                let elapsed = job.started.elapsed().unwrap_or_default().as_secs_f64();
-                ui.colored_label(
-                    crate::theme::GOOD_GREEN,
-                    format!("⏳ {} 実行中… {:.0}s", job.label, elapsed),
-                );
+
+        let summary = format!(
+            "部材 {}. 節点 {}. 断面 {}.",
+            self.model.elements.len(),
+            self.model.nodes.len(),
+            self.model.sections.len()
+        );
+        let body_font = egui::TextStyle::Body.resolve(ui.style());
+        let summary_width = ui
+            .painter()
+            .layout_no_wrap(summary.clone(), body_font, crate::theme::GRAY_700)
+            .size()
+            .x;
+
+        let row_rect = ui.available_rect_before_wrap();
+        let gap = ui.spacing().item_spacing.x;
+        let right_rect = egui::Rect::from_min_max(
+            egui::pos2(
+                (row_rect.max.x - summary_width - gap).max(row_rect.min.x),
+                row_rect.min.y,
+            ),
+            row_rect.max,
+        );
+        let left_rect = egui::Rect::from_min_max(
+            row_rect.min,
+            egui::pos2((right_rect.min.x - gap).max(row_rect.min.x), row_rect.max.y),
+        );
+
+        #[allow(deprecated)]
+        ui.allocate_ui_at_rect(left_rect, |ui| {
+            ui.horizontal(|ui| {
+                // プロジェクトファイル名 + 未保存マーカー
+                let file_label = self
+                    .project_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "(未保存プロジェクト)".to_string());
+                let marker = if self.staleness.unsaved_changes {
+                    " ●"
+                } else {
+                    ""
+                };
+                ui.label(format!("{}{}", file_label, marker));
                 ui.separator();
-            }
-            // stale アイコン
-            if self.staleness.results_stale {
-                ui.colored_label(crate::theme::BEST_YELLOW, "⚠ stale");
-            } else if self.results.is_some() {
-                ui.colored_label(crate::theme::GOOD_GREEN, "✓ 最新");
-            } else {
-                ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
-            }
-            ui.separator();
-            if let Some(err) = &self.last_error {
-                ui.colored_label(crate::theme::ERROR_RED, format!("⚠ {}", err));
-            }
-            ui.separator();
-            ui.label(format!(
-                "部材 {}. 節点 {}. 断面 {}.",
-                self.model.elements.len(),
-                self.model.nodes.len(),
-                self.model.sections.len()
-            ));
+                // バックグラウンド解析ジョブの実行状況
+                if let Some(job) = &self.job {
+                    let elapsed = job.started.elapsed().unwrap_or_default().as_secs_f64();
+                    ui.colored_label(
+                        crate::theme::GOOD_GREEN,
+                        format!("⏳ {} 実行中… {:.0}s", job.label, elapsed),
+                    );
+                    ui.separator();
+                }
+                // stale アイコン
+                if self.staleness.results_stale {
+                    ui.colored_label(crate::theme::BEST_YELLOW, "⚠ stale");
+                } else if self.results.is_some() {
+                    ui.colored_label(crate::theme::GOOD_GREEN, "✓ 最新");
+                } else {
+                    ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
+                }
+                if let Some(err) = &self.last_error {
+                    ui.separator();
+                    // ST-Bridge 取込警告（複数件を \n 区切りで連結）など改行を含む
+                    // メッセージは1行に畳んでから truncate する（\n はレイアウト上
+                    // 明示的な改行として扱われ、行の高さ・幅の見積りが崩れるため）。
+                    // 全文はホバーで表示する。
+                    let one_line = err.replace('\n', " ");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("⚠ {}", one_line))
+                                .color(crate::theme::ERROR_RED),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(err);
+                }
+            });
+        });
+
+        #[allow(deprecated)]
+        ui.allocate_ui_at_rect(right_rect, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(summary);
+            });
         });
     }
 }
