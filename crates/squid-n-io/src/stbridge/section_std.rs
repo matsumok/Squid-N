@@ -839,7 +839,10 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             }
             if need_beam {
                 let bid = if need_col { alloc() } else { base };
-                parts.push((5, steel_beam(bid, sec, &fig_name, &strength_attr(base, true))));
+                parts.push((
+                    5,
+                    steel_beam(bid, sec, &fig_name, &strength_attr(base, true)),
+                ));
                 beam_map.insert(base, bid);
             }
             continue;
@@ -876,7 +879,14 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             if need_col {
                 parts.push((
                     2,
-                    src_section(base, sec, false, shape, &steel_fig, &id_mat_attr(base, false)),
+                    src_section(
+                        base,
+                        sec,
+                        false,
+                        shape,
+                        &steel_fig,
+                        &id_mat_attr(base, false),
+                    ),
                 ));
                 col_map.insert(base, base);
             }
@@ -902,7 +912,10 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             if need_col {
                 // 円形など梁図形が無い場合も柱としては出力できる。
                 if let Some(fig) = &rc_col_fig {
-                    parts.push((0, rc_column(base, sec, shape, fig, &id_mat_attr(base, false))));
+                    parts.push((
+                        0,
+                        rc_column(base, sec, shape, fig, &id_mat_attr(base, false)),
+                    ));
                     col_map.insert(base, base);
                 }
             }

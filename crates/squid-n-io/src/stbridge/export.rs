@@ -244,7 +244,9 @@ fn members_body(
             sid(sec),
             kind_slab,
         ));
-        slabs.push_str(&format!("          <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"));
+        slabs.push_str(&format!(
+            "          <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"
+        ));
         slabs.push_str("        </StbSlab>\n");
     }
 
@@ -269,7 +271,9 @@ fn members_body(
             sid(e.id.0),
             sid(sec),
         ));
-        walls.push_str(&format!("          <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"));
+        walls.push_str(&format!(
+            "          <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"
+        ));
         walls.push_str("        </StbWall>\n");
         wall_idx += 1;
     }
@@ -337,7 +341,10 @@ fn kind_structure(
     e: &squid_n_core::model::ElementData,
     mat_grade: &str,
 ) -> &'static str {
-    let shape = e.section.and_then(|s| model.sections.get(s.index())).and_then(|s| s.shape.as_ref());
+    let shape = e
+        .section
+        .and_then(|s| model.sections.get(s.index()))
+        .and_then(|s| s.shape.as_ref());
     match shape {
         Some(SectionShape::RcRect { .. } | SectionShape::RcCircle { .. }) => "RC",
         Some(SectionShape::SrcRect { .. }) => "SRC",
@@ -357,11 +364,7 @@ fn kind_structure(
 
 /// 部材の ref_vector と軸から `rotate` 角 [deg] を復元する（import の逆変換）。
 /// `rotate=0` の基準（水平材は鉛直上、鉛直材はグローバル X）に対する軸まわりの回転角。
-fn rotate_of(
-    e: &squid_n_core::model::ElementData,
-    p_i: [f64; 3],
-    p_j: [f64; 3],
-) -> f64 {
+fn rotate_of(e: &squid_n_core::model::ElementData, p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
     let axis = {
         let d = [p_j[0] - p_i[0], p_j[1] - p_i[1], p_j[2] - p_i[2]];
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();

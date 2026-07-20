@@ -69,8 +69,10 @@ fn representative_model() -> Model {
         web_thick: 8.0,
         flange_thick: 13.0,
     };
-    m.sections.push(col_h.to_section(SectionId(0), "C&1<2".into())); // 名前にエスケープ対象
-    m.sections.push(beam_h.to_section(SectionId(1), "G1".into()));
+    m.sections
+        .push(col_h.to_section(SectionId(0), "C&1<2".into())); // 名前にエスケープ対象
+    m.sections
+        .push(beam_h.to_section(SectionId(1), "G1".into()));
     // 柱2本（鉛直, section 0）＋大梁1本（水平, section 1）。
     let mk = |id: u32, ni: u32, nj: u32, sec: u32, refv: [f64; 3]| ElementData {
         id: ElemId(id),
@@ -659,8 +661,7 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
     m.elements.push(member(0, true, 0)); // 柱
     m.elements.push(member(1, false, 0)); // 梁（共有）
 
-    let back = import_stbridge(&export_stbridge(&m).unwrap())
-        .expect("import");
+    let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
     assert_eq!(back.sections.len(), 2, "共有 RC 断面は 2 断面へ分割される");
     // 分割された両断面とも、元の形状・配筋が保存されている。
@@ -682,8 +683,7 @@ fn test_standard_roundtrip_rc_rebar_grade_none() {
     m.sections.push(shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0));
 
-    let back = import_stbridge(&export_stbridge(&m).unwrap())
-        .expect("import");
+    let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert_eq!(back.sections[0].shape, m.sections[0].shape);
 }
 
@@ -719,8 +719,7 @@ fn test_standard_roundtrip_rc_rebar_non_integer() {
     m.sections.push(shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0));
 
-    let back = import_stbridge(&export_stbridge(&m).unwrap())
-        .expect("import");
+    let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert_eq!(back.sections[0].shape, m.sections[0].shape);
 }
 
@@ -738,8 +737,7 @@ fn test_standard_roundtrip_rc_rebar_grade_with_control_chars() {
     m.sections.push(shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0));
 
-    let back = import_stbridge(&export_stbridge(&m).unwrap())
-        .expect("import");
+    let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert_eq!(
         back.sections[0].shape, m.sections[0].shape,
         "制御空白を含む grade が往復で保存される"
@@ -1354,10 +1352,7 @@ fn test_roundtrip_brace() {
         raw_xml.contains("<StbBrace "),
         "ブレースは StbBrace で書き出される"
     );
-    for xml in [
-        raw_xml,
-        export_stbridge(&m).unwrap(),
-    ] {
+    for xml in [raw_xml, export_stbridge(&m).unwrap()] {
         let back = import_stbridge(&xml).expect("import");
         assert!(back.validate().is_ok(), "{:?}", back.validate());
         assert_eq!(back.elements.len(), 1);
@@ -1922,8 +1917,7 @@ fn test_member_inherits_section_grade_material() {
     m.elements.push(col);
     m.elements.push(beam);
 
-    let back = import_stbridge(&export_stbridge(&m).unwrap())
-        .expect("import");
+    let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     // 柱・梁とも断面グレード（SN400B）の材料を持つ。
     assert_eq!(back.elements[0].material, Some(MaterialId(0)), "柱の材料");
     assert_eq!(

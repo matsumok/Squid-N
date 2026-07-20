@@ -69,10 +69,7 @@ fn parse_concrete_fc(name: &str) -> Option<f64> {
 /// 代表的な規格材を網羅する（板厚 40mm 以下の基準強度）。未知は `None`。
 fn steel_yield_strength(name: &str) -> Option<f64> {
     // 鉄筋（異形 SD・丸鋼 SR）は末尾の数値が規格降伏点を表す（SD295A・SD345・SR235 等）。
-    if let Some(rest) = name
-        .strip_prefix("SD")
-        .or_else(|| name.strip_prefix("SR"))
-    {
+    if let Some(rest) = name.strip_prefix("SD").or_else(|| name.strip_prefix("SR")) {
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(v) = digits.parse::<f64>() {
             if v > 0.0 {

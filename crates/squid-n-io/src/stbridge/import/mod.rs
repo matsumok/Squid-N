@@ -665,7 +665,9 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                         };
                     }
                     // スラブ断面の図形（厚さ = `depth`）。RC・デッキ双方の図形要素を受ける。
-                    "StbSecSlab_RC_Straight" | "StbSecFigureSlab_RC" | "StbSecSlabDeckStraight"
+                    "StbSecSlab_RC_Straight"
+                    | "StbSecFigureSlab_RC"
+                    | "StbSecSlabDeckStraight"
                     | "StbSecFigureSlabDeck" => {
                         if let CurSec::Slab { thickness, .. } = &mut cur {
                             // 厚さ属性を持つ図形要素なら更新、無ければ既存値を保持。
@@ -747,7 +749,8 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                         let skipped_data = !is_group_container
                             && (UNSUPPORTED_ELEMENTS.contains(&other)
                                 || parent_is_member_group
-                                || (matches!(parent, Some("StbSections")) && other != "StbSecSteel")
+                                || (matches!(parent, Some("StbSections"))
+                                    && other != "StbSecSteel")
                                 || matches!(parent, Some("StbLoadCase")));
                         if skipped_data {
                             *unsupported.entry(other.to_string()).or_insert(0) += 1;
@@ -1147,8 +1150,11 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             ),
         };
         // ref_vector は部材軸（節点座標）と `rotate` から算出する。
-        let ref_vector =
-            ref_vector_from_rotate(model.nodes[ni as usize].coord, model.nodes[nj as usize].coord, m.rotate);
+        let ref_vector = ref_vector_from_rotate(
+            model.nodes[ni as usize].coord,
+            model.nodes[nj as usize].coord,
+            m.rotate,
+        );
         model.elements.push(ElementData {
             id,
             kind,
