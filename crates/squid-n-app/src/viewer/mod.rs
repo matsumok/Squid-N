@@ -58,7 +58,7 @@ pub enum ViewMode {
     Cmq,
 }
 
-// ===== クォータニオン（アークボール回転用, [w, x, y, z]）=====
+// ===== クォータニオン（3Dカメラ回転用, [w, x, y, z]）=====
 // mn_view（M-N相関曲面ビュー）でも同じ操作感の3Dカメラを実装するため、
 // これらのヘルパは pub(crate) として公開し再利用する。
 pub(crate) type Quat = [f32; 4];
@@ -105,15 +105,23 @@ pub(crate) fn q_rotate(q: Quat, v: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// 3D→2D 投影（§3-2: アークボール回転 + 正射影）。
+/// 3D→2D 投影（§3-2: ターンテーブル回転 + 正射影）。
 ///
 /// 構造モデルは実寸比が意味を持つため、§3-2 の「各軸を [-1,1] に正規化」は採らず、
 /// 全軸一様スケールで投影してプロポーションを保持する。
-/// ビュー軸は X=右・Y=上・Z=手前。既定回転（[`CameraState::default`]）で正面（Z 上）を向く。
+/// ビュー軸は X=右・Y=上・Z=手前。
+///
+/// 回転はターンテーブル方式: 水平ドラッグ＝ワールド Z 軸（鉛直軸）まわりの旋回、
+/// 垂直ドラッグ＝画面 X 軸まわりの俯仰。ロールが発生しないため、建物の鉛直軸は
+/// 常に画面上で縦に保たれる（自由回転のアークボールはロールが蓄積し視点が傾く）。
 #[derive(Clone)]
 pub struct CameraState {
-    /// 回転（クォータニオン）
+    /// 回転（クォータニオン）。`yaw`/`pitch` から導出したキャッシュ
     pub(crate) rot: Quat,
+    /// ワールド Z 軸まわりの旋回角 [rad]
+    pub(crate) yaw: f32,
+    /// 画面 X 軸まわりの俯仰角 [rad]。0=真上（平面図）〜 -π/2=正面 〜 -π=真下
+    pub(crate) pitch: f32,
     /// 画面パン（px）
     pub(crate) pan: [f32; 2],
     /// ズーム倍率（§3-2: 既定 3.0、範囲 0.5–10.0）
@@ -122,16 +130,38 @@ pub struct CameraState {
 
 impl Default for CameraState {
     fn default() -> Self {
+        // 45° の斜めビュー（平面を 45° 振ってから 45° 見下ろす）。
+        // XY 平面のグリッドが斜めから見えるようにする。
+        let yaw = std::f32::consts::FRAC_PI_4;
+        let pitch = -std::f32::consts::FRAC_PI_4;
         Self {
-            // 45° の斜めビュー（X 軸まわり -45° で上から見下ろし、Y 軸まわり 45° で横に振る）。
-            // XY 平面のグリッドが斜めから見えるようにする。
-            rot: q_mul(
-                q_axis_angle([0.0, 1.0, 0.0], std::f32::consts::FRAC_PI_4),
-                q_axis_angle([1.0, 0.0, 0.0], -std::f32::consts::FRAC_PI_4),
-            ),
+            rot: Self::rot_from(yaw, pitch),
+            yaw,
+            pitch,
             pan: [0.0, 0.0],
             zoom: 3.0,
         }
+    }
+}
+
+impl CameraState {
+    /// ドラッグ回転の感度 [rad/px]
+    const ROT_SENS: f32 = 0.005;
+
+    /// `yaw`/`pitch` からビュー回転を導出する（旋回→俯仰の順で合成）。
+    fn rot_from(yaw: f32, pitch: f32) -> Quat {
+        q_norm(q_mul(
+            q_axis_angle([1.0, 0.0, 0.0], pitch),
+            q_axis_angle([0.0, 0.0, 1.0], yaw),
+        ))
+    }
+
+    /// ドラッグ量（px）によるターンテーブル回転。
+    /// 俯仰は真上（0）〜真下（-π）でクランプし、天地の反転を防ぐ。
+    pub(crate) fn turntable_drag(&mut self, dx_px: f32, dy_px: f32) {
+        self.yaw += dx_px * Self::ROT_SENS;
+        self.pitch = (self.pitch + dy_px * Self::ROT_SENS).clamp(-std::f32::consts::PI, 0.0);
+        self.rot = Self::rot_from(self.yaw, self.pitch);
     }
 }
 
@@ -611,14 +641,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // パンは規約外の補助操作として右ドラッグに割り当てる。
     let mut cam = app.camera.clone();
     if response.dragged_by(egui::PointerButton::Primary) {
-        // アークボール: 画面 X(右)/Y(上) 軸まわりの微小回転を前から合成（感度 0.005 /px）。
+        // ターンテーブル回転（鉛直軸を画面上で縦に保つ。CameraState のドキュメント参照）。
         let d = response.drag_delta();
-        const ROT_SENS: f32 = 0.005;
-        let dq = q_mul(
-            q_axis_angle([0.0, 1.0, 0.0], d.x * ROT_SENS),
-            q_axis_angle([1.0, 0.0, 0.0], d.y * ROT_SENS),
-        );
-        cam.rot = q_norm(q_mul(dq, cam.rot));
+        cam.turntable_drag(d.x, d.y);
     }
     if response.dragged_by(egui::PointerButton::Secondary) {
         let d = response.drag_delta();
@@ -1485,4 +1510,55 @@ fn draw_axis_gadget(painter: &egui::Painter, cam: &CameraState) {
     }
     // 中心点
     painter.circle_filled(center, 2.0, theme::GRAY_900);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ワールド Z 軸（鉛直軸）のビュー空間での向き。
+    /// 画面上で縦 ⇔ x 成分が 0、かつ上向き ⇔ y 成分が非負（project は y を反転して描画する）。
+    fn world_z_in_view(cam: &CameraState) -> [f32; 3] {
+        q_rotate(cam.rot, [0.0, 0.0, 1.0])
+    }
+
+    #[test]
+    fn 既定ビューで鉛直軸は画面上で縦() {
+        let cam = CameraState::default();
+        let z = world_z_in_view(&cam);
+        assert!(z[0].abs() < 1e-5, "Z 軸が画面上で傾いている: {z:?}");
+        assert!(z[1] >= -1e-6, "Z 軸が画面上で下向き: {z:?}");
+    }
+
+    #[test]
+    fn ドラッグ回転を繰り返しても鉛直軸は傾かない() {
+        // アークボール時代の不具合: 斜めドラッグの繰り返しでロールが蓄積し、
+        // 鉛直軸が画面上で斜めに傾いていた。ターンテーブルでは起きないことを確認する。
+        let mut cam = CameraState::default();
+        let drags = [
+            (30.0, -20.0),
+            (-50.0, 40.0),
+            (100.0, 100.0),
+            (-15.0, -80.0),
+            (200.0, 5.0),
+            (-3.0, 60.0),
+        ];
+        for _ in 0..50 {
+            for (dx, dy) in drags {
+                cam.turntable_drag(dx, dy);
+                let z = world_z_in_view(&cam);
+                assert!(z[0].abs() < 1e-4, "Z 軸が画面上で傾いた: {z:?}");
+                assert!(z[1] >= -1e-4, "Z 軸が画面上で下向きになった: {z:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn 俯仰は真上と真下でクランプされる() {
+        let mut cam = CameraState::default();
+        cam.turntable_drag(0.0, 1e6); // 大きく下ドラッグ → 真上（平面図）で停止
+        assert!((cam.pitch - 0.0).abs() < 1e-6);
+        cam.turntable_drag(0.0, -1e6); // 大きく上ドラッグ → 真下で停止
+        assert!((cam.pitch + std::f32::consts::PI).abs() < 1e-6);
+    }
 }
