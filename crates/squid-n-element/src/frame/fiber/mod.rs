@@ -193,17 +193,20 @@ impl GaussPoint {
     }
 }
 
+/// ファイバー梁要素（変位法、Euler-Bernoulli 曲げ＋Saint-Venant ねじり）。
+///
+/// せん断変形は現在モデル化していない（弾性 Timoshenko 梁比で
+/// φ = 12EI/(GAs·L²) だけ剛。既知の制約は calc_basis 4.9.2 を参照）。
 pub struct FiberBeam {
     pub length: f64,
     pub nodes: [NodeId; 2],
     pub gauss_points: Vec<GaussPoint>,
-    pub shear: crate::shear_spring::ShearSpring,
     pub density: f64,
     /// ねじり定数 J [mm⁴]（Section.j から取得）。
     /// Saint-Venant ねじり剛性 G·J/L の計算に用いる。
     pub torsion_j: f64,
     /// せん断弾性係数 G [N/mm²]（Material.shear_modulus）。
-    /// せん断ばねおよびねじり剛性の計算に用いる。
+    /// ねじり剛性の計算に用いる。
     pub g: f64,
     /// 要素ローカル系→グローバル系の回転（柱・斜材で必須）。
     /// 内部状態（trial_disp 等）はローカル系で保持し、トレイト境界で回転する。
@@ -234,16 +237,9 @@ impl FiberBeam {
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
         let e = mat_ref.map(|m| m.young).unwrap_or(205000.0);
         let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(78846.0);
-        let area = sec.map(|s| s.area).unwrap_or(0.0);
         let width = sec.map(|s| s.width).unwrap_or(100.0);
         let depth = sec.map(|s| s.depth).unwrap_or(200.0);
         let torsion_j = sec.map(|s| s.j).unwrap_or(0.0);
-        // クロス変換（beam/construct.rs と同一規約）: 要素ローカル y 方向せん断
-        // （uy、Mz 面と対）には断面 as_z（ウェブ）、z 方向には as_y（フランジ）を用いる。
-        let as_y = sec.map(|s| s.as_z).unwrap_or(area * 5.0 / 6.0);
-        let as_z = sec.map(|s| s.as_y).unwrap_or(area * 5.0 / 6.0);
-
-        let shear = crate::shear_spring::ShearSpring::new(length, g, as_y, as_z);
 
         let nw = 12;
         let nd = 20;
@@ -268,7 +264,6 @@ impl FiberBeam {
             length,
             nodes: [data.nodes[0], data.nodes[1]],
             gauss_points,
-            shear,
             density,
             torsion_j,
             g,
@@ -465,14 +460,6 @@ impl ElementBehavior for FiberBeam {
             }
         }
 
-        let ks = self.shear.tangent_stiffness(&ElemState::default());
-        for i in 0..12 {
-            for j in 0..12 {
-                let old = k.get(i, j);
-                k.set(i, j, old + ks.get(i, j));
-            }
-        }
-
         // ねじり剛性（Saint-Venant）を rx DOF (index 3, 9) に付加
         if self.torsion_j > 0.0 && l > 0.0 {
             let kt = self.g * self.torsion_j / l;
@@ -519,15 +506,6 @@ impl ElementBehavior for FiberBeam {
                 }
                 f.data[i] += si;
             }
-        }
-
-        let ks = self.shear.tangent_stiffness(&ElemState::default());
-        for i in 0..12 {
-            let mut si = 0.0;
-            for j in 0..12 {
-                si += ks.get(i, j) * self.trial_disp[j];
-            }
-            f.data[i] += si;
         }
 
         // ねじり内力（Saint-Venant）
