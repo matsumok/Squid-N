@@ -1494,9 +1494,32 @@ impl App {
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
+        // 部材ID→要素の索引（旧: ループ内で `elements.iter().find` していたため
+        // O(部材数²) だった）。ループ前に一度だけ構築する。同一IDが重複した場合に
+        // `find`（先頭一致）と同じ結果になるよう、forward 走査 + `entry().or_insert`
+        // で「先勝ち」にする（`or_insert` は既に埋まっていれば上書きしない）。
+        let mut elem_by_id: std::collections::HashMap<ElemId, &squid_n_core::model::ElementData> =
+            std::collections::HashMap::with_capacity(self.model.elements.len());
+        for e in &self.model.elements {
+            elem_by_id.entry(e.id).or_insert(e);
+        }
+        // 地震時短期 QD 用の長期内力索引（旧: 部材ごとに `list.iter().find` して
+        // いたため O(部材数²)）。同上の「先勝ち」ルールで構築する。
+        let long_mf_by_id: Option<
+            std::collections::HashMap<ElemId, &squid_n_element::beam::MemberForces>,
+        > = long_member_forces.map(|list| {
+            let mut m = std::collections::HashMap::with_capacity(list.len());
+            for (id, mf) in list {
+                m.entry(*id).or_insert(mf);
+            }
+            m
+        });
+        // 柱の座屈長さ係数 K 用の節点まわり梁索引（`buckling::g_ratio_at` の全要素
+        // 走査を避けるため、ループ前に 1 回だけ構築して使い回す）。
+        let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(&self.model);
         let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)> = Vec::new();
         for (elem_id, mf) in &results.member_forces {
-            let elem = self.model.elements.iter().find(|e| e.id == *elem_id);
+            let elem = elem_by_id.get(elem_id).copied();
             let Some(elem) = elem else {
                 continue;
             };
@@ -1543,8 +1566,12 @@ impl App {
             // 場合。K は節点まわり剛度比 G から算定）。柱以外は None（lk=部材長）。
             // RC 柱の検定は lk を使わないため、柱一律で設定して問題ない。
             let lk = if kind == squid_n_design_jp::MemberKind::Column {
-                squid_n_design_jp::steel::buckling::steel_column_k(&self.model, elem)
-                    .map(|k| k * length)
+                squid_n_design_jp::steel::buckling::steel_column_k_with_index(
+                    &self.model,
+                    &column_k_index,
+                    elem,
+                )
+                .map(|k| k * length)
             } else {
                 None
             };
@@ -1562,24 +1589,26 @@ impl App {
             };
             // 地震時短期の設計用せん断力 QD の文脈（長期内力・割増係数 n・内法長）。
             // 内法長 l′/h′ は剛域（フェイス距離）控除後の長さとする。
-            let seismic_qd = long_member_forces
-                .and_then(|list| list.iter().find(|(id, _)| id == elem_id))
-                .map(|(_, mf_long)| {
-                    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
-                    let clear_length = match group {
-                        // 一本部材は両外端の剛域控除後のグループ内法長。
-                        Some(g) => g.clear_length,
-                        None if length - face_sum > 0.0 => length - face_sum,
-                        None => length,
-                    };
-                    squid_n_design_jp::SeismicQd {
-                        long_at: mf_long.at.clone(),
-                        // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。
-                        n_factor: 1.5,
-                        clear_length,
-                        method: self.analysis_cfg.qd_method,
-                    }
-                });
+            let seismic_qd =
+                long_mf_by_id
+                    .as_ref()
+                    .and_then(|map| map.get(elem_id))
+                    .map(|mf_long| {
+                        let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                        let clear_length = match group {
+                            // 一本部材は両外端の剛域控除後のグループ内法長。
+                            Some(g) => g.clear_length,
+                            None if length - face_sum > 0.0 => length - face_sum,
+                            None => length,
+                        };
+                        squid_n_design_jp::SeismicQd {
+                            long_at: mf_long.at.clone(),
+                            // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。
+                            n_factor: 1.5,
+                            clear_length,
+                            method: self.analysis_cfg.qd_method,
+                        }
+                    });
             // S 造部材の断面検定属性（欠損率・横座屈長さ）。
             let steel_attr = self
                 .model
