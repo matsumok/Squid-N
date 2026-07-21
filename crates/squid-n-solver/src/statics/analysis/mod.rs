@@ -34,6 +34,10 @@ pub struct Analysis<'m> {
     reducer: Reducer,
     solver: Box<dyn LinearSolver>,
     n_indep: usize,
+    /// SemiPrecise の 1 次固有周期キャッシュ [s]。固有周期は載荷方向に依存しない
+    /// ため、同一 `Analysis` 上で X・Y 両方向の地震荷重を構築しても固有値解析は
+    /// 1 回で済む（`build_seismic_load_case`）。
+    semi_precise_t: std::sync::OnceLock<f64>,
 }
 
 impl<'m> Analysis<'m> {
@@ -63,6 +67,7 @@ impl<'m> Analysis<'m> {
                 },
                 solver: make_solver(SolverBackend::Auto),
                 n_indep: 0,
+                semi_precise_t: std::sync::OnceLock::new(),
             });
         }
 
@@ -87,6 +92,7 @@ impl<'m> Analysis<'m> {
             reducer,
             solver,
             n_indep,
+            semi_precise_t: std::sync::OnceLock::new(),
         })
     }
 

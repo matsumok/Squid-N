@@ -259,8 +259,16 @@ impl Analysis<'_> {
                 (squid_n_load::ai::approx_t(height_m, steel_ratio), 0)
             }
             AiMode::SemiPrecise => {
-                let modal = eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, 1)?;
-                let t = modal.period.first().copied().unwrap_or(0.3);
+                // 固有周期は載荷方向に依存しないため、同一 Analysis 上での
+                // 2 回目以降（EX→EY 等）はキャッシュを返し固有値解析を省く。
+                let t = if let Some(&t) = self.semi_precise_t.get() {
+                    t
+                } else {
+                    let modal = eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, 1)?;
+                    let t = modal.period.first().copied().unwrap_or(0.3);
+                    let _ = self.semi_precise_t.set(t);
+                    t
+                };
                 (t, 0)
             }
         };

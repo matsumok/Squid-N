@@ -275,7 +275,10 @@ impl Default for AnalysisSettings {
         Self {
             n_modes: 3,
             seismic_dir: SeismicDir::X,
-            ai_mode: AiMode::SemiPrecise,
+            // 既定は略算 T（告示式）。固有値 T（SemiPrecise）は EX/EY 同期のたびに
+            // 固有値解析が走り大規模モデルで待ち時間が大きいため、必要な場合に
+            // UI（解析タブ「T算定」）で明示的に選択する。
+            ai_mode: AiMode::Approx,
             z: 1.0,
             soil: squid_n_load::ai::SoilClass::II,
             c0: 0.2,
