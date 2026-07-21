@@ -316,14 +316,34 @@ impl Default for AnalysisSettings {
     }
 }
 
-/// バックグラウンド解析ジョブ（プッシュオーバー／時刻歴）が送る結果。
+/// バックグラウンド解析ジョブ（プッシュオーバー／時刻歴／線形静的・荷重組合せ・
+/// 全組合せ一括・地震静的・風荷重）が送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
     TimeHistory(Result<squid_n_solver::timehistory::ResponseResult, String>),
+    /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。
+    StaticCase {
+        key: StaticCaseKey,
+        res: Result<squid_n_solver::linear::StaticOnce, String>,
+    },
+    /// 単一の荷重組合せ解析（`bundle.combos` の名前一致検索で格納位置を決める）。
+    Combo {
+        name: String,
+        res: Result<squid_n_solver::linear::StaticOnce, String>,
+    },
+    /// 全荷重組合せ一括解析。`computed` は `Analysis::prepare` 失敗時
+    /// （全件アボート）と個別解析結果の両方を運ぶ。`pre_errors` は UI スレッドで
+    /// 事前フィルタした「空の地震荷重ケース参照」等のエラーメッセージ。
+    AllCombos {
+        #[allow(clippy::type_complexity)]
+        computed: Result<Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>, String>,
+        pre_errors: Vec<String>,
+    },
 }
 
-/// バックグラウンド解析ジョブ。重い解析(プッシュオーバー・時刻歴)を
-/// UI スレッドから逃がす(P8 §5)。結果は poll_job で受け取り適用する。
+/// バックグラウンド解析ジョブ。重い解析(プッシュオーバー・時刻歴・線形静的・
+/// 荷重組合せ・全組合せ一括・地震静的・風荷重)を UI スレッドから逃がす(P8 §5)。
+/// 結果は poll_job で受け取り適用する。
 pub struct AnalysisJob {
     pub label: &'static str,
     pub started: std::time::SystemTime,
@@ -349,7 +369,8 @@ pub struct App {
     /// 例: 精算周期(SemiPrecise)選択時に固有値解析が未実行で EX/EY の地震荷重が
     /// 更新されなかった旨）。`last_error`（赤）とは別枠で情報色表示する。
     pub last_notice: Option<String>,
-    /// 実行中のバックグラウンド解析ジョブ（プッシュオーバー・時刻歴、P8 §5）。
+    /// 実行中のバックグラウンド解析ジョブ（プッシュオーバー・時刻歴・線形静的・
+    /// 荷重組合せ・全組合せ一括・地震静的・風荷重、P8 §5）。
     /// 完了は `poll_job` で検知して結果を適用する。
     pub job: Option<AnalysisJob>,
     /// 節点座標の編集バッファ（model.nodes に同期）

@@ -585,7 +585,7 @@ impl App {
                     .clicked()
                 {
                     if let Some(lc) = selected_lc {
-                        self.run_linear_static(lc);
+                        self.start_linear_static_job(lc);
                         if self.last_error.is_none() {
                             self.active_tab = Tab::Results;
                             self.results_view = ResultsView::Spatial;
@@ -641,7 +641,7 @@ impl App {
                         .add_enabled(!running, egui::Button::new("▶ 実行"))
                         .clicked()
                     {
-                        self.run_combination(self.analysis_combo_idx);
+                        self.start_combination_job(self.analysis_combo_idx);
                         if self.last_error.is_none() {
                             self.active_tab = Tab::Results;
                         }
@@ -653,7 +653,7 @@ impl App {
                         )
                         .clicked()
                     {
-                        self.run_all_combinations();
+                        self.start_all_combinations_job();
                         if self.last_error.is_none() {
                             self.active_tab = Tab::Results;
                         }
@@ -766,7 +766,7 @@ impl App {
                 .add_enabled(!running, egui::Button::new("▶ 実行"))
                 .clicked()
             {
-                self.run_seismic(self.analysis_cfg.seismic_dir);
+                self.start_seismic_job(self.analysis_cfg.seismic_dir);
                 if self.last_error.is_none() {
                     self.active_tab = Tab::Results;
                     self.results_view = ResultsView::Spatial;
@@ -807,7 +807,7 @@ impl App {
                     .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (X)"))
                     .clicked()
                 {
-                    self.run_wind(SeismicDir::X);
+                    self.start_wind_job(SeismicDir::X);
                     if self.last_error.is_none() {
                         self.active_tab = Tab::Results;
                         self.results_view = ResultsView::Spatial;
@@ -817,7 +817,7 @@ impl App {
                     .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (Y)"))
                     .clicked()
                 {
-                    self.run_wind(SeismicDir::Y);
+                    self.start_wind_job(SeismicDir::Y);
                     if self.last_error.is_none() {
                         self.active_tab = Tab::Results;
                         self.results_view = ResultsView::Spatial;

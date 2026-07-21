@@ -1075,6 +1075,188 @@ fn test_start_job_while_running_is_rejected() {
     assert!(app.results.as_ref().unwrap().time_history.is_none());
 }
 
+/// `start_linear_static_job` はバックグラウンドで `run_linear_static` と同じ結果
+/// （変位・格納キー・検定結果）を与える。
+#[test]
+fn test_async_linear_static_job_flow() {
+    let mut app_sync = App::default();
+    app_sync.load_model(crate::sample::portal_frame());
+    app_sync.run_linear_static(LoadCaseId(0));
+    assert!(app_sync.last_error.is_none(), "{:?}", app_sync.last_error);
+    let expected_disp = app_sync.results.as_ref().unwrap().statics[0].1.disp.clone();
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.start_linear_static_job(LoadCaseId(0));
+    assert!(app.job.is_some());
+    assert_eq!(app.job.as_ref().unwrap().label, "線形静的解析");
+
+    wait_for_job(&mut app);
+
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(app.job.is_none());
+    let bundle = app.results.as_ref().unwrap();
+    let (_, static_once) = bundle
+        .statics
+        .iter()
+        .find(|(k, _)| *k == StaticCaseKey::User(LoadCaseId(0)))
+        .expect("線形静的解析結果が格納されるはず");
+    assert_eq!(static_once.disp, expected_disp);
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))))
+    );
+    assert!(!bundle.checks.is_empty());
+}
+
+/// `start_combination_job` はバックグラウンドで `run_combination` と同じ結果を与える。
+#[test]
+fn test_async_combination_job_flow() {
+    let combo = squid_n_core::model::LoadCombination {
+        name: "G+Kx".into(),
+        terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
+    };
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddCombination {
+            combo: combo.clone(),
+        }),
+    );
+
+    app.start_combination_job(0);
+    assert!(app.job.is_some());
+    assert_eq!(app.job.as_ref().unwrap().label, "荷重組合せ解析");
+
+    wait_for_job(&mut app);
+
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(app.job.is_none());
+    let bundle = app.results.as_ref().unwrap();
+    assert_eq!(bundle.combos.len(), 1);
+    assert_eq!(bundle.combos[0].0, combo.name);
+    assert!(!bundle.checks.is_empty());
+    assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
+}
+
+/// `start_all_combinations_job` はバックグラウンドで `run_all_combinations` と
+/// 同じ結果（combos の名前・変位）を与える。決定性のため `threads=1` を明示する。
+#[test]
+fn test_async_all_combinations_job_flow() {
+    let combos = vec![
+        squid_n_core::model::LoadCombination {
+            name: "G+Kx".into(),
+            terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
+        },
+        squid_n_core::model::LoadCombination {
+            name: "G-Kx".into(),
+            terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), -1.0)],
+        },
+    ];
+
+    let mut app_sync = App::default();
+    app_sync.load_model(crate::sample::portal_frame());
+    app_sync.analysis_cfg.threads = 1;
+    for combo in &combos {
+        app_sync.undo.run(
+            &mut app_sync.model,
+            Box::new(squid_n_edit::AddCombination {
+                combo: combo.clone(),
+            }),
+        );
+    }
+    app_sync.run_all_combinations();
+    assert!(app_sync.last_error.is_none(), "{:?}", app_sync.last_error);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.threads = 1;
+    for combo in &combos {
+        app.undo.run(
+            &mut app.model,
+            Box::new(squid_n_edit::AddCombination {
+                combo: combo.clone(),
+            }),
+        );
+    }
+    app.start_all_combinations_job();
+    assert!(app.job.is_some());
+    assert_eq!(app.job.as_ref().unwrap().label, "全組合せ一括解析");
+
+    wait_for_job(&mut app);
+
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(app.job.is_none());
+    let bundle_sync = app_sync.results.as_ref().unwrap();
+    let bundle = app.results.as_ref().unwrap();
+    assert_eq!(bundle.combos.len(), bundle_sync.combos.len());
+    for ((name, res), (name_sync, res_sync)) in bundle.combos.iter().zip(bundle_sync.combos.iter())
+    {
+        assert_eq!(name, name_sync);
+        assert_eq!(res.disp, res_sync.disp);
+    }
+    assert_eq!(app.last_static, app_sync.last_static);
+}
+
+/// `start_seismic_job` はバックグラウンドで `run_seismic` と同じ結果を与える。
+#[test]
+fn test_async_seismic_job_flow() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.start_seismic_job(SeismicDir::X);
+    assert!(app.job.is_some());
+    assert_eq!(app.job.as_ref().unwrap().label, "地震静的解析");
+
+    wait_for_job(&mut app);
+
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(app.job.is_none());
+    let bundle = app.results.as_ref().unwrap();
+    assert!(bundle
+        .statics
+        .iter()
+        .any(|(k, _)| *k == StaticCaseKey::Seismic(SeismicDir::X)));
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
+    );
+    assert!(!bundle.checks.is_empty());
+}
+
+/// `start_wind_job` はバックグラウンドで `run_wind` と同じ結果を与える
+/// （サンプルの門型ラーメンは Y 方向の風のみ見付け幅を持つ。`test_run_wind_static`
+/// と同じ理由）。
+#[test]
+fn test_async_wind_job_flow() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.start_wind_job(SeismicDir::Y);
+    assert!(app.job.is_some());
+    assert_eq!(app.job.as_ref().unwrap().label, "風荷重静的解析");
+
+    wait_for_job(&mut app);
+
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(app.job.is_none());
+    let bundle = app.results.as_ref().unwrap();
+    assert!(bundle
+        .statics
+        .iter()
+        .any(|(k, _)| *k == StaticCaseKey::Wind(SeismicDir::Y)));
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::Wind(SeismicDir::Y)))
+    );
+}
+
 #[test]
 fn test_save_and_open_project_roundtrip() {
     let dir = std::env::temp_dir().join("squid_n_app_test_scz");
