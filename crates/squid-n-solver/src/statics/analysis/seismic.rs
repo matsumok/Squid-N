@@ -228,12 +228,67 @@ impl Analysis<'_> {
         self.solve_and_recover(&f_free)
     }
 
+    /// 地震荷重ケース構築に用いる設計用固有周期 T [s] を算定する。
+    ///
+    /// - `AiMode::Approx`: 略算式 T = h(0.02+0.01α)（令88条・昭和55年建設省
+    ///   告示第1793号）。h は建築物の高さ（GL〜PH 階を除く最上階。地下深さ・
+    ///   塔屋は含めない。従来の「最上階の生 Z 標高」は、基部が Z=0 に無い
+    ///   モデルや地下階付きモデルで h を誤っていた）。
+    /// - `AiMode::SemiPrecise`: 固有値解析（1 次モード）による周期。
+    ///
+    /// T は加力方向（X/Y）によらず同一の値になるため、[`Self::build_seismic_load_case`]
+    /// が X・Y 双方向で呼ばれる場合に本関数を 1 回だけ呼び、その結果を
+    /// [`Self::build_seismic_load_case_with_period`] へ渡すことで、固有値解析
+    /// （部分空間反復）の重複実行を避けられる。
+    pub fn seismic_period(&self, mode: AiMode) -> Result<f64, SolveError> {
+        match mode {
+            AiMode::Approx => {
+                let height_m = building_height_mm(self.model) / 1000.0;
+                let steel_ratio = steel_height_ratio(self.model);
+                Ok(squid_n_load::ai::approx_t(height_m, steel_ratio))
+            }
+            AiMode::SemiPrecise => {
+                let modal = eigen::solve_eigen_with_solver(
+                    self.model,
+                    &self.dofmap,
+                    &self.reducer,
+                    1,
+                    &*self.solver,
+                )?;
+                Ok(modal.period.first().copied().unwrap_or(0.3))
+            }
+        }
+    }
+
     /// 地震静的解析の水平力（Ai 分布）を荷重ケースとして構築して返す。
     /// `seismic_static_with` の載荷部分を切り出したもので、主軸の計算
     /// （主軸の計算（構造力学）の P ベクトル）にも用いる。
+    ///
+    /// 内部的には [`Self::seismic_period`] で T を求め、
+    /// [`Self::build_seismic_load_case_with_period`] へ委譲する（挙動は従来と同一）。
     pub fn build_seismic_load_case(
         &self,
         cfg: SeismicCfg,
+    ) -> Result<squid_n_core::model::LoadCase, SolveError> {
+        if self.model.stories.is_empty() {
+            return Err(SolveError::InvalidInput(
+                "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「階の自動生成」を実行してください。".into(),
+            ));
+        }
+        let t = self.seismic_period(cfg.mode)?;
+        self.build_seismic_load_case_with_period(cfg, t)
+    }
+
+    /// 設計用固有周期 T [s]（[`Self::seismic_period`] 参照）を受け取り、
+    /// Ai 分布・階水平力の算定から荷重ケース構築までを行う。
+    ///
+    /// X・Y 両方向の地震荷重ケースを構築する際、T は方向によらず同一なので、
+    /// 呼び出し側が [`Self::seismic_period`] を 1 回だけ呼んだ結果をここへ
+    /// 渡すことで、固有値解析（SemiPrecise モード）の重複実行を避けられる。
+    pub fn build_seismic_load_case_with_period(
+        &self,
+        cfg: SeismicCfg,
+        t: f64,
     ) -> Result<squid_n_core::model::LoadCase, SolveError> {
         let SeismicCfg {
             dir,
@@ -248,22 +303,6 @@ impl Analysis<'_> {
                 "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「階の自動生成」を実行してください。".into(),
             ));
         }
-
-        let (t, _) = match mode {
-            AiMode::Approx => {
-                // h は建築物の高さ（GL〜PH 階を除く最上階。地下深さ・塔屋は含めない。
-                // 令88条・告示1793号）。従来の「最上階の生 Z 標高」は、基部が
-                // Z=0 に無いモデルや地下階付きモデルで h を誤っていた。
-                let height_m = building_height_mm(self.model) / 1000.0;
-                let steel_ratio = steel_height_ratio(self.model);
-                (squid_n_load::ai::approx_t(height_m, steel_ratio), 0)
-            }
-            AiMode::SemiPrecise => {
-                let modal = eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, 1)?;
-                let t = modal.period.first().copied().unwrap_or(0.3);
-                (t, 0)
-            }
-        };
 
         let tc = squid_n_load::ai::tc_of(soil);
         let rt_val = squid_n_load::ai::rt(t, tc);
