@@ -1898,6 +1898,9 @@ impl App {
                 {
                     self.left_panel = LeftPanel::DrawTools;
                 }
+                // 左ドック用と下ドック用のアイコン群の間に区切りを入れ、
+                // どのアイコンがどの領域を操作するのかを見分けられるようにする。
+                ui.separator();
                 let is_log_active = self.bottom_dock_open && self.bottom_tab == BottomTab::Log;
                 if ui
                     .selectable_label(is_log_active, "📜")
