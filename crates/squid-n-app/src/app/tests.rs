@@ -4402,3 +4402,57 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         .iter()
         .any(|(k, _)| *k == StaticCaseKey::User(dl_id)));
 }
+
+/// 診断: 支点が1つも定義されていない空モデルは支点なし Error を返す。
+#[test]
+fn test_run_diagnostics_flags_missing_support() {
+    let mut app = App::default();
+    app.run_diagnostics();
+    assert!(app
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
+}
+
+/// サンプル（門型ラーメン、柱脚固定）では支点なし Error が出ない
+/// （他の診断が出るかどうかはモデル次第のため断定しない）。
+#[test]
+fn test_run_diagnostics_no_missing_support_for_sample() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_diagnostics();
+    assert!(!app
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
+}
+
+/// 断面未割当の部材があれば Warning が出て、target がその部材を指す。
+#[test]
+fn test_run_diagnostics_flags_unassigned_section() {
+    let mut model = crate::sample::portal_frame();
+    let target_id = model.elements[0].id;
+    model.elements[0].section = None;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_diagnostics();
+
+    let diag = app
+        .diagnostics
+        .iter()
+        .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
+        .expect("断面未割当の Warning が出るはず");
+    assert_eq!(diag.severity, DiagSeverity::Warning);
+    assert!(diag.message.contains("断面"));
+}
+
+/// `mark_edited` 後は診断が再実行待ち（stale）に戻る。
+#[test]
+fn test_mark_edited_marks_diagnostics_stale() {
+    let mut app = App::default();
+    app.run_diagnostics();
+    assert!(!app.staleness.diagnostics_stale);
+    app.staleness.mark_edited();
+    assert!(app.staleness.diagnostics_stale);
+}

@@ -2985,6 +2985,110 @@ impl App {
                 .map(|lc| lc.name.clone())
         })
     }
+
+    /// モデル整合性チェック（診断）を実行し `self.diagnostics` を再構築する。
+    /// 下ドック「診断」タブを開いたとき／「再チェック」ボタン押下時のみ呼ばれる
+    /// 想定で、O(部材数) 程度の軽い検査に留める（解析等の重い処理は行わない）。
+    pub fn run_diagnostics(&mut self) {
+        let mut diags = Vec::new();
+
+        // モデル検証（節点/部材の ID 整合性など）。最初の1件のみ返る。
+        if let Err(e) = self.model.validate() {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: format!("モデル検証エラー: {}", e),
+                target: None,
+            });
+        }
+
+        // 支点なし: 全節点が無拘束だと解析時に剛体移動し特異行列になる。
+        let has_support = self
+            .model
+            .nodes
+            .iter()
+            .any(|n| n.restraint.0 != squid_n_core::dof::Dof6Mask::FREE.0);
+        if !has_support {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: "支点が定義されていません（解析すると剛体移動します）".to_string(),
+                target: None,
+            });
+        }
+
+        // 断面未割当: 大モデルで診断リストが溢れないよう 100 件で打ち切り、
+        // 超過分は集約1件にまとめる。
+        const MAX_UNASSIGNED_SECTION: usize = 100;
+        let unassigned: Vec<ElemId> = self
+            .model
+            .elements
+            .iter()
+            .filter(|e| e.section.is_none())
+            .map(|e| e.id)
+            .collect();
+        for id in unassigned.iter().take(MAX_UNASSIGNED_SECTION) {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Warning,
+                message: format!("部材 #{}: 断面が未割当です", id.0),
+                target: Some(DiagTarget::Member(*id)),
+            });
+        }
+        if unassigned.len() > MAX_UNASSIGNED_SECTION {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Warning,
+                message: format!(
+                    "…他 {} 部材で断面未割当",
+                    unassigned.len() - MAX_UNASSIGNED_SECTION
+                ),
+                target: None,
+            });
+        }
+
+        // 空の地震荷重ケースを参照する荷重組合せ: そのまま解くと地震項が黙って
+        // 0 になるため（`empty_seismic_case_in_combo` と同じ判定を流用）。
+        for combo in &self.model.combinations {
+            if let Some(name) = self.empty_seismic_case_in_combo(combo) {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Warning,
+                    message: format!(
+                        "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です\
+                         （解析タブの階の自動生成で生成できます）",
+                        combo.name, name
+                    ),
+                    target: None,
+                });
+            }
+        }
+
+        // 空の荷重ケース（節点・部材荷重とも未定義）。誤って荷重を入れ忘れた
+        // ケースに気づけるよう情報表示する。
+        for lc in &self.model.load_cases {
+            if lc.nodal.is_empty() && lc.member.is_empty() {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Info,
+                    message: format!("荷重ケース「{}」に荷重が定義されていません", lc.name),
+                    target: None,
+                });
+            }
+        }
+
+        self.diagnostics = diags;
+        self.staleness.diagnostics_stale = false;
+    }
+
+    /// 診断結果の件数集計（Error数, Warning数）。タブラベル・ステータス表示用。
+    pub fn diagnostics_counts(&self) -> (usize, usize) {
+        let errors = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagSeverity::Error)
+            .count();
+        let warnings = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagSeverity::Warning)
+            .count();
+        (errors, warnings)
+    }
 }
 
 /// 長期（重力）ケースの部材荷重から、各部材を単純梁支持とした場合の端部

@@ -1925,6 +1925,16 @@ impl App {
                 {
                     self.bottom_tab = BottomTab::Loads;
                 }
+                let is_diag_active =
+                    self.bottom_dock_open && self.bottom_tab == BottomTab::Diagnostics;
+                if ui
+                    .selectable_label(is_diag_active, "⚠")
+                    .on_hover_text("診断")
+                    .clicked()
+                    && toggle_dock_icon(&mut self.bottom_dock_open, is_diag_active)
+                {
+                    self.bottom_tab = BottomTab::Diagnostics;
+                }
                 ui.separator();
                 // プロジェクトファイル名 + 未保存マーカー
                 let file_label = self

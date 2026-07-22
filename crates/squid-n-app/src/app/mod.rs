@@ -45,6 +45,8 @@ pub enum BottomTab {
     Model,
     /// 荷重編集テーブル
     Loads,
+    /// モデル整合性チェック（診断）一覧
+    Diagnostics,
 }
 
 /// 左ドックのパネル。Zed のように下部バーのアイコンで切り替える。
@@ -133,7 +135,7 @@ pub enum StaticKey {
 }
 
 /// stale（要再計算）状態（UI設計 §5）。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Staleness {
     pub results_stale: bool,
     pub design_stale: bool,
@@ -141,6 +143,23 @@ pub struct Staleness {
     /// ファイル保存後に編集があったか（タイトル/ステータスの未保存マーカー用）。
     /// `mark_fresh`（解析完了）ではクリアされず、保存/読込時のみクリアする。
     pub unsaved_changes: bool,
+    /// 診断（モデル整合性チェック）が未実行または編集後で古いか。
+    /// `Default` では「まだ一度も実行していない」ことを表すため true とする
+    /// （他フィールドと異なり、モデル新規作成・読込直後にも診断タブを開いた
+    /// 時点で必ず一度実行させたいため）。
+    pub diagnostics_stale: bool,
+}
+
+impl Default for Staleness {
+    fn default() -> Self {
+        Self {
+            results_stale: false,
+            design_stale: false,
+            last_run: None,
+            unsaved_changes: false,
+            diagnostics_stale: true,
+        }
+    }
 }
 
 impl Staleness {
@@ -149,6 +168,7 @@ impl Staleness {
         self.results_stale = true;
         self.design_stale = true;
         self.unsaved_changes = true;
+        self.diagnostics_stale = true;
     }
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
@@ -156,6 +176,29 @@ impl Staleness {
         self.design_stale = false;
         self.last_run = Some(SystemTime::now());
     }
+}
+
+/// 診断の重要度。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// 診断が指す対象（クリックで 3D 選択・インスペクタへ反映するために持つ）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagTarget {
+    Node(NodeId),
+    Member(ElemId),
+}
+
+/// モデル整合性チェックの結果1件。
+#[derive(Clone, Debug)]
+pub struct Diagnostic {
+    pub severity: DiagSeverity,
+    pub message: String,
+    pub target: Option<DiagTarget>,
 }
 
 #[derive(Default)]
@@ -472,6 +515,8 @@ pub struct App {
     pub pending_duplicate_node_coord: Option<[f64; 3]>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
+    /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
+    pub diagnostics: Vec<Diagnostic>,
     /// ナビゲータ（左ペイン）状態
     pub nav: Navigator,
     /// モデルタブ内のサブタブ
@@ -666,6 +711,7 @@ impl Default for App {
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
+            diagnostics: Vec::new(),
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
             // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
@@ -1622,6 +1668,22 @@ impl eframe::App for App {
                         {
                             self.bottom_tab = BottomTab::Loads;
                         }
+                        // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
+                        // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
+                        let (diag_errors, diag_warnings) = self.diagnostics_counts();
+                        let diag_label = if !self.staleness.diagnostics_stale
+                            && (diag_errors > 0 || diag_warnings > 0)
+                        {
+                            format!("診断 (E{}/W{})", diag_errors, diag_warnings)
+                        } else {
+                            "診断".to_string()
+                        };
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Diagnostics, diag_label)
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Diagnostics;
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("✕").clicked() {
                                 self.bottom_dock_open = false;
@@ -1630,9 +1692,20 @@ impl eframe::App for App {
                             {
                                 self.log.entries.clear();
                             }
+                            if self.bottom_tab == BottomTab::Diagnostics
+                                && ui.button("再チェック").clicked()
+                            {
+                                self.run_diagnostics();
+                            }
                         });
                     });
                     ui.separator();
+                    // 診断タブを開いた時点で stale なら遅延実行する（編集の度に毎フレーム
+                    // 走らせるとモデル/荷重編集操作が重くなるため）。
+                    if self.bottom_tab == BottomTab::Diagnostics && self.staleness.diagnostics_stale
+                    {
+                        self.run_diagnostics();
+                    }
                     match self.bottom_tab {
                         BottomTab::Log => {
                             if self.log.entries.is_empty() {
@@ -1677,6 +1750,67 @@ impl eframe::App for App {
                             egui::ScrollArea::both()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| crate::tables::loads::loads_table(ui, self));
+                        }
+                        BottomTab::Diagnostics => {
+                            if self.diagnostics.is_empty() {
+                                ui.colored_label(
+                                    crate::theme::GOOD_GREEN,
+                                    "問題は見つかりませんでした",
+                                );
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        // インデックスで回す（クリック時に selection/nav を
+                                        // 書き換えるため self を可変借用する必要があり、
+                                        // diagnostics への不変参照と両立できない）。
+                                        for i in 0..self.diagnostics.len() {
+                                            let (color, icon, message, target) = {
+                                                let d = &self.diagnostics[i];
+                                                let color = match d.severity {
+                                                    DiagSeverity::Error => crate::theme::ERROR_RED,
+                                                    DiagSeverity::Warning => {
+                                                        crate::theme::BEST_YELLOW
+                                                    }
+                                                    DiagSeverity::Info => crate::theme::GRAY_700,
+                                                };
+                                                let icon = match d.severity {
+                                                    DiagSeverity::Error | DiagSeverity::Warning => {
+                                                        "⚠"
+                                                    }
+                                                    DiagSeverity::Info => "ℹ",
+                                                };
+                                                (color, icon, d.message.clone(), d.target)
+                                            };
+                                            let text = egui::RichText::new(format!(
+                                                "{} {}",
+                                                icon, message
+                                            ))
+                                            .color(color);
+                                            if let Some(target) = target {
+                                                let resp = ui
+                                                    .selectable_label(false, text)
+                                                    .on_hover_text("クリックで 3D 選択");
+                                                if resp.clicked() {
+                                                    match target {
+                                                        DiagTarget::Member(id) => {
+                                                            self.selection.members = vec![id];
+                                                            self.selection.nodes.clear();
+                                                            self.nav.focus_member = Some(id);
+                                                        }
+                                                        DiagTarget::Node(id) => {
+                                                            self.selection.nodes = vec![id];
+                                                            self.selection.members.clear();
+                                                            self.nav.focus_node = Some(id);
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                ui.label(text);
+                                            }
+                                        }
+                                    });
+                            }
                         }
                     }
                 });
