@@ -236,6 +236,32 @@ pub struct SteelDesignAttr {
     /// 等間隔横補剛の本数（lb 自動計算: lb = L/(n+1)）
     #[serde(default)]
     pub lateral_brace_count: Option<u32>,
+    /// 強軸まわり座屈長さの直接入力 lk_y [mm]（None=自動算定）
+    #[serde(default)]
+    pub lk_y_direct: Option<f64>,
+    /// 弱軸まわり座屈長さの直接入力 lk_z [mm]（None=自動算定）
+    #[serde(default)]
+    pub lk_z_direct: Option<f64>,
+    /// 横座屈修正係数 C の直接入力（None=自動算定）。
+    /// 入力がある場合は自動算定（M2/M1 比・上限 2.3）を行わず入力値を採用する。
+    #[serde(default)]
+    pub c_direct: Option<f64>,
+}
+
+impl SteelDesignAttr {
+    /// 欠損率が全て 0・横座屈長さ関連の指定が全て `None` か（＝側テーブルから
+    /// 削除してよいか）。[`MemberDetailAttr::is_empty`](super::MemberDetailAttr::is_empty)
+    /// の流儀に合わせる。
+    pub fn is_empty(&self) -> bool {
+        self.joint_flange_loss == 0.0
+            && self.joint_web_loss == 0.0
+            && self.scallop_web_loss == 0.0
+            && self.lb_direct.is_none()
+            && self.lateral_brace_count.is_none()
+            && self.lk_y_direct.is_none()
+            && self.lk_z_direct.is_none()
+            && self.c_direct.is_none()
+    }
 }
 
 /// 座屈補剛ブレース（BRB）の断面検定用属性。許容値はメーカー資料による入力値

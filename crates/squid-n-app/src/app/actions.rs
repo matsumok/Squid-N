@@ -2025,21 +2025,41 @@ impl App {
                 (Some(a), Some(b)) => Some((a, b)),
                 _ => None,
             };
-            // 柱の座屈長さ lk = K・h（鋼構造塑性設計指針、水平移動が拘束されない
-            // 場合。K は節点まわり剛度比 G から算定）。柱以外は None（lk=部材長）。
-            // RC 柱の検定は lk を使わないため、柱一律で設定して問題ない。
-            // K は現状 1 方向の剛度比から算定しており両軸同値（lk_y=lk_z）。
-            // 軸別 K の精緻化は将来課題。
-            let lk = if kind == squid_n_design_jp::MemberKind::Column {
-                squid_n_design_jp::steel::buckling::steel_column_k_with_index(
+            // S 造部材の断面検定属性（欠損率・横座屈長さ・座屈長さ直接入力）。
+            // 座屈長さ lk_y/lk_z の解決（直接入力 > 柱の自動算定 > 部材長）で
+            // 直接入力を先に参照するため、lk 自動算定より前に取得しておく。
+            let steel_attr = self
+                .model
+                .steel_design_attrs
+                .iter()
+                .find(|a| a.elem == *elem_id)
+                .cloned();
+            // 柱の座屈長さ lk_y/lk_z = K_y・h／K_z・h（鋼構造塑性設計指針、水平移動が
+            // 拘束されない場合。K は局所軸の強軸・弱軸たわみ方向ごとに節点まわり
+            // 剛度比 G から算定。[`steel_column_k_axes_with_index`]）。柱以外は
+            // None（lk=部材長）。RC 柱の検定は lk を使わないため、柱一律で
+            // 設定して問題ない。SteelDesignAttr の直接入力があればそちらを優先する
+            // （柱以外の部材でも直接入力は有効。柱の自動算定は柱のみ）。
+            let (lk_y_auto, lk_z_auto) = if kind == squid_n_design_jp::MemberKind::Column {
+                match squid_n_design_jp::steel::buckling::steel_column_k_axes_with_index(
                     &self.model,
                     &column_k_index,
                     elem,
-                )
-                .map(|k| k * length)
+                ) {
+                    Some((k_y, k_z)) => (Some(k_y * length), Some(k_z * length)),
+                    None => (None, None),
+                }
             } else {
-                None
+                (None, None)
             };
+            let lk_y = steel_attr
+                .as_ref()
+                .and_then(|a| a.lk_y_direct)
+                .or(lk_y_auto);
+            let lk_z = steel_attr
+                .as_ref()
+                .and_then(|a| a.lk_z_direct)
+                .or(lk_z_auto);
             // 一本部材グループに属する梁は、部材長・端部/中央モーメント・せん断
             // スパン比代表値をグループ合成値に置き換える（断面検定の採用応力。
             // 一本部材指定時の採用応力）。
@@ -2074,20 +2094,13 @@ impl App {
                             method: self.analysis_cfg.qd_method,
                         }
                     });
-            // S 造部材の断面検定属性（欠損率・横座屈長さ）。
-            let steel_attr = self
-                .model
-                .steel_design_attrs
-                .iter()
-                .find(|a| a.elem == *elem_id)
-                .cloned();
             let ctx = DesignCtx {
                 term: self.design_term,
                 kind,
                 length,
                 lb: None,
-                lk_y: lk,
-                lk_z: lk,
+                lk_y,
+                lk_z,
                 shear_span,
                 shear_span_y,
                 rc_damage_control: self.analysis_cfg.rc_damage_control,

@@ -33,6 +33,8 @@ pub enum ModelTab {
     MiscWalls,
     /// 部材付帯情報（ハンチ・継手位置）
     MemberDetails,
+    /// S造検定属性（継手・スカラップ欠損率、横座屈長さ・座屈長さの直接入力）
+    SteelAttrs,
 }
 
 /// 下ドックのタブ。ログに加え、横幅を要する編集テーブルを収容する
@@ -684,6 +686,9 @@ pub struct App {
     /// モデルタブ「部材付帯情報」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub member_detail_draft: crate::tables::member_details::MemberDetailDraft,
+    /// モデルタブ「S造検定属性」フォームのドラフト状態
+    #[cfg(feature = "gui")]
+    pub steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft,
     /// 設計タブ「数量積算」ビューの状態（集計単位の切替）
     #[cfg(feature = "gui")]
     pub quantity_view: crate::quantity_view::QuantityViewState,
@@ -814,6 +819,8 @@ impl Default for App {
             load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft::default(),
             #[cfg(feature = "gui")]
             member_detail_draft: crate::tables::member_details::MemberDetailDraft::default(),
+            #[cfg(feature = "gui")]
+            steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft::default(),
             #[cfg(feature = "gui")]
             quantity_view: crate::quantity_view::QuantityViewState::default(),
         }

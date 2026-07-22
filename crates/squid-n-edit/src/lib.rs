@@ -92,12 +92,14 @@ mod load_case;
 mod member_detail;
 mod node_member;
 mod section_material;
+mod steel_design;
 mod wall_misc;
 
 pub use load_case::*;
 pub use member_detail::*;
 pub use node_member::*;
 pub use section_material::*;
+pub use steel_design::*;
 pub use wall_misc::*;
 
 #[cfg(test)]

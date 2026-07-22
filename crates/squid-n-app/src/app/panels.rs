@@ -456,6 +456,7 @@ impl App {
                 ("壁属性", ModelTab::WallAttrs),
                 ("雑壁", ModelTab::MiscWalls),
                 ("部材付帯情報", ModelTab::MemberDetails),
+                ("S造検定属性", ModelTab::SteelAttrs),
             ];
             for (label, sub) in &subs {
                 let sel = self.model_tab == *sub;
@@ -485,6 +486,7 @@ impl App {
             ModelTab::MemberDetails => {
                 crate::tables::member_details::member_details_table(ui, self)
             }
+            ModelTab::SteelAttrs => crate::tables::steel_attrs::steel_attrs_table(ui, self),
         }
     }
 
