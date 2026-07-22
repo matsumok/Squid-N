@@ -102,6 +102,42 @@ pub fn status_color(ratio: f64) -> Color32 {
     }
 }
 
+/// Viridis カラーマップのアンカー点（matplotlib 版, t=0.000〜1.000 を 0.125 刻み）。
+/// `viridis` はこの LUT を区間線形補間する。
+const VIRIDIS_LUT: [(f32, Color32); 9] = [
+    (0.000, Color32::from_rgb(0x44, 0x01, 0x54)),
+    (0.125, Color32::from_rgb(0x48, 0x28, 0x78)),
+    (0.250, Color32::from_rgb(0x3E, 0x49, 0x89)),
+    (0.375, Color32::from_rgb(0x31, 0x68, 0x8E)),
+    (0.500, Color32::from_rgb(0x26, 0x82, 0x8E)),
+    (0.625, Color32::from_rgb(0x1F, 0x9E, 0x89)),
+    (0.750, Color32::from_rgb(0x35, 0xB7, 0x79)),
+    (0.875, Color32::from_rgb(0x6D, 0xCD, 0x59)),
+    (1.000, Color32::from_rgb(0xFD, 0xE7, 0x25)),
+];
+
+/// 連続値を Viridis カラーマップへ写像する（TONMANUAL §3「カラーマップ（連続値）」:
+/// 応力コンター等の連続値表示は、知覚均等で色覚多様性に配慮した Viridis を既定とする）。
+/// `t`（0.0–1.0、範囲外はクランプ）に応じて濃紫（0.0）→青緑→黄（1.0）へ区間線形補間する。
+pub fn viridis(t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    // LUT 内で t を挟む2点を探し、その区間で線形補間する（末尾は最終アンカーを返す）。
+    for w in VIRIDIS_LUT.windows(2) {
+        let (t0, c0) = w[0];
+        let (t1, c1) = w[1];
+        if t <= t1 {
+            let local = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
+            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * local).round() as u8;
+            return Color32::from_rgb(
+                mix(c0.r(), c1.r()),
+                mix(c0.g(), c1.g()),
+                mix(c0.b(), c1.b()),
+            );
+        }
+    }
+    VIRIDIS_LUT[VIRIDIS_LUT.len() - 1].1
+}
+
 /// TONMANUAL に沿ったテーマ（ライト基準・ブルークローム・角丸 4/6px・タイポスケール）を
 /// egui コンテキストへ適用する。アプリ起動時に一度だけ呼ぶ。
 pub fn apply_theme(ctx: &egui::Context) {
@@ -189,4 +225,24 @@ pub fn apply_theme(ctx: &egui::Context) {
     .into();
 
     ctx.set_global_style(style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// アンカー点（t=0.0, 0.5, 1.0）は LUT の色そのものを返す。
+    #[test]
+    fn viridis_matches_anchor_points() {
+        assert_eq!(viridis(0.0), Color32::from_rgb(0x44, 0x01, 0x54));
+        assert_eq!(viridis(0.5), Color32::from_rgb(0x26, 0x82, 0x8E));
+        assert_eq!(viridis(1.0), Color32::from_rgb(0xFD, 0xE7, 0x25));
+    }
+
+    /// 範囲外の値はクランプされる。
+    #[test]
+    fn viridis_clamps_out_of_range() {
+        assert_eq!(viridis(-5.0), viridis(0.0));
+        assert_eq!(viridis(5.0), viridis(1.0));
+    }
 }

@@ -103,24 +103,14 @@ fn diagram_poly_repr_val(poly: &[(f64, f64)]) -> f64 {
     }
 }
 
-/// 発散型カラーマップ: `t = val/max_abs ∈ [-1,1]`（範囲外はクランプ）を色へ写像する。
-/// 負側 = [`theme::DATA_BLUE`]、0 = 白寄りのニュートラル（[`theme::WHITE`]）、
-/// 正側 = [`theme::PARETO_RED`] へ線形補間する（独自色を増やさず theme.rs の
-/// 既存色のみを使う）。
+/// コンター配色: `t = val/max_abs ∈ [-1,1]`（範囲外はクランプ）を色へ写像する。
+/// TONMANUAL §3「カラーマップ（連続値）」の規定に従い、知覚均等で色覚多様性に
+/// 配慮した [`theme::viridis`] を既定とする（−max=濃紫 → 0=青緑 → +max=黄）。
+/// 実体は `theme::viridis((t+1)/2)` への単純な写像で、独自の配色は持たない
+/// （テーマ＝配色の単一情報源は theme.rs 側に置く）。
 pub(crate) fn contour_color(t: f64) -> egui::Color32 {
     let t = (t as f32).clamp(-1.0, 1.0);
-    if t >= 0.0 {
-        lerp_color(theme::WHITE, theme::PARETO_RED, t)
-    } else {
-        lerp_color(theme::WHITE, theme::DATA_BLUE, -t)
-    }
-}
-
-/// 色 `a`→`b` を `t∈[0,1]` で線形補間する。
-fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+    theme::viridis((t + 1.0) * 0.5)
 }
 
 /// 部材ローカルに沿って N/Q/M 図を描く。
@@ -415,13 +405,22 @@ mod tests {
         assert!(diagram_fill_polygons(&[(0.0, 1.0)], 1).is_empty());
     }
 
-    /// t=-1 は DATA_BLUE、t=+1 は PARETO_RED、t=0 はニュートラル（白寄り）。
+    /// t=-1 は Viridis の濃紫端（#440154）、t=+1 は黄端（#FDE725）、
+    /// t=0 は中央の青緑（#26828E）へ写像される。
     #[test]
     fn contour_color_endpoints_and_neutral() {
-        assert_eq!(contour_color(-1.0), theme::DATA_BLUE);
-        assert_eq!(contour_color(1.0), theme::PARETO_RED);
-        let neutral = contour_color(0.0);
-        assert_eq!(neutral, theme::WHITE);
+        assert_eq!(
+            contour_color(-1.0),
+            egui::Color32::from_rgb(0x44, 0x01, 0x54)
+        );
+        assert_eq!(
+            contour_color(1.0),
+            egui::Color32::from_rgb(0xFD, 0xE7, 0x25)
+        );
+        assert_eq!(
+            contour_color(0.0),
+            egui::Color32::from_rgb(0x26, 0x82, 0x8E)
+        );
     }
 
     /// 範囲外の値はクランプされる（t<-1 は t=-1 と同じ、t>1 は t=1 と同じ）。
@@ -431,24 +430,13 @@ mod tests {
         assert_eq!(contour_color(5.0), contour_color(1.0));
     }
 
-    /// 中間値は WHITE→PARETO_RED（正側）／WHITE→DATA_BLUE（負側）へ単調に補間される。
-    /// WHITE は各チャンネルが 255（u8 の最大値）のため、どちらの終端色へ向かう場合も
-    /// 各チャンネル値は |t| の増加とともに単調非増加になる。
+    /// Viridis は t の増加とともに G 成分が単調非減少（濃紫→青緑→黄で緑みが増す）。
     #[test]
-    fn contour_color_interpolates_monotonically() {
-        // 正側（WHITE→PARETO_RED）: R/G/B すべて単調非増加
-        let c0 = contour_color(0.0);
-        let c_mid = contour_color(0.5);
-        let c_1 = contour_color(1.0);
-        assert!(c0.r() >= c_mid.r() && c_mid.r() >= c_1.r());
-        assert!(c0.g() >= c_mid.g() && c_mid.g() >= c_1.g());
-        assert!(c0.b() >= c_mid.b() && c_mid.b() >= c_1.b());
-
-        // 負側（WHITE→DATA_BLUE）: R/G/B すべて単調非増加
-        let c_neg_mid = contour_color(-0.5);
-        let c_neg_1 = contour_color(-1.0);
-        assert!(c0.r() >= c_neg_mid.r() && c_neg_mid.r() >= c_neg_1.r());
-        assert!(c0.g() >= c_neg_mid.g() && c_neg_mid.g() >= c_neg_1.g());
-        assert!(c0.b() >= c_neg_mid.b() && c_neg_mid.b() >= c_neg_1.b());
+    fn contour_color_green_channel_is_monotonic() {
+        let ts = [-1.0, -0.5, 0.0, 0.5, 1.0];
+        let greens: Vec<u8> = ts.iter().map(|&t| contour_color(t).g()).collect();
+        for w in greens.windows(2) {
+            assert!(w[0] <= w[1], "G成分が非単調: {:?}", greens);
+        }
     }
 }
