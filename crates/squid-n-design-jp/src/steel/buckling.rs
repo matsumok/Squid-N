@@ -13,17 +13,36 @@
 //! - 混合構造（RC/SRC 部材が節点に接する場合）はその部材の剛性をヤング係数比
 //!   により補正する → 本実装は `Σ(E・I/L)` の比で G を計算するため、各部材の
 //!   実ヤング係数がそのまま補正として効く。
-//! - 節点に接する部材の角度は考慮しない（本実装の簡略化）。
-//! - 梁の結合状態・支点の状態は考慮しない（同上）。
+//! - 梁の結合状態・支点の状態は考慮しない（本実装の簡略化）。
 //!
-//! # 本実装の追加的な簡略化
+//! # 軸別評価（[`steel_column_k_axes_with_index`]）
+//! 強軸まわり K_y・弱軸まわり K_z を個別に評価する版は、節点に接する部材の
+//! 角度を [`squid_n_element::transform::LocalFrame`] の局所軸から求め、次の
+//! 重み付けで G を軸ごとに集計する:
+//! - 梁: 梁材軸の水平投影と評価方向（たわみ方向）のなす角の余弦の 2 乗
+//!   `cos²θ` を `E・iy/L` に乗じる（面内（鉛直面）曲げは強軸 `iy` とする
+//!   仮定は維持し、角度のみ重み付けする）。
+//! - 柱（対象柱自身を含む）: その柱自身の強軸たわみ方向と評価方向のなす角
+//!   `cos²β` により `I_eff = iy・cos²β + iz・(1−cos²β)` へ断面二次モーメントを
+//!   投影する。
+//!
+//! 評価方向の水平投影が縮退する（部材がほぼ鉛直で水平方向が定まらない）軸は、
+//! 方向を区別しない従来の集計（[`g_ratio_at_with_index`]、下記の方向無差別
+//! 簡略版と同じ扱い）にフォールバックする。
+//!
+//! # 方向無差別簡略版（[`steel_column_k_with_index`]・[`steel_column_k`]）の簡略化
+//! - 節点に接する部材の角度は考慮しない（互換用の簡略版。軸別精緻化は
+//!   [`steel_column_k_axes_with_index`] を使うこと）。
 //! - 断面二次モーメントは強軸 `Section.iy` を全部材で用いる（加力方向別の
-//!   使い分けはしない。座屈長さ算定自体が部材角度を考慮しないため同水準の近似）。
+//!   使い分けはしない。部材角度を考慮しないため同水準の近似）。
+//!
+//! # 両版に共通する簡略化
 //! - `EndCondition::SemiRigid` はピンとみなさず G の計算値をそのまま用いる。
 //! - 剛域・特殊形状による材長補正は行わず、節点間の幾何学的長さを用いる。
 
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
+use squid_n_core::model::{ElementData, ElementKind, EndCondition, Material, Model, Section};
+use squid_n_element::transform::LocalFrame;
 use std::collections::HashMap;
 
 /// ピン端・梁無し節点に用いる剛度比 G の規定値（本実装の既定値）。
@@ -67,10 +86,16 @@ pub fn sway_buckling_k(ga: f64, gb: f64) -> f64 {
     (std::f64::consts::PI / x).max(1.0)
 }
 
-/// 線材（`ElementKind::Beam`）の幾何学的長さと軸方向余弦の鉛直成分 |ez|。
-fn line_geometry(model: &Model, elem: &ElementData) -> Option<(f64, f64)> {
+/// 線材（両端 2 節点）の始端・終端座標。
+fn node_coords(model: &Model, elem: &ElementData) -> Option<([f64; 3], [f64; 3])> {
     let p0 = model.nodes.get(elem.nodes.first()?.index())?.coord;
     let p1 = model.nodes.get(elem.nodes.get(1)?.index())?.coord;
+    Some((p0, p1))
+}
+
+/// 線材（`ElementKind::Beam`）の幾何学的長さと軸方向余弦の鉛直成分 |ez|。
+fn line_geometry(model: &Model, elem: &ElementData) -> Option<(f64, f64)> {
+    let (p0, p1) = node_coords(model, elem)?;
     let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
     let len = (dx * dx + dy * dy + dz * dz).sqrt();
     if len < 1e-9 {
@@ -79,18 +104,47 @@ fn line_geometry(model: &Model, elem: &ElementData) -> Option<(f64, f64)> {
     Some((len, (dz / len).abs()))
 }
 
-/// 部材の曲げ剛度 E・I/L（強軸 `iy`）。断面・材料・長さが解決できない場合 None。
-fn flexural_stiffness(model: &Model, elem: &ElementData, length: f64) -> Option<f64> {
+/// 部材の断面・材料 `(Section, Material)`。いずれか解決できない場合 None。
+fn section_material<'m>(
+    model: &'m Model,
+    elem: &ElementData,
+) -> Option<(&'m Section, &'m Material)> {
     let sec = elem
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
     let mat = elem
         .material
         .and_then(|mid| model.materials.get(mid.index()))?;
+    Some((sec, mat))
+}
+
+/// 部材の曲げ剛度 E・I/L（強軸 `iy`）。断面・材料・長さが解決できない場合 None。
+fn flexural_stiffness(model: &Model, elem: &ElementData, length: f64) -> Option<f64> {
+    let (sec, mat) = section_material(model, elem)?;
     if sec.iy <= 0.0 || mat.young <= 0.0 || length <= 0.0 {
         return None;
     }
     Some(mat.young * sec.iy / length)
+}
+
+/// 水平面（xy 平面）への正射影を単位ベクトルへ正規化する。投影長が `1e-6`
+/// 未満（鉛直に近く水平方向を定義できない）場合は `None`。
+fn horizontal_unit(v: [f64; 3]) -> Option<[f64; 2]> {
+    let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+    if len < 1e-6 {
+        None
+    } else {
+        Some([v[0] / len, v[1] / len])
+    }
+}
+
+/// 部材 `elem` の局所軸フレームにおける `rot[axis]`（0=ex 材軸, 1=ey 強軸たわみ
+/// 方向, 2=ez 弱軸たわみ方向）の水平投影単位ベクトル。幾何が解決できない、
+/// または投影が縮退する場合は `None`。
+fn member_horizontal_axis(model: &Model, elem: &ElementData, axis: usize) -> Option<[f64; 2]> {
+    let (p0, p1) = node_coords(model, elem)?;
+    let frame = LocalFrame::from_nodes(p0, p1, elem.local_axis.ref_vector);
+    horizontal_unit(frame.rot[axis])
 }
 
 /// 節点ID → その節点に接続する線材（`ElementKind::Beam`）要素への参照インデックス。
@@ -171,11 +225,13 @@ fn g_ratio_at_with_index(
     sum_col / sum_beam
 }
 
-/// 柱 `elem` の座屈長さ係数 K（水平移動が拘束されない場合）を、モデルの
-/// 節点まわり剛度比から算定する（インデックス版）。
+/// 柱 `elem` の座屈長さ係数 K（水平移動が拘束されない場合、方向を考慮しない
+/// 簡略版・互換用）を、モデルの節点まわり剛度比から算定する（インデックス版）。
 ///
 /// 柱でない（幾何判定で |ez| < 0.8）、または線材でない場合は None。
-/// 呼び出し側は `lk = K・L` を [`crate::DesignCtx::lk`] に渡すことを想定する。
+/// 呼び出し側は `lk = K・L` を [`crate::DesignCtx::lk_y`]/[`crate::DesignCtx::lk_z`]
+/// （両軸同値）に渡すことを想定する。強軸・弱軸を個別に評価する場合は
+/// [`steel_column_k_axes_with_index`] を使うこと。
 ///
 /// `index` は事前に `BeamNodeIndex::build(model)` で一度だけ構築し、
 /// 全部材ぶんのループで使い回すこと（全部材×全要素の O(n²) 線形探索を回避）。
@@ -196,11 +252,12 @@ pub fn steel_column_k_with_index(
     Some(sway_buckling_k(ga, gb))
 }
 
-/// 柱 `elem` の座屈長さ係数 K（水平移動が拘束されない場合）を、モデルの
-/// 節点まわり剛度比から算定する。
+/// 柱 `elem` の座屈長さ係数 K（水平移動が拘束されない場合、方向を考慮しない
+/// 簡略版・互換用）を、モデルの節点まわり剛度比から算定する。
 ///
 /// 柱でない（幾何判定で |ez| < 0.8）、または線材でない場合は None。
-/// 呼び出し側は `lk = K・L` を [`crate::DesignCtx::lk`] に渡すことを想定する。
+/// 呼び出し側は `lk = K・L` を [`crate::DesignCtx::lk_y`]/[`crate::DesignCtx::lk_z`]
+/// （両軸同値）に渡すことを想定する。
 ///
 /// 単発呼び出し用の互換 API（内部で `BeamNodeIndex` を都度構築する）。
 /// 部材数ぶんループで呼ぶ場合は `BeamNodeIndex::build` を一度だけ構築して
@@ -208,6 +265,133 @@ pub fn steel_column_k_with_index(
 pub fn steel_column_k(model: &Model, elem: &ElementData) -> Option<f64> {
     let index = BeamNodeIndex::build(model);
     steel_column_k_with_index(model, &index, elem)
+}
+
+// ---------------------------------------------------------------------
+// 軸別評価（強軸 K_y・弱軸 K_z を個別に算定する精緻化版）
+// ---------------------------------------------------------------------
+
+/// 節点 `node_idx` まわりの軸別剛度比 G_a を求める（評価方向 `d_a` に対する
+/// 重み付け版）。
+///
+/// `d_a` は評価対象のたわみ方向（対象柱自身の `ey`（強軸）または `ez`（弱軸）の
+/// 水平投影単位ベクトル）。`G_a = Σ(E・I_eff/L)_柱 / Σ(E・iy・cos²θ/L)_梁`:
+///
+/// - 柱（対象柱自身を含む。|ez| ≥ 0.8）: その柱自身の強軸たわみ方向の水平投影
+///   `d_c` を求め、`cos²β = (d_c・d_a)²` により `I_eff = iy・cos²β + iz・(1−cos²β)`
+///   を負担剛度とする。`d_c` が縮退（求まらない）場合は `cos²β=1`（`iy` を採用）。
+/// - 梁（|ez| ≤ 0.2）: 梁材軸の水平投影単位ベクトル `e_h` と `d_a` のなす角の
+///   余弦の 2 乗 `cos²θ = (e_h・d_a)²` を重みとして `E・iy/L` に乗じる（面内
+///   （鉛直面）曲げは強軸 `iy` とする従来仮定を維持）。`e_h` が縮退する場合は
+///   寄与 0（水平方向を定義できない部材は回転拘束に寄与しないとみなす）。
+/// - 斜材（0.2 < |ez| < 0.8）は従来通り無視する。
+///
+/// 当該柱端が `Pinned`、または節点に接する梁が無い（Σ梁 ≤ 0）場合は G=10。
+fn g_ratio_axis_at(
+    model: &Model,
+    index: &BeamNodeIndex<'_>,
+    column: &ElementData,
+    node_idx: usize,
+    d_a: [f64; 2],
+) -> f64 {
+    if matches!(column.end_cond.get(node_idx), Some(EndCondition::Pinned)) {
+        return G_PIN;
+    }
+    let Some(node_id) = column.nodes.get(node_idx) else {
+        return G_PIN;
+    };
+
+    let mut sum_col = 0.0_f64;
+    let mut sum_beam = 0.0_f64;
+    for other in index.beams_at(*node_id) {
+        let Some((len, ez)) = line_geometry(model, other) else {
+            continue;
+        };
+        if ez >= 0.8 {
+            let Some((sec, mat)) = section_material(model, other) else {
+                continue;
+            };
+            if mat.young <= 0.0 || len <= 0.0 {
+                continue;
+            }
+            let (iy, iz) = (sec.iy.max(0.0), sec.iz.max(0.0));
+            let cos2 = match member_horizontal_axis(model, other, 1) {
+                Some(d_c) => {
+                    let dot = d_c[0] * d_a[0] + d_c[1] * d_a[1];
+                    dot * dot
+                }
+                None => 1.0,
+            };
+            let i_eff = iy * cos2 + iz * (1.0 - cos2);
+            sum_col += mat.young * i_eff / len;
+        } else if ez <= 0.2 {
+            let Some(ei_l) = flexural_stiffness(model, other, len) else {
+                continue;
+            };
+            let cos2 = match member_horizontal_axis(model, other, 0) {
+                Some(e_h) => {
+                    let dot = e_h[0] * d_a[0] + e_h[1] * d_a[1];
+                    dot * dot
+                }
+                None => 0.0,
+            };
+            sum_beam += ei_l * cos2;
+        }
+    }
+
+    if sum_beam <= 1e-12 {
+        return G_PIN;
+    }
+    sum_col / sum_beam
+}
+
+/// 柱 `elem` の軸別座屈長さ係数（強軸まわり K_y・弱軸まわり K_z）を、モデルの
+/// 節点まわり剛度比から算定する（水平移動が拘束されない場合）。
+///
+/// 対象柱の局所軸（[`LocalFrame::from_nodes`]、`rot=[ex,ey,ez]`）の `ey`
+/// （強軸曲げのたわみ方向）・`ez`（弱軸曲げのたわみ方向）それぞれについて
+/// [`g_ratio_axis_at`] で軸別の G を求め、`sway_buckling_k` に渡す
+/// （モジュール doc の「軸別評価」節参照）。評価方向の水平投影が縮退する軸は、
+/// 方向を区別しない従来の集計（[`g_ratio_at_with_index`]、
+/// [`steel_column_k_with_index`] と同じ値）にフォールバックする。
+///
+/// 柱でない（幾何判定で |ez| < 0.8）、または線材でない場合は None。
+/// 呼び出し側は `lk_y = K_y・L`・`lk_z = K_z・L` を
+/// [`crate::DesignCtx::lk_y`]/[`crate::DesignCtx::lk_z`] に渡すことを想定する。
+///
+/// `index` は事前に `BeamNodeIndex::build(model)` で一度だけ構築し、
+/// 全部材ぶんのループで使い回すこと。
+pub fn steel_column_k_axes_with_index(
+    model: &Model,
+    index: &BeamNodeIndex<'_>,
+    elem: &ElementData,
+) -> Option<(f64, f64)> {
+    if elem.kind != ElementKind::Beam {
+        return None;
+    }
+    let (p0, p1) = node_coords(model, elem)?;
+    let (_, ez_comp) = line_geometry(model, elem)?;
+    if ez_comp < 0.8 {
+        return None;
+    }
+    let frame = LocalFrame::from_nodes(p0, p1, elem.local_axis.ref_vector);
+    let d_y = horizontal_unit(frame.rot[1]);
+    let d_z = horizontal_unit(frame.rot[2]);
+
+    let k_for = |d: Option<[f64; 2]>| -> f64 {
+        let (ga, gb) = match d {
+            Some(d_a) => (
+                g_ratio_axis_at(model, index, elem, 0, d_a),
+                g_ratio_axis_at(model, index, elem, 1, d_a),
+            ),
+            None => (
+                g_ratio_at_with_index(model, index, elem, 0),
+                g_ratio_at_with_index(model, index, elem, 1),
+            ),
+        };
+        sway_buckling_k(ga, gb)
+    };
+    Some((k_for(d_y), k_for(d_z)))
 }
 
 #[cfg(test)]
@@ -424,5 +608,160 @@ mod tests {
         );
         let expected = sway_buckling_k(20.0, 20.0);
         assert!((k_rc - expected).abs() < 1e-9);
+    }
+
+    // ------------------------------------------------------------------
+    // steel_column_k_axes_with_index（軸別精緻化版）
+    // ------------------------------------------------------------------
+
+    /// 平面ポータルフレーム（X-Z 面、柱・梁とも `ref_vector=[0,0,1]`）:
+    /// 柱は ref_vector が材軸と平行なため `LocalFrame` の縮退フォールバックで
+    /// `ey≈X`（強軸たわみ方向）・`ez≈Y`（弱軸たわみ方向）となる。梁は X 方向に
+    /// しか無いため、K_y は従来の G=2（`steel_column_k_matches_hand_g` と同じ）
+    /// と一致し、K_z（Y 方向に梁が無い）は `sway_buckling_k(10,10)` になる。
+    #[test]
+    fn steel_column_k_axes_plane_portal_matches_hand_g() {
+        let model = portal_model(4000.0, 8000.0);
+        let index = BeamNodeIndex::build(&model);
+        let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
+            .expect("柱として判定される");
+        let expected_ky = sway_buckling_k(2.0, 2.0);
+        let expected_kz = sway_buckling_k(10.0, 10.0);
+        assert!(
+            (k_y - expected_ky).abs() < 1e-9,
+            "k_y={k_y}, expected={expected_ky}"
+        );
+        assert!(
+            (k_z - expected_kz).abs() < 1e-9,
+            "k_z={k_z}, expected={expected_kz}"
+        );
+    }
+
+    /// 直交 2 方向（X・Y）に梁がある立体モデル: 柱は鉛直（`ey≈X`・`ez≈Y`）。
+    /// X 方向梁（長さ 6000）は K_y のみに、Y 方向梁（長さ 9000）は K_z のみに
+    /// 効くことを、両端対称のモデルで手計算照合する
+    /// （`G_y=Lx/Lc=6000/3000=2`、`G_z=(iz/Lc)/(iy/Ly)=(iz/iy)・(Ly/Lc)=0.3`）。
+    #[test]
+    fn steel_column_k_axes_orthogonal_beams_pick_matching_axis() {
+        let nodes = vec![
+            node(0, 0.0, 0.0, 0.0),       // 柱下端
+            node(1, 0.0, 0.0, 3000.0),    // 柱上端
+            node(2, 6000.0, 0.0, 0.0),    // X 方向梁（下端側）の遠端
+            node(3, 0.0, 9000.0, 0.0),    // Y 方向梁（下端側）の遠端
+            node(4, 6000.0, 0.0, 3000.0), // X 方向梁（上端側）の遠端
+            node(5, 0.0, 9000.0, 3000.0), // Y 方向梁（上端側）の遠端
+        ];
+        let elements = vec![
+            line_elem(0, 0, 1), // 柱
+            line_elem(1, 0, 2), // X 方向梁（下端）
+            line_elem(2, 0, 3), // Y 方向梁（下端）
+            line_elem(3, 1, 4), // X 方向梁（上端）
+            line_elem(4, 1, 5), // Y 方向梁（上端）
+        ];
+        let model = Model {
+            nodes,
+            elements,
+            sections: vec![section(2.0e8)],
+            materials: vec![steel_material()],
+            ..Default::default()
+        };
+        let index = BeamNodeIndex::build(&model);
+        let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
+            .expect("柱として判定される");
+        let expected_ky = sway_buckling_k(2.0, 2.0);
+        let expected_kz = sway_buckling_k(0.3, 0.3);
+        assert!(
+            (k_y - expected_ky).abs() < 1e-9,
+            "k_y={k_y}, expected={expected_ky}"
+        );
+        assert!(
+            (k_z - expected_kz).abs() < 1e-6,
+            "k_z={k_z}, expected={expected_kz}"
+        );
+    }
+
+    /// 45° 斜め梁（水平投影が強軸たわみ方向と 45°）: `cos²θ=0.5` の重みにより、
+    /// 梁が完全に整列する場合（G=beam_len/col_len=2）に対して G が 2 倍
+    /// （=4）になることを確認する。上端は梁が無く G=10。
+    #[test]
+    fn steel_column_k_axes_diagonal_beam_half_weight() {
+        let diag = 8000.0 / std::f64::consts::SQRT_2;
+        let nodes = vec![
+            node(0, 0.0, 0.0, 0.0),
+            node(1, 0.0, 0.0, 4000.0),
+            node(2, diag, diag, 0.0),
+        ];
+        let elements = vec![
+            line_elem(0, 0, 1), // 柱（ey≈X・ez≈Y）
+            line_elem(1, 0, 2), // 45°梁（水平投影 (1,1,0)/√2 方向、長さ8000）
+        ];
+        let model = Model {
+            nodes,
+            elements,
+            sections: vec![section(2.0e8)],
+            materials: vec![steel_material()],
+            ..Default::default()
+        };
+        let index = BeamNodeIndex::build(&model);
+        let (k_y, _k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
+            .expect("柱として判定される");
+        // 整列時 G=8000/4000=2 に対し cos²θ=0.5 で G=2/0.5=4。上端は梁が無く G=10。
+        let expected = sway_buckling_k(4.0, 10.0);
+        assert!(
+            (k_y - expected).abs() < 1e-6,
+            "k_y={k_y}, expected={expected}"
+        );
+    }
+
+    /// 節点に直交配置の他柱がある場合: 他柱自身の強軸たわみ方向 `ey` と評価方向
+    /// のなす角 `cos²β` により、他柱の `I_eff` が `iy`/`iz` へ投影されて
+    /// 柱側の集計に加わることを確認する（対象柱の下端に、強軸を Y に向けた
+    /// 直交他柱と X 方向梁が取り付く。他柱は評価軸 y に対して cos²β=0 と
+    /// なるため iz のみを負担する）。
+    #[test]
+    fn steel_column_k_axes_orthogonal_other_column_projects_i() {
+        let nodes = vec![
+            node(0, 0.0, 0.0, 0.0),     // 共有節点（対象柱の下端・他柱の上端）
+            node(1, 0.0, 0.0, 4000.0),  // 対象柱の上端
+            node(2, 0.0, 0.0, -3000.0), // 他柱の下端
+            node(3, 6000.0, 0.0, 0.0),  // X 方向梁の遠端
+        ];
+        let mut other_col = line_elem(1, 2, 0);
+        // 強軸たわみ方向を Y に回転（垂直材は ey=ref_vector の水平成分）。
+        other_col.local_axis.ref_vector = [0.0, 1.0, 0.0];
+        let elements = vec![
+            line_elem(0, 0, 1), // 対象柱（ey≈X・ez≈Y）
+            other_col,          // 直交配置の他柱（ey≈Y・ez≈X）
+            line_elem(2, 0, 3), // X 方向梁
+        ];
+        let model = Model {
+            nodes,
+            elements,
+            sections: vec![section(2.0e8)],
+            materials: vec![steel_material()],
+            ..Default::default()
+        };
+        let index = BeamNodeIndex::build(&model);
+        let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
+            .expect("柱として判定される");
+
+        // 下端 G_y: 対象柱自身(iy、cos²β=1)＋他柱(iz、cos²β=0 のため iz のみ)を
+        // 柱側に、X 方向梁(iy)を梁側に集計。上端は取付部材が無く G=10。
+        let e = 205_000.0;
+        let (iy, iz) = (2.0e8, 2.0e7);
+        let sum_col_y = e * iy / 4000.0 + e * iz / 3000.0;
+        let sum_beam_y = e * iy / 6000.0;
+        let expected_ky = sway_buckling_k(sum_col_y / sum_beam_y, 10.0);
+        assert!(
+            (k_y - expected_ky).abs() < 1e-6,
+            "k_y={k_y}, expected={expected_ky}"
+        );
+
+        // Z 方向には整列する梁が無い（X 方向梁の cos²θ=0）ため両端 G=10。
+        let expected_kz = sway_buckling_k(10.0, 10.0);
+        assert!(
+            (k_z - expected_kz).abs() < 1e-9,
+            "k_z={k_z}, expected={expected_kz}"
+        );
     }
 }

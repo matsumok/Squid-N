@@ -2122,6 +2122,83 @@ fn test_remove_member_detail_attr_missing_is_noop() {
 }
 
 #[test]
+fn test_set_steel_design_attr_add_replace_and_remove_roundtrip() {
+    use squid_n_core::model::SteelDesignAttr;
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+
+    let attr1 = SteelDesignAttr {
+        elem: ElemId(0),
+        joint_flange_loss: 10.0,
+        joint_web_loss: 0.0,
+        scallop_web_loss: 0.0,
+        lb_direct: None,
+        lateral_brace_count: None,
+        lk_y_direct: None,
+        lk_z_direct: None,
+    };
+    stack.run(
+        &mut model,
+        Box::new(SetSteelDesignAttr {
+            attr: attr1.clone(),
+        }),
+    );
+    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
+
+    stack.undo(&mut model);
+    assert!(model.steel_design_attrs.is_empty());
+
+    stack.redo(&mut model);
+    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
+
+    // 既存エントリを置換（座屈長さの直接入力を追加）。
+    let attr2 = SteelDesignAttr {
+        elem: ElemId(0),
+        joint_flange_loss: 0.0,
+        joint_web_loss: 0.0,
+        scallop_web_loss: 20.0,
+        lb_direct: Some((1000.0, 2000.0, 3000.0)),
+        lateral_brace_count: Some(3),
+        lk_y_direct: Some(3500.0),
+        lk_z_direct: Some(1750.0),
+    };
+    stack.run(
+        &mut model,
+        Box::new(SetSteelDesignAttr {
+            attr: attr2.clone(),
+        }),
+    );
+    assert_eq!(model.steel_design_attrs, vec![attr2.clone()]);
+
+    stack.undo(&mut model);
+    assert_eq!(model.steel_design_attrs, vec![attr1.clone()]);
+
+    // 削除
+    stack.run(
+        &mut model,
+        Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
+    );
+    assert!(model.steel_design_attrs.is_empty());
+
+    stack.undo(&mut model);
+    assert_eq!(model.steel_design_attrs, vec![attr1]);
+}
+
+#[test]
+fn test_remove_steel_design_attr_missing_is_noop() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
+    );
+    assert!(model.steel_design_attrs.is_empty());
+    assert!(stack.can_undo());
+    stack.undo(&mut model);
+    assert!(model.steel_design_attrs.is_empty());
+}
+
+#[test]
 fn test_delete_member_shifts_and_restores_side_table_attrs() {
     use squid_n_core::model::{DamperProps, HysteresisModel};
     let mut model = two_member_model();

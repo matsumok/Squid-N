@@ -482,6 +482,8 @@ mod tests {
                 scallop_web_loss: 20.0,
                 lb_direct: None,
                 lateral_brace_count: None,
+                lk_y_direct: None,
+                lk_z_direct: None,
             }),
             ..Default::default()
         };
@@ -526,6 +528,8 @@ mod tests {
                 scallop_web_loss: 0.0,
                 lb_direct: None,
                 lateral_brace_count: Some(5),
+                lk_y_direct: None,
+                lk_z_direct: None,
             }),
             ..Default::default()
         };

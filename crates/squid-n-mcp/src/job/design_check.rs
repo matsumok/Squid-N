@@ -139,6 +139,10 @@ pub(crate) fn compute_design_check_job(
     let mut n_ng = 0usize;
     let mut max_ratio = 0.0_f64;
 
+    // 柱の座屈長さ係数 K 用の節点まわり梁索引（全部材ぶんのループで使い回し、
+    // `steel_column_k_axes_with_index` の全要素走査を避ける。app.rs と同じ流儀）。
+    let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(model);
+
     for (elem_id, mf) in &result.member_forces {
         for (pos, forces) in &mf.at {
             member_force_rows.push((elem_id.0, *pos, *forces));
@@ -197,28 +201,46 @@ pub(crate) fn compute_design_check_job(
             (Some(a), Some(b)) => Some((a, b)),
             _ => None,
         };
-        // 柱の座屈長さ lk = K・h（app.rs run_design_check と同じ規則）。
-        // K は現状 1 方向の剛度比から算定しており両軸同値（lk_y=lk_z）。
-        // 軸別 K の精緻化は将来課題。
-        let lk = if kind == squid_n_design_jp::MemberKind::Column {
-            squid_n_design_jp::steel::buckling::steel_column_k(model, elem).map(|k| k * length)
-        } else {
-            None
-        };
-        // S 造部材の断面検定属性（欠損率・横座屈長さ）。単一ケース・長期検定の
-        // ため seismic_qd（地震時 QD 割増）は常に None。
+        // S 造部材の断面検定属性（欠損率・横座屈長さ・座屈長さ直接入力）。単一
+        // ケース・長期検定のため seismic_qd（地震時 QD 割増）は常に None。
+        // lk_y/lk_z の解決（直接入力 > 柱の自動算定 > 部材長）で直接入力を
+        // 先に参照するため、lk 自動算定より前に取得しておく。
         let steel_attr = model
             .steel_design_attrs
             .iter()
             .find(|a| a.elem == *elem_id)
             .cloned();
+        // 柱の座屈長さ lk_y/lk_z = K_y・h／K_z・h（app.rs run_design_check と同じ
+        // 規則。K は強軸・弱軸たわみ方向ごとに節点まわり剛度比 G から算定）。
+        // SteelDesignAttr の直接入力があればそちらを優先する（柱以外の部材でも
+        // 直接入力は有効。柱の自動算定は柱のみ）。
+        let (lk_y_auto, lk_z_auto) = if kind == squid_n_design_jp::MemberKind::Column {
+            match squid_n_design_jp::steel::buckling::steel_column_k_axes_with_index(
+                model,
+                &column_k_index,
+                elem,
+            ) {
+                Some((k_y, k_z)) => (Some(k_y * length), Some(k_z * length)),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        let lk_y = steel_attr
+            .as_ref()
+            .and_then(|a| a.lk_y_direct)
+            .or(lk_y_auto);
+        let lk_z = steel_attr
+            .as_ref()
+            .and_then(|a| a.lk_z_direct)
+            .or(lk_z_auto);
         let ctx = squid_n_design_jp::DesignCtx {
             term: squid_n_design_jp::LoadTerm::Long,
             kind,
             length,
             lb: None,
-            lk_y: lk,
-            lk_z: lk,
+            lk_y,
+            lk_z,
             shear_span,
             shear_span_y,
             rc_damage_control: true,

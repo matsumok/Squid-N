@@ -7,4 +7,5 @@ pub mod misc_walls;
 pub mod nodes;
 pub mod sections;
 pub mod slabs;
+pub mod steel_attrs;
 pub mod wall_attrs;
