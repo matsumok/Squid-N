@@ -1768,6 +1768,7 @@ impl App {
                     #[cfg(feature = "gui")]
                     if let Some((tab, view)) = jump {
                         self.active_tab = tab;
+                        self.apply_tab_preset(tab);
                         self.results_view = view;
                     }
                 }
@@ -1779,6 +1780,47 @@ impl App {
                 self.report_error("解析スレッドが異常終了しました（結果を受信できませんでした）。");
                 true
             }
+        }
+    }
+
+    /// 工程タブ切替時のドック初期配置プリセット。各タブに適した初期配置への
+    /// ショートカットであり、ユーザーが後からドック開閉・パネル切替を自由に
+    /// 行うことを妨げない（あくまで切替直後の便宜的な既定値）。
+    #[cfg(feature = "gui")]
+    pub(crate) fn apply_tab_preset(&mut self, tab: Tab) {
+        match tab {
+            Tab::Model => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Model;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Loads => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Loads;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Analysis => {
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::AnalysisSettings;
+                self.bottom_tab = BottomTab::Log;
+            }
+            Tab::Results => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Design => {
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Report => {}
         }
     }
 

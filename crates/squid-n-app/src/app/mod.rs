@@ -56,6 +56,15 @@ pub enum LeftPanel {
     DrawTools,
 }
 
+/// 右ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RightPanel {
+    #[default]
+    Inspector,
+    /// 解析設定（3D を見ながら設定・実行できるよう右ドックに置く）
+    AnalysisSettings,
+}
+
 /// 結果タブ内の切替（3D 各種図・時刻歴グラフ・プッシュオーバー曲線）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ResultsView {
@@ -505,9 +514,12 @@ pub struct App {
     /// 左ドックの表示パネル（ナビゲータ／作成パレット）
     #[cfg(feature = "gui")]
     pub left_panel: LeftPanel,
-    /// 右ドック（インスペクタ）の表示状態
+    /// 右ドック（インスペクタ／解析設定）の表示状態
     #[cfg(feature = "gui")]
     pub right_dock_open: bool,
+    /// 右ドックの表示パネル（インスペクタ／解析設定）
+    #[cfg(feature = "gui")]
+    pub right_panel: RightPanel,
     /// 下ドック（ログ／編集テーブル）の表示状態
     #[cfg(feature = "gui")]
     pub bottom_dock_open: bool,
@@ -675,6 +687,8 @@ impl Default for App {
             left_panel: LeftPanel::default(),
             #[cfg(feature = "gui")]
             right_dock_open: true,
+            #[cfg(feature = "gui")]
+            right_panel: RightPanel::default(),
             #[cfg(feature = "gui")]
             bottom_dock_open: false,
             #[cfg(feature = "gui")]
@@ -1493,6 +1507,7 @@ impl eframe::App for App {
                     let label_str = format!("{} {}", label, stale_marker);
                     if ui.selectable_label(selected, label_str).clicked() {
                         self.active_tab = *tab;
+                        self.apply_tab_preset(*tab);
                     }
                 }
                 ui.separator();
@@ -1558,14 +1573,22 @@ impl eframe::App for App {
                 });
         }
 
-        // 右：インスペクタ
+        // 右：パネル切替式（インスペクタ／解析設定）。Zed のようにステータスバーの
+        // アイコンで切り替える（切替自体は status_bar が行う）。解析設定は3D
+        // ビューを見ながら設定・実行できるようここに置くため、他パネルより
+        // 縦に長くなりがちで、右ドック全体をスクロール可能にする。
         if self.right_dock_open {
             egui::Panel::right("right_dock")
                 .resizable(true)
-                .default_size(240.0)
-                .size_range(200.0..=420.0)
+                .default_size(320.0)
+                .size_range(220.0..=560.0)
                 .show_inside(ui, |ui| {
-                    self.inspector_panel(ui);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match self.right_panel {
+                            RightPanel::Inspector => self.inspector_panel(ui),
+                            RightPanel::AnalysisSettings => self.analysis_settings_panel(ui),
+                        });
                 });
         }
 
@@ -1659,11 +1682,11 @@ impl eframe::App for App {
                 });
         }
 
-        // 中央：モデル/荷重タブでは常に3Dビュー（作成状況を即座に確認できるようにする）。
-        // それ以外の工程タブは従来通りの内容を表示する。
+        // 中央：モデル/荷重/解析タブでは常に3Dビュー（作成状況・モデルを見ながら
+        // 設定・実行できるようにする。解析の設定フォームは右ドック側にある）。
+        // それ以外の工程タブは各内容を表示する。
         egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
-            Tab::Model | Tab::Loads => crate::viewer::viewer_panel(ui, self),
-            Tab::Analysis => self.analysis_tab_panel(ui),
+            Tab::Model | Tab::Loads | Tab::Analysis => crate::viewer::viewer_panel(ui, self),
             Tab::Results => self.results_tab_panel(ui),
             Tab::Design => self.design_tab_panel(ui),
             Tab::Report => self.report_tab_panel(ui),

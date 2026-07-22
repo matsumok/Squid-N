@@ -489,7 +489,7 @@ impl App {
     }
 
     /// 解析タブ：種別選択＋実行＋進捗表示。
-    pub(crate) fn analysis_tab_panel(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn analysis_settings_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("解析設定");
         ui.separator();
 
@@ -514,22 +514,26 @@ impl App {
         ui.separator();
 
         // ── 並列計算設定 ──────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("並列計算");
-            ui.horizontal(|ui| {
-                ui.label("並列スレッド数:");
-                ui.add(egui::DragValue::new(&mut self.analysis_cfg.threads).range(0..=256));
+        egui::CollapsingHeader::new("並列計算")
+            .default_open(false)
+            .id_salt("as_parallel")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("並列スレッド数:");
+                    ui.add(egui::DragValue::new(&mut self.analysis_cfg.threads).range(0..=256));
+                });
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "0=自動(全コア) / 1=単一スレッド(結果の完全再現) / n=固定",
+                );
             });
-            ui.colored_label(
-                crate::theme::GRAY_600,
-                "0=自動(全コア) / 1=単一スレッド(結果の完全再現) / n=固定",
-            );
-        });
         ui.add_space(6.0);
 
         // ── 階の定義（地震系解析の前提） ──────────────────────────
-        ui.group(|ui| {
-            ui.strong("階の定義");
+        egui::CollapsingHeader::new("階の定義")
+            .default_open(false)
+            .id_salt("as_stories")
+            .show(ui, |ui| {
             if self.model.stories.is_empty() {
                 ui.colored_label(
                     crate::theme::GRAY_600,
@@ -572,11 +576,11 @@ impl App {
                     if !self.story_weight_active[i] {
                         self.story_weight_edit[i] = weight.unwrap_or(0.0) / 1000.0;
                     }
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "{}: 標高 {:.0} mm, 節点 {}",
-                            name, elevation, n_nodes
-                        ));
+                    ui.strong(format!(
+                        "{}: 標高 {:.0} mm, 節点 {}",
+                        name, elevation, n_nodes
+                    ));
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("W[kN]:");
                         let resp = ui
                             .add(
@@ -725,514 +729,531 @@ impl App {
         ui.add_space(6.0);
 
         // ── 線形静的 ──────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("線形静的");
-            let selected_lc = self
-                .nav
-                .focus_load_case
-                .filter(|id| self.model.load_cases.iter().any(|c| c.id == *id))
-                .or_else(|| self.model.load_cases.first().map(|c| c.id));
-            ui.horizontal(|ui| {
-                ui.label("荷重ケース:");
-                let text = selected_lc
-                    .and_then(|id| {
-                        self.model
-                            .load_cases
-                            .iter()
-                            .find(|c| c.id == id)
-                            .map(|c| format!("[{}] {}", c.id.0, c.name))
-                    })
-                    .unwrap_or_else(|| "（なし）".to_string());
-                egui::ComboBox::from_id_salt("analysis_lc")
-                    .selected_text(text)
-                    .show_ui(ui, |ui| {
-                        for lc in &self.model.load_cases {
-                            if ui
-                                .selectable_label(
-                                    selected_lc == Some(lc.id),
-                                    format!("[{}] {}", lc.id.0, lc.name),
-                                )
-                                .clicked()
-                            {
-                                self.nav.focus_load_case = Some(lc.id);
+        egui::CollapsingHeader::new("線形静的")
+            .default_open(true)
+            .id_salt("as_linear")
+            .show(ui, |ui| {
+                let selected_lc = self
+                    .nav
+                    .focus_load_case
+                    .filter(|id| self.model.load_cases.iter().any(|c| c.id == *id))
+                    .or_else(|| self.model.load_cases.first().map(|c| c.id));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("荷重ケース:");
+                    let text = selected_lc
+                        .and_then(|id| {
+                            self.model
+                                .load_cases
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| format!("[{}] {}", c.id.0, c.name))
+                        })
+                        .unwrap_or_else(|| "（なし）".to_string());
+                    egui::ComboBox::from_id_salt("analysis_lc")
+                        .selected_text(text)
+                        .show_ui(ui, |ui| {
+                            for lc in &self.model.load_cases {
+                                if ui
+                                    .selectable_label(
+                                        selected_lc == Some(lc.id),
+                                        format!("[{}] {}", lc.id.0, lc.name),
+                                    )
+                                    .clicked()
+                                {
+                                    self.nav.focus_load_case = Some(lc.id);
+                                }
+                            }
+                        });
+                    if ui
+                        .add_enabled(
+                            selected_lc.is_some() && !running,
+                            egui::Button::new("▶ 実行"),
+                        )
+                        .clicked()
+                    {
+                        if let Some(lc) = selected_lc {
+                            self.start_linear_static_job(lc);
+                            if self.last_error.is_none() {
+                                self.active_tab = Tab::Results;
+                                self.results_view = ResultsView::Spatial;
+                            }
+                        }
+                    }
+                });
+                if self.model.load_cases.is_empty() {
+                    ui.colored_label(
+                        crate::theme::GRAY_600,
+                        "荷重ケースがありません。荷重タブで作成してください。",
+                    );
+                }
+            });
+        ui.add_space(6.0);
+
+        // ── 荷重組合せ ────────────────────────────────────────────
+        egui::CollapsingHeader::new("荷重組合せ")
+            .default_open(true)
+            .id_salt("as_combo")
+            .show(ui, |ui| {
+                if self.model.combinations.is_empty() {
+                    ui.colored_label(
+                        crate::theme::GRAY_600,
+                        "荷重組合せがありません。荷重タブで作成してください。",
+                    );
+                } else {
+                    if self.analysis_combo_idx >= self.model.combinations.len() {
+                        self.analysis_combo_idx = 0;
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("組合せ:");
+                        let text = self
+                            .model
+                            .combinations
+                            .get(self.analysis_combo_idx)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "（なし）".to_string());
+                        egui::ComboBox::from_id_salt("analysis_combo")
+                            .selected_text(text)
+                            .show_ui(ui, |ui| {
+                                for (i, combo) in self.model.combinations.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(
+                                            self.analysis_combo_idx == i,
+                                            format!("[{}] {}", i, combo.name),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.analysis_combo_idx = i;
+                                    }
+                                }
+                            });
+                        if ui
+                            .add_enabled(!running, egui::Button::new("▶ 実行"))
+                            .clicked()
+                        {
+                            self.start_combination_job(self.analysis_combo_idx);
+                            if self.last_error.is_none() {
+                                self.active_tab = Tab::Results;
+                            }
+                        }
+                        if ui
+                            .add_enabled(!running, egui::Button::new("▶▶ 全組合せ一括解析"))
+                            .on_hover_text(
+                                "全ての荷重組合せをまとめて解析します（並列スレッド数設定を使用）",
+                            )
+                            .clicked()
+                        {
+                            self.start_all_combinations_job();
+                            if self.last_error.is_none() {
+                                self.active_tab = Tab::Results;
                             }
                         }
                     });
-                if ui
-                    .add_enabled(
-                        selected_lc.is_some() && !running,
-                        egui::Button::new("▶ 実行"),
+                }
+            });
+        ui.add_space(6.0);
+
+        // ── 固有値 ────────────────────────────────────────────────
+        egui::CollapsingHeader::new("固有値")
+            .default_open(false)
+            .id_salt("as_eigen")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("モード数:");
+                    let mut n = self.analysis_cfg.n_modes;
+                    ui.add(egui::DragValue::new(&mut n).range(1..=30));
+                    self.analysis_cfg.n_modes = n;
+                    if ui
+                        .add_enabled(!running, egui::Button::new("▶ 実行"))
+                        .clicked()
+                    {
+                        self.run_eigen(self.analysis_cfg.n_modes);
+                    }
+                });
+            });
+        ui.add_space(6.0);
+
+        // ── 地震静的（Ai 分布） ───────────────────────────────────
+        egui::CollapsingHeader::new("地震静的 (Ai 分布)")
+            .default_open(false)
+            .id_salt("as_seismic")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("方向:");
+                    ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::X, "X");
+                    ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
+                    ui.separator();
+                    ui.label("T算定:");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.ai_mode,
+                        AiMode::SemiPrecise,
+                        "固有値",
                     )
+                    .on_hover_text("固有値解析による 1 次周期");
+                    ui.selectable_value(&mut self.analysis_cfg.ai_mode, AiMode::Approx, "略算")
+                        .on_hover_text("T = h(0.02 + 0.01α) の略算式");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Z:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.z)
+                            .speed(0.05)
+                            .range(0.7..=1.0),
+                    );
+                    ui.label("地盤:");
+                    use squid_n_load::ai::SoilClass;
+                    for (label, soil) in [
+                        ("第一種", SoilClass::I),
+                        ("第二種", SoilClass::II),
+                        ("第三種", SoilClass::III),
+                    ] {
+                        ui.selectable_value(&mut self.analysis_cfg.soil, soil, label);
+                    }
+                    ui.label("C0:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.c0)
+                            .speed(0.05)
+                            .range(0.05..=1.0),
+                    );
+                });
+                // Z表（告示1793号別表第2、市町村名→Z のCSV）からの参照
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button("📂 Z表CSV読込…")
+                        .on_hover_text(
+                            "「市町村名,Z値」形式のCSVを読み込みます（#始まりはコメント行）",
+                        )
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Z表 (CSV)", &["csv", "txt"])
+                            .pick_file()
+                        {
+                            match std::fs::read_to_string(&path) {
+                                Ok(csv) => self.load_z_table_from_csv(&csv),
+                                Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
+                            }
+                        }
+                    }
+                    match &self.z_table {
+                        Some(t) => {
+                            ui.label(format!("{} 市町村", t.len()));
+                        }
+                        None => {
+                            ui.colored_label(crate::theme::GRAY_600, "（未読込）");
+                        }
+                    }
+                    ui.label("市町村:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.z_table_municipality)
+                            .desired_width(130.0),
+                    );
+                    let can_lookup =
+                        self.z_table.is_some() && !self.z_table_municipality.trim().is_empty();
+                    if ui
+                        .add_enabled(can_lookup, egui::Button::new("Z参照"))
+                        .on_hover_text("市町村名（完全一致）でZ表を引き、Zへ反映します")
+                        .clicked()
+                    {
+                        let name = self.z_table_municipality.trim().to_string();
+                        self.apply_z_from_municipality(&name);
+                    }
+                });
+                if ui
+                    .add_enabled(!running, egui::Button::new("▶ 実行"))
                     .clicked()
                 {
-                    if let Some(lc) = selected_lc {
-                        self.start_linear_static_job(lc);
+                    self.start_seismic_job(self.analysis_cfg.seismic_dir);
+                    if self.last_error.is_none() {
+                        self.active_tab = Tab::Results;
+                        self.results_view = ResultsView::Spatial;
+                    }
+                }
+            });
+        ui.add_space(6.0);
+
+        // ── 風荷重静的 ─────────────────────────────────────────
+        egui::CollapsingHeader::new("風荷重静的")
+            .default_open(false)
+            .id_salt("as_wind")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("V0[m/s]:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.v0)
+                            .speed(0.5)
+                            .range(30.0..=46.0),
+                    );
+                    ui.label("粗度区分:");
+                    use squid_n_load::wind::TerrainRoughness;
+                    for (label, r) in [
+                        ("I", TerrainRoughness::I),
+                        ("II", TerrainRoughness::II),
+                        ("III", TerrainRoughness::III),
+                        ("IV", TerrainRoughness::IV),
+                    ] {
+                        ui.selectable_value(&mut self.analysis_cfg.roughness, r, label);
+                    }
+                    ui.label("パラペット[mm]:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.parapet_mm)
+                            .speed(10.0)
+                            .range(0.0..=5000.0),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (X)"))
+                        .clicked()
+                    {
+                        self.start_wind_job(SeismicDir::X);
                         if self.last_error.is_none() {
                             self.active_tab = Tab::Results;
                             self.results_view = ResultsView::Spatial;
                         }
                     }
-                }
+                    if ui
+                        .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (Y)"))
+                        .clicked()
+                    {
+                        self.start_wind_job(SeismicDir::Y);
+                        if self.last_error.is_none() {
+                            self.active_tab = Tab::Results;
+                            self.results_view = ResultsView::Spatial;
+                        }
+                    }
+                });
             });
-            if self.model.load_cases.is_empty() {
-                ui.colored_label(
-                    crate::theme::GRAY_600,
-                    "荷重ケースがありません。荷重タブで作成してください。",
-                );
-            }
-        });
         ui.add_space(6.0);
 
-        // ── 荷重組合せ ────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("荷重組合せ");
-            if self.model.combinations.is_empty() {
-                ui.colored_label(
-                    crate::theme::GRAY_600,
-                    "荷重組合せがありません。荷重タブで作成してください。",
-                );
-            } else {
-                if self.analysis_combo_idx >= self.model.combinations.len() {
-                    self.analysis_combo_idx = 0;
-                }
-                ui.horizontal(|ui| {
-                    ui.label("組合せ:");
-                    let text = self
-                        .model
-                        .combinations
-                        .get(self.analysis_combo_idx)
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| "（なし）".to_string());
-                    egui::ComboBox::from_id_salt("analysis_combo")
-                        .selected_text(text)
+        // ── プッシュオーバー ──────────────────────────────────────
+        egui::CollapsingHeader::new("プッシュオーバー")
+            .default_open(false)
+            .id_salt("as_pushover")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("方向:");
+                    ui.selectable_value(&mut self.analysis_cfg.push_dir, SeismicDir::X, "X");
+                    ui.selectable_value(&mut self.analysis_cfg.push_dir, SeismicDir::Y, "Y");
+                    ui.label("ステップ:");
+                    ui.add(egui::DragValue::new(&mut self.analysis_cfg.push_steps).range(1..=100));
+                    ui.label("目標変位[mm]:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.push_max_disp)
+                            .speed(10.0)
+                            .range(1.0..=10000.0),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    use squid_n_solver::pushover::DuctilityMethod;
+                    ui.label("塑性率方式:")
+                        .on_hover_text("ファイバーモデルの塑性率（構造力学）");
+                    egui::ComboBox::from_id_salt("ductility_method")
+                        .selected_text(match self.analysis_cfg.ductility_method {
+                            DuctilityMethod::ReferenceStrain => "基点歪み",
+                            DuctilityMethod::WeightedAverageJm => "重み付け平均Jm",
+                            DuctilityMethod::FirstYield => "降伏時",
+                        })
                         .show_ui(ui, |ui| {
-                            for (i, combo) in self.model.combinations.iter().enumerate() {
-                                if ui
-                                    .selectable_label(
-                                        self.analysis_combo_idx == i,
-                                        format!("[{}] {}", i, combo.name),
-                                    )
-                                    .clicked()
-                                {
-                                    self.analysis_combo_idx = i;
-                                }
-                            }
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.ductility_method,
+                                DuctilityMethod::ReferenceStrain,
+                                "基点歪み（RC:引張0.01/圧縮0.005・鉄骨0.01）",
+                            );
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.ductility_method,
+                                DuctilityMethod::WeightedAverageJm,
+                                "重み付け平均塑性率 Jm≥1",
+                            );
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.ductility_method,
+                                DuctilityMethod::FirstYield,
+                                "降伏発生時（塑性率1）",
+                            );
                         });
+                });
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!running, egui::Button::new("▶ 実行"))
                         .clicked()
                     {
-                        self.start_combination_job(self.analysis_combo_idx);
-                        if self.last_error.is_none() {
-                            self.active_tab = Tab::Results;
-                        }
+                        self.start_pushover_job();
                     }
-                    if ui
-                        .add_enabled(!running, egui::Button::new("▶▶ 全組合せ一括解析"))
-                        .on_hover_text(
-                            "全ての荷重組合せをまとめて解析します（並列スレッド数設定を使用）",
-                        )
-                        .clicked()
+                    if self
+                        .job
+                        .as_ref()
+                        .is_some_and(|j| j.label == "プッシュオーバー")
                     {
-                        self.start_all_combinations_job();
-                        if self.last_error.is_none() {
-                            self.active_tab = Tab::Results;
-                        }
+                        ui.spinner();
                     }
                 });
-            }
-        });
-        ui.add_space(6.0);
-
-        // ── 固有値 ────────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("固有値");
-            ui.horizontal(|ui| {
-                ui.label("モード数:");
-                let mut n = self.analysis_cfg.n_modes;
-                ui.add(egui::DragValue::new(&mut n).range(1..=30));
-                self.analysis_cfg.n_modes = n;
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ 実行"))
-                    .clicked()
-                {
-                    self.run_eigen(self.analysis_cfg.n_modes);
-                }
             });
-        });
-        ui.add_space(6.0);
-
-        // ── 地震静的（Ai 分布） ───────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("地震静的 (Ai 分布)");
-            ui.horizontal(|ui| {
-                ui.label("方向:");
-                ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::X, "X");
-                ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
-                ui.separator();
-                ui.label("T算定:");
-                ui.selectable_value(
-                    &mut self.analysis_cfg.ai_mode,
-                    AiMode::SemiPrecise,
-                    "固有値",
-                )
-                .on_hover_text("固有値解析による 1 次周期");
-                ui.selectable_value(&mut self.analysis_cfg.ai_mode, AiMode::Approx, "略算")
-                    .on_hover_text("T = h(0.02 + 0.01α) の略算式");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Z:");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.z)
-                        .speed(0.05)
-                        .range(0.7..=1.0),
-                );
-                ui.label("地盤:");
-                use squid_n_load::ai::SoilClass;
-                for (label, soil) in [
-                    ("第一種", SoilClass::I),
-                    ("第二種", SoilClass::II),
-                    ("第三種", SoilClass::III),
-                ] {
-                    ui.selectable_value(&mut self.analysis_cfg.soil, soil, label);
-                }
-                ui.label("C0:");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.c0)
-                        .speed(0.05)
-                        .range(0.05..=1.0),
-                );
-            });
-            // Z表（告示1793号別表第2、市町村名→Z のCSV）からの参照
-            ui.horizontal(|ui| {
-                if ui
-                    .button("📂 Z表CSV読込…")
-                    .on_hover_text("「市町村名,Z値」形式のCSVを読み込みます（#始まりはコメント行）")
-                    .clicked()
-                {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Z表 (CSV)", &["csv", "txt"])
-                        .pick_file()
-                    {
-                        match std::fs::read_to_string(&path) {
-                            Ok(csv) => self.load_z_table_from_csv(&csv),
-                            Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
-                        }
-                    }
-                }
-                match &self.z_table {
-                    Some(t) => {
-                        ui.label(format!("{} 市町村", t.len()));
-                    }
-                    None => {
-                        ui.colored_label(crate::theme::GRAY_600, "（未読込）");
-                    }
-                }
-                ui.label("市町村:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.z_table_municipality).desired_width(130.0),
-                );
-                let can_lookup =
-                    self.z_table.is_some() && !self.z_table_municipality.trim().is_empty();
-                if ui
-                    .add_enabled(can_lookup, egui::Button::new("Z参照"))
-                    .on_hover_text("市町村名（完全一致）でZ表を引き、Zへ反映します")
-                    .clicked()
-                {
-                    let name = self.z_table_municipality.trim().to_string();
-                    self.apply_z_from_municipality(&name);
-                }
-            });
-            if ui
-                .add_enabled(!running, egui::Button::new("▶ 実行"))
-                .clicked()
-            {
-                self.start_seismic_job(self.analysis_cfg.seismic_dir);
-                if self.last_error.is_none() {
-                    self.active_tab = Tab::Results;
-                    self.results_view = ResultsView::Spatial;
-                }
-            }
-        });
-        ui.add_space(6.0);
-
-        // ── 風荷重静的 ─────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("風荷重静的");
-            ui.horizontal(|ui| {
-                ui.label("V0[m/s]:");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.v0)
-                        .speed(0.5)
-                        .range(30.0..=46.0),
-                );
-                ui.label("粗度区分:");
-                use squid_n_load::wind::TerrainRoughness;
-                for (label, r) in [
-                    ("I", TerrainRoughness::I),
-                    ("II", TerrainRoughness::II),
-                    ("III", TerrainRoughness::III),
-                    ("IV", TerrainRoughness::IV),
-                ] {
-                    ui.selectable_value(&mut self.analysis_cfg.roughness, r, label);
-                }
-                ui.label("パラペット[mm]:");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.parapet_mm)
-                        .speed(10.0)
-                        .range(0.0..=5000.0),
-                );
-            });
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (X)"))
-                    .clicked()
-                {
-                    self.start_wind_job(SeismicDir::X);
-                    if self.last_error.is_none() {
-                        self.active_tab = Tab::Results;
-                        self.results_view = ResultsView::Spatial;
-                    }
-                }
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (Y)"))
-                    .clicked()
-                {
-                    self.start_wind_job(SeismicDir::Y);
-                    if self.last_error.is_none() {
-                        self.active_tab = Tab::Results;
-                        self.results_view = ResultsView::Spatial;
-                    }
-                }
-            });
-        });
-        ui.add_space(6.0);
-
-        // ── プッシュオーバー ──────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("プッシュオーバー");
-            ui.horizontal(|ui| {
-                ui.label("方向:");
-                ui.selectable_value(&mut self.analysis_cfg.push_dir, SeismicDir::X, "X");
-                ui.selectable_value(&mut self.analysis_cfg.push_dir, SeismicDir::Y, "Y");
-                ui.label("ステップ:");
-                ui.add(egui::DragValue::new(&mut self.analysis_cfg.push_steps).range(1..=100));
-                ui.label("目標変位[mm]:");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.push_max_disp)
-                        .speed(10.0)
-                        .range(1.0..=10000.0),
-                );
-            });
-            ui.horizontal(|ui| {
-                use squid_n_solver::pushover::DuctilityMethod;
-                ui.label("塑性率方式:")
-                    .on_hover_text("ファイバーモデルの塑性率（構造力学）");
-                egui::ComboBox::from_id_salt("ductility_method")
-                    .selected_text(match self.analysis_cfg.ductility_method {
-                        DuctilityMethod::ReferenceStrain => "基点歪み",
-                        DuctilityMethod::WeightedAverageJm => "重み付け平均Jm",
-                        DuctilityMethod::FirstYield => "降伏時",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.analysis_cfg.ductility_method,
-                            DuctilityMethod::ReferenceStrain,
-                            "基点歪み（RC:引張0.01/圧縮0.005・鉄骨0.01）",
-                        );
-                        ui.selectable_value(
-                            &mut self.analysis_cfg.ductility_method,
-                            DuctilityMethod::WeightedAverageJm,
-                            "重み付け平均塑性率 Jm≥1",
-                        );
-                        ui.selectable_value(
-                            &mut self.analysis_cfg.ductility_method,
-                            DuctilityMethod::FirstYield,
-                            "降伏発生時（塑性率1）",
-                        );
-                    });
-            });
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ 実行"))
-                    .clicked()
-                {
-                    self.start_pushover_job();
-                }
-                if self
-                    .job
-                    .as_ref()
-                    .is_some_and(|j| j.label == "プッシュオーバー")
-                {
-                    ui.spinner();
-                }
-            });
-        });
         ui.add_space(6.0);
 
         // ── 時刻歴応答 ────────────────────────────────────────────
-        ui.group(|ui| {
-            ui.strong("時刻歴応答（線形）");
-            ui.horizontal(|ui| {
-                ui.label("方向:");
-                ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::X, "X");
-                ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Y, "Y");
-                ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Xy, "X+Y")
-                    .on_hover_text("同一波形を両方向へ同時入力(CSV は2列)");
-                ui.separator();
-                ui.label("積分法:");
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_integrator,
-                    ThIntegrator::NewmarkBeta,
-                    "Newmark-β",
-                );
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_integrator,
-                    ThIntegrator::HhtAlpha,
-                    "HHT-α(α=-0.1)",
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("減衰:");
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_damping_model,
-                    ThDampingModel::StiffnessProportional,
-                    "剛性比例",
-                );
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_damping_model,
-                    ThDampingModel::Rayleigh,
-                    "Rayleigh",
-                );
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_damping_model,
-                    ThDampingModel::Modal,
-                    "モード別",
-                )
-                .on_hover_text("各モードに減衰比 h を与える（非線形は初期剛性モード）");
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_damping_model,
-                    ThDampingModel::TangentAlpha1,
-                    "接線(α1一定)",
-                )
-                .on_hover_text("瞬間剛性比例。C=2h/ω1e·Kt を毎ステップ再構成");
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_damping_model,
-                    ThDampingModel::TangentH1,
-                    "接線(h1一定)",
-                )
-                .on_hover_text("瞬間剛性比例。ω1 を毎ステップ更新し減衰比 h1 を保つ");
-                ui.separator();
-                ui.label(match self.analysis_cfg.th_damping_model {
-                    ThDampingModel::StiffnessProportional
-                    | ThDampingModel::TangentAlpha1
-                    | ThDampingModel::TangentH1 => "減衰比 h:",
-                    ThDampingModel::Modal => "減衰比 h(全モード):",
-                    ThDampingModel::Rayleigh => "h1(1次):",
+        egui::CollapsingHeader::new("時刻歴応答（線形）")
+            .default_open(false)
+            .id_salt("as_time_history")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("方向:");
+                    ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::X, "X");
+                    ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Y, "Y");
+                    ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Xy, "X+Y")
+                        .on_hover_text("同一波形を両方向へ同時入力(CSV は2列)");
+                    ui.separator();
+                    ui.label("積分法:");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_integrator,
+                        ThIntegrator::NewmarkBeta,
+                        "Newmark-β",
+                    );
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_integrator,
+                        ThIntegrator::HhtAlpha,
+                        "HHT-α(α=-0.1)",
+                    );
                 });
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.th_damping)
-                        .speed(0.005)
-                        .range(0.0..=0.3),
-                );
-                if self.analysis_cfg.th_damping_model == ThDampingModel::Rayleigh {
-                    ui.label("h2(2次):");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("減衰:");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_damping_model,
+                        ThDampingModel::StiffnessProportional,
+                        "剛性比例",
+                    );
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_damping_model,
+                        ThDampingModel::Rayleigh,
+                        "Rayleigh",
+                    );
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_damping_model,
+                        ThDampingModel::Modal,
+                        "モード別",
+                    )
+                    .on_hover_text("各モードに減衰比 h を与える（非線形は初期剛性モード）");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_damping_model,
+                        ThDampingModel::TangentAlpha1,
+                        "接線(α1一定)",
+                    )
+                    .on_hover_text("瞬間剛性比例。C=2h/ω1e·Kt を毎ステップ再構成");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_damping_model,
+                        ThDampingModel::TangentH1,
+                        "接線(h1一定)",
+                    )
+                    .on_hover_text("瞬間剛性比例。ω1 を毎ステップ更新し減衰比 h1 を保つ");
+                    ui.separator();
+                    ui.label(match self.analysis_cfg.th_damping_model {
+                        ThDampingModel::StiffnessProportional
+                        | ThDampingModel::TangentAlpha1
+                        | ThDampingModel::TangentH1 => "減衰比 h:",
+                        ThDampingModel::Modal => "減衰比 h(全モード):",
+                        ThDampingModel::Rayleigh => "h1(1次):",
+                    });
                     ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.th_h2)
+                        egui::DragValue::new(&mut self.analysis_cfg.th_damping)
                             .speed(0.005)
                             .range(0.0..=0.3),
                     );
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("サンプル波: dt[s]");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.th_dt)
-                        .speed(0.001)
-                        .range(0.001..=0.1),
-                );
-                ui.label("継続[s]");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.th_duration)
-                        .speed(0.5)
-                        .range(1.0..=120.0),
-                );
-                ui.label("周期[s]");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.th_period)
-                        .speed(0.05)
-                        .range(0.05..=5.0),
-                );
-                ui.label("振幅[mm/s²]");
-                ui.add(
-                    egui::DragValue::new(&mut self.analysis_cfg.th_amp)
-                        .speed(50.0)
-                        .range(10.0..=10000.0),
-                );
-            });
-            // 位相差入力（ねじれ加振）。構造動力学の位相差入力解析 t=(L·sinθ)/Vs。
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.analysis_cfg.phase_diff_enabled, "位相差入力")
-                    .on_hover_text(
-                        "見かけ速度で地震動が矩形基礎を通過する位相差からねじれ加振を生成",
-                    );
-                ui.add_enabled_ui(self.analysis_cfg.phase_diff_enabled, |ui| {
-                    ui.label("Vs[m/s]");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.phase_diff_vs)
-                            .speed(10.0)
-                            .range(50.0..=2000.0),
-                    );
-                    ui.label("L[m]");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.phase_diff_length_m)
-                            .speed(1.0)
-                            .range(1.0..=500.0),
-                    );
-                    ui.label("θ[°]");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.phase_diff_incidence_deg)
-                            .speed(1.0)
-                            .range(0.0..=90.0),
-                    );
-                    ui.selectable_value(&mut self.analysis_cfg.phase_diff_dir_y, false, "X");
-                    ui.selectable_value(&mut self.analysis_cfg.phase_diff_dir_y, true, "Y");
-                    let lag = squid_n_solver::phase_diff::phase_lag_time(
-                        self.analysis_cfg.phase_diff_length_m,
-                        self.analysis_cfg.phase_diff_incidence_deg,
-                        self.analysis_cfg.phase_diff_vs,
-                    );
-                    ui.label(format!("位相遅れ {:.4}s", lag));
+                    if self.analysis_cfg.th_damping_model == ThDampingModel::Rayleigh {
+                        ui.label("h2(2次):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.th_h2)
+                                .speed(0.005)
+                                .range(0.0..=0.3),
+                        );
+                    }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("サンプル波: dt[s]");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_dt)
+                            .speed(0.001)
+                            .range(0.001..=0.1),
+                    );
+                    ui.label("継続[s]");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_duration)
+                            .speed(0.5)
+                            .range(1.0..=120.0),
+                    );
+                    ui.label("周期[s]");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_period)
+                            .speed(0.05)
+                            .range(0.05..=5.0),
+                    );
+                    ui.label("振幅[mm/s²]");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_amp)
+                            .speed(50.0)
+                            .range(10.0..=10000.0),
+                    );
+                });
+                // 位相差入力（ねじれ加振）。構造動力学の位相差入力解析 t=(L·sinθ)/Vs。
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut self.analysis_cfg.phase_diff_enabled, "位相差入力")
+                        .on_hover_text(
+                            "見かけ速度で地震動が矩形基礎を通過する位相差からねじれ加振を生成",
+                        );
+                    ui.add_enabled_ui(self.analysis_cfg.phase_diff_enabled, |ui| {
+                        ui.label("Vs[m/s]");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.phase_diff_vs)
+                                .speed(10.0)
+                                .range(50.0..=2000.0),
+                        );
+                        ui.label("L[m]");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.phase_diff_length_m)
+                                .speed(1.0)
+                                .range(1.0..=500.0),
+                        );
+                        ui.label("θ[°]");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.phase_diff_incidence_deg)
+                                .speed(1.0)
+                                .range(0.0..=90.0),
+                        );
+                        ui.selectable_value(&mut self.analysis_cfg.phase_diff_dir_y, false, "X");
+                        ui.selectable_value(&mut self.analysis_cfg.phase_diff_dir_y, true, "Y");
+                        let lag = squid_n_solver::phase_diff::phase_lag_time(
+                            self.analysis_cfg.phase_diff_length_m,
+                            self.analysis_cfg.phase_diff_incidence_deg,
+                            self.analysis_cfg.phase_diff_vs,
+                        );
+                        ui.label(format!("位相遅れ {:.4}s", lag));
+                    });
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(!running, egui::Button::new("▶ サンプル波で実行"))
+                        .on_hover_text("正弦減衰波を生成して時刻歴解析を実行します")
+                        .clicked()
+                    {
+                        let wave = Self::sample_wave(&self.analysis_cfg);
+                        self.start_time_history_job(wave);
+                    }
+                    if ui
+                        .add_enabled(!running, egui::Button::new("📂 波形CSVを開いて実行…"))
+                        .on_hover_text(
+                            "1 行 1 値(加速度 gal)の CSV/テキスト。dt は上の設定値を使用します",
+                        )
+                        .clicked()
+                    {
+                        self.run_time_history_from_csv();
+                    }
+                    if self.job.as_ref().is_some_and(|j| j.label == "時刻歴応答") {
+                        ui.spinner();
+                    }
+                });
+                ui.label(
+                    egui::RichText::new("応答グラフは入力の大きい方向を記録")
+                        .small()
+                        .color(crate::theme::GRAY_600),
+                );
             });
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ サンプル波で実行"))
-                    .on_hover_text("正弦減衰波を生成して時刻歴解析を実行します")
-                    .clicked()
-                {
-                    let wave = Self::sample_wave(&self.analysis_cfg);
-                    self.start_time_history_job(wave);
-                }
-                if ui
-                    .add_enabled(!running, egui::Button::new("📂 波形CSVを開いて実行…"))
-                    .on_hover_text(
-                        "1 行 1 値(加速度 gal)の CSV/テキスト。dt は上の設定値を使用します",
-                    )
-                    .clicked()
-                {
-                    self.run_time_history_from_csv();
-                }
-                if self.job.as_ref().is_some_and(|j| j.label == "時刻歴応答") {
-                    ui.spinner();
-                }
-            });
-            ui.label(
-                egui::RichText::new("応答グラフは入力の大きい方向を記録")
-                    .small()
-                    .color(crate::theme::GRAY_600),
-            );
-        });
     }
 
     /// 波形 CSV（X/Y: 1 行 1 値、X+Y: 1 行 2 列、いずれも gal 単位）を選択して
@@ -1828,14 +1849,16 @@ impl App {
             .layout_no_wrap(summary.clone(), body_font.clone(), crate::theme::GRAY_700)
             .size()
             .x;
-        // 右ゾーンはサマリに加えて右ドックトグル（🔍）も描くため、
-        // アイコン幅＋ボタン余白＋間隔ぶんを確保幅に含める（不足すると左ゾーンと重なる）。
-        let toggle_width = ui
+        // 右ゾーンはサマリに加えて右ドックのパネル切替アイコン（🔍・⚙）も描くため、
+        // アイコン2個分の幅＋ボタン余白＋アイコン間の間隔ぶんを確保幅に含める
+        // （不足すると左ゾーンと重なる）。
+        let icon_width = ui
             .painter()
             .layout_no_wrap("🔍".to_string(), body_font, crate::theme::GRAY_700)
             .size()
             .x
             + ui.spacing().button_padding.x * 2.0;
+        let toggle_width = icon_width * 2.0 + ui.spacing().item_spacing.x;
 
         let row_rect = ui.available_rect_before_wrap();
         let gap = ui.spacing().item_spacing.x;
@@ -1978,13 +2001,28 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(right_rect, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // サマリの右に配置（right_to_left のため先に追加する）
+                // サマリの右に配置（right_to_left のため先に追加する）。左ゾーンと同じ
+                // toggle_dock_icon 方式（アクティブなら閉じる／それ以外は開いてそのパネルを
+                // アクティブにする）で右ドックのパネルを切り替える。
+                let is_analysis_active =
+                    self.right_dock_open && self.right_panel == RightPanel::AnalysisSettings;
                 if ui
-                    .selectable_label(self.right_dock_open, "🔍")
-                    .on_hover_text("インスペクタの表示/非表示")
+                    .selectable_label(is_analysis_active, "⚙")
+                    .on_hover_text("解析設定")
                     .clicked()
+                    && toggle_dock_icon(&mut self.right_dock_open, is_analysis_active)
                 {
-                    self.right_dock_open = !self.right_dock_open;
+                    self.right_panel = RightPanel::AnalysisSettings;
+                }
+                let is_inspector_active =
+                    self.right_dock_open && self.right_panel == RightPanel::Inspector;
+                if ui
+                    .selectable_label(is_inspector_active, "🔍")
+                    .on_hover_text("インスペクタ")
+                    .clicked()
+                    && toggle_dock_icon(&mut self.right_dock_open, is_inspector_active)
+                {
+                    self.right_panel = RightPanel::Inspector;
                 }
                 ui.label(summary);
             });
