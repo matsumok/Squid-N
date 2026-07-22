@@ -16,6 +16,65 @@ fn test_run_design_check_empty_model() {
     assert!(app.results.is_none() || app.results.as_ref().unwrap().checks.is_empty());
 }
 
+/// `EventLog` の保持件数上限（1000件）: 上限を1件超えて push すると、
+/// 件数は上限に保たれ、最も古い1件（先頭）が捨てられる。
+#[test]
+fn test_event_log_caps_entries() {
+    let mut log = EventLog::default();
+    for i in 0..1001 {
+        log.push(LogLevel::Info, format!("msg{i}"));
+    }
+    assert_eq!(log.entries.len(), 1000);
+    // 先頭（msg0）が捨てられ、msg1 が先頭に繰り上がっている。
+    assert_eq!(log.entries.first().unwrap().message, "msg1");
+    assert_eq!(log.entries.last().unwrap().message, "msg1000");
+}
+
+/// `report_error` が `last_error` とログの両方へ反映されることを確認する。
+#[test]
+fn test_report_error_updates_last_error_and_log() {
+    let mut app = App::default();
+    app.report_error("テストエラー");
+    assert_eq!(app.last_error.as_deref(), Some("テストエラー"));
+    let last = app.log.entries.last().expect("ログにエントリがあるはず");
+    assert_eq!(last.level, LogLevel::Error);
+    assert_eq!(last.message, "テストエラー");
+}
+
+/// エラー報告は下ドックを開くだけでなくログタブへ切り替える
+/// （診断・テーブル表示中でもエラー本文が見えるように）。
+#[cfg(feature = "gui")]
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_report_error_switches_bottom_tab_to_log() {
+    let mut app = App::default();
+    app.bottom_tab = BottomTab::Diagnostics;
+    app.bottom_dock_open = false;
+    app.report_error("テストエラー");
+    assert!(app.bottom_dock_open);
+    assert_eq!(app.bottom_tab, BottomTab::Log);
+}
+
+/// モデル差し替えで作成モードと選択バッファが解除される
+/// （旧モデルの節点 id が残ると意図しない部材が生成されうるため）。
+#[cfg(feature = "gui")]
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_load_model_resets_draw_modes() {
+    let mut app = App::default();
+    app.beam_draw_mode = true;
+    app.beam_draw_first = Some(squid_n_core::ids::NodeId(3));
+    app.wall_draw_mode = true;
+    app.wall_draw_nodes.push(squid_n_core::ids::NodeId(1));
+    app.slab_draw_nodes.push(squid_n_core::ids::NodeId(2));
+    app.load_model(crate::sample::portal_frame());
+    assert!(!app.beam_draw_mode);
+    assert!(app.beam_draw_first.is_none());
+    assert!(!app.wall_draw_mode);
+    assert!(app.wall_draw_nodes.is_empty());
+    assert!(app.slab_draw_nodes.is_empty());
+}
+
 /// 一本部材指定（beam_groups）: 2 分割梁のグループ合成値
 /// （全長・端部/中央モーメント・せん断スパン代表値）の手計算照合。
 #[test]
@@ -4376,4 +4435,58 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         .statics
         .iter()
         .any(|(k, _)| *k == StaticCaseKey::User(dl_id)));
+}
+
+/// 診断: 支点が1つも定義されていない空モデルは支点なし Error を返す。
+#[test]
+fn test_run_diagnostics_flags_missing_support() {
+    let mut app = App::default();
+    app.run_diagnostics();
+    assert!(app
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
+}
+
+/// サンプル（門型ラーメン、柱脚固定）では支点なし Error が出ない
+/// （他の診断が出るかどうかはモデル次第のため断定しない）。
+#[test]
+fn test_run_diagnostics_no_missing_support_for_sample() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_diagnostics();
+    assert!(!app
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
+}
+
+/// 断面未割当の部材があれば Warning が出て、target がその部材を指す。
+#[test]
+fn test_run_diagnostics_flags_unassigned_section() {
+    let mut model = crate::sample::portal_frame();
+    let target_id = model.elements[0].id;
+    model.elements[0].section = None;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_diagnostics();
+
+    let diag = app
+        .diagnostics
+        .iter()
+        .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
+        .expect("断面未割当の Warning が出るはず");
+    assert_eq!(diag.severity, DiagSeverity::Warning);
+    assert!(diag.message.contains("断面"));
+}
+
+/// `mark_edited` 後は診断が再実行待ち（stale）に戻る。
+#[test]
+fn test_mark_edited_marks_diagnostics_stale() {
+    let mut app = App::default();
+    app.run_diagnostics();
+    assert!(!app.staleness.diagnostics_stale);
+    app.staleness.mark_edited();
+    assert!(app.staleness.diagnostics_stale);
 }

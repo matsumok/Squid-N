@@ -69,7 +69,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                 .save_file()
             {
                 if let Err(e) = std::fs::write(&path, &csv) {
-                    app.last_error = Some(format!("数量 CSV 保存エラー: {}", e));
+                    app.report_error(format!("数量 CSV 保存エラー: {}", e));
                 }
             }
         }

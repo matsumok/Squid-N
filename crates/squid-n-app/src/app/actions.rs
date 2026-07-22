@@ -14,6 +14,36 @@ fn beam_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
 }
 
 impl App {
+    /// エラーを `last_error`（ステータスバー表示）とログの両方へ反映する。
+    /// エラーはユーザーが気づかないまま埋もれると解析結果を誤って信頼しかねない
+    /// ため、GUI ではログパネルを自動的に開く。
+    pub fn report_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.log.push(LogLevel::Error, msg.clone());
+        self.last_error = Some(msg);
+        #[cfg(feature = "gui")]
+        {
+            // 別タブ（診断・テーブル）が表示中でもエラー本文が見えるよう、
+            // ドックを開くだけでなくログタブへ切り替える。
+            self.bottom_dock_open = true;
+            self.bottom_tab = BottomTab::Log;
+        }
+    }
+
+    /// エラーではないが利用者に知らせたい注意事項を `last_notice` とログの
+    /// 両方へ反映する。処理は継続してよい事項のため、エラーと異なりログパネルの
+    /// 自動オープンはしない。
+    pub fn report_notice(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.log.push(LogLevel::Notice, msg.clone());
+        self.last_notice = Some(msg);
+    }
+
+    /// ログのみに残す情報（ジョブの開始・完了など）。
+    pub fn report_info(&mut self, msg: impl Into<String>) {
+        self.log.push(LogLevel::Info, msg.into());
+    }
+
     /// モデルを丸ごと差し替える（新規作成・サンプル読込・ファイル読込で共用）。
     /// undo 履歴・結果・選択・stale 状態をすべてリセットする。
     /// 旧スキーマの自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
@@ -30,8 +60,23 @@ impl App {
         self.last_notice = None;
         self.auto_load_sync_hash = None;
         self.staleness = Staleness::default();
+        #[cfg(feature = "gui")]
+        self.reset_draw_modes();
         self.sync_node_edit();
         self.refresh_beam_loads();
+    }
+
+    /// 作成モード（梁・壁・スラブ）とその選択バッファをすべて解除する。
+    /// モデル差し替え時は選択中の節点 id が新モデルでは別の節点（または範囲外）を
+    /// 指すため、残したままにすると意図しない部材が生成されうる。
+    #[cfg(feature = "gui")]
+    pub(crate) fn reset_draw_modes(&mut self) {
+        self.beam_draw_mode = false;
+        self.beam_draw_first = None;
+        self.wall_draw_mode = false;
+        self.wall_draw_nodes.clear();
+        self.slab_draw_mode = false;
+        self.slab_draw_nodes.clear();
     }
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
@@ -42,7 +87,7 @@ impl App {
                 self.project_path = Some(path);
                 self.staleness.unsaved_changes = false;
             }
-            Err(e) => self.last_error = Some(format!("保存エラー: {}", e)),
+            Err(e) => self.report_error(format!("保存エラー: {}", e)),
         }
     }
 
@@ -52,13 +97,13 @@ impl App {
         match squid_n_io::scz::load_scz(&path) {
             Ok(model) => {
                 if let Err(e) = model.validate() {
-                    self.last_error = Some(format!("読込モデルの検証エラー: {:?}", e));
+                    self.report_error(format!("読込モデルの検証エラー: {:?}", e));
                     return;
                 }
                 self.load_model(model);
                 self.project_path = Some(path);
             }
-            Err(e) => self.last_error = Some(format!("読込エラー: {}", e)),
+            Err(e) => self.report_error(format!("読込エラー: {}", e)),
         }
     }
 
@@ -72,14 +117,14 @@ impl App {
         let xml = match squid_n_io::stbridge::read_stbridge_file(&path) {
             Ok(s) => s,
             Err(e) => {
-                self.last_error = Some(format!("ST-Bridge読込エラー: {}", e));
+                self.report_error(format!("ST-Bridge読込エラー: {}", e));
                 return;
             }
         };
         match squid_n_io::stbridge::import_stbridge_with_report(&xml) {
             Ok((mut model, report)) => {
                 if let Err(e) = model.validate() {
-                    self.last_error = Some(format!("ST-Bridge読込モデルの検証エラー: {:?}", e));
+                    self.report_error(format!("ST-Bridge読込モデルの検証エラー: {:?}", e));
                     return;
                 }
                 if model.load_cases.is_empty() {
@@ -96,13 +141,13 @@ impl App {
                     .map(String::as_str)
                     .collect();
                 if !lines.is_empty() {
-                    self.last_error = Some(format!(
+                    self.report_error(format!(
                         "⚠️ ST-Bridge 取り込み時の注意:\n- {}",
                         lines.join("\n- ")
                     ));
                 }
             }
-            Err(e) => self.last_error = Some(format!("ST-Bridge読込エラー: {}", e)),
+            Err(e) => self.report_error(format!("ST-Bridge読込エラー: {}", e)),
         }
     }
 
@@ -112,10 +157,10 @@ impl App {
         match squid_n_io::stbridge::export_stbridge(&self.model) {
             Ok(xml) => {
                 if let Err(e) = std::fs::write(&path, xml) {
-                    self.last_error = Some(format!("ST-Bridge書出エラー: {}", e));
+                    self.report_error(format!("ST-Bridge書出エラー: {}", e));
                 }
             }
-            Err(e) => self.last_error = Some(format!("ST-Bridge書出エラー: {}", e)),
+            Err(e) => self.report_error(format!("ST-Bridge書出エラー: {}", e)),
         }
     }
 
@@ -208,7 +253,7 @@ impl App {
                 self.staleness.mark_fresh();
                 self.run_design_check();
             }
-            Err(e) => self.last_error = Some(e),
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -217,7 +262,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_linear_static_job(&mut self, lc: LoadCaseId) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -248,6 +293,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: None,
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
@@ -265,11 +311,11 @@ impl App {
         self.last_notice = None;
         self.sync_auto_load_cases_action();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
-            self.last_error = Some(format!("荷重組合せ #{} が存在しません", index));
+            self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
         if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
-            self.last_error = Some(format!(
+            self.report_error(format!(
                 "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「階の自動生成」を実行して地震荷重を生成してください。",
                 combo.name, name
             ));
@@ -333,7 +379,7 @@ impl App {
                 };
                 self.run_design_check();
             }
-            Err(e) => self.last_error = Some(e),
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -342,7 +388,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_combination_job(&mut self, index: usize) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -350,11 +396,11 @@ impl App {
         self.last_notice = None;
         self.sync_auto_load_cases_action();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
-            self.last_error = Some(format!("荷重組合せ #{} が存在しません", index));
+            self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
         if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
-            self.last_error = Some(format!(
+            self.report_error(format!(
                 "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「階の自動生成」を実行して地震荷重を生成してください。",
                 combo.name, name
             ));
@@ -382,6 +428,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: None,
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 全荷重組合せを一括解析し、結果を `bundle.combos` へ格納する
@@ -398,8 +445,7 @@ impl App {
         self.last_error = None;
         self.last_notice = None;
         if self.model.combinations.is_empty() {
-            self.last_error =
-                Some("荷重組合せがありません。荷重タブで作成してください。".to_string());
+            self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
         // 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
@@ -481,7 +527,7 @@ impl App {
         let items = match computed {
             Ok(items) => items,
             Err(e) => {
-                self.last_error = Some(e);
+                self.report_error(e);
                 return;
             }
         };
@@ -513,7 +559,7 @@ impl App {
 
         let Some((pos, last_name)) = last_ok else {
             // 1件も解けなかった場合は結果を壊さない。
-            self.last_error = Some(format!(
+            self.report_error(format!(
                 "全組合せ解析エラー（{} 件すべて失敗）: {}",
                 errors.len(),
                 errors.first().cloned().unwrap_or_default()
@@ -533,7 +579,7 @@ impl App {
         self.run_design_check();
 
         if !errors.is_empty() {
-            self.last_error = Some(format!(
+            self.report_error(format!(
                 "{} 件の組合せでエラー: {}",
                 errors.len(),
                 errors[0]
@@ -546,15 +592,14 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_all_combinations_job(&mut self) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
         if self.model.combinations.is_empty() {
-            self.last_error =
-                Some("荷重組合せがありません。荷重タブで作成してください。".to_string());
+            self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
         self.sync_auto_load_cases_action();
@@ -583,6 +628,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: None,
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 表示対象の静的解析結果を解決する。優先順: ナビゲータ選択 → 最後に実行した結果。
@@ -1063,9 +1109,9 @@ impl App {
                     // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
                     self.staleness.last_run = Some(SystemTime::now());
                 }
-                Err(e) => self.last_error = Some(format!("固有値解析エラー: {:?}", e)),
+                Err(e) => self.report_error(format!("固有値解析エラー: {:?}", e)),
             },
-            Err(e) => self.last_error = Some(format!("解析準備エラー: {:?}", e)),
+            Err(e) => self.report_error(format!("解析準備エラー: {:?}", e)),
         }
     }
 
@@ -1111,7 +1157,7 @@ impl App {
                 // よう、同期後の状態のハッシュを記録しておく。
                 self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
             }
-            Err(e) => self.last_error = Some(format!("階の自動生成エラー: {}", e)),
+            Err(e) => self.report_error(format!("階の自動生成エラー: {}", e)),
         }
     }
 
@@ -1135,7 +1181,7 @@ impl App {
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
-                self.last_error = Some(msg);
+                self.report_error(msg);
                 return;
             }
         };
@@ -1170,7 +1216,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_seismic_job(&mut self, dir: SeismicDir) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -1180,7 +1226,7 @@ impl App {
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
-                self.last_error = Some(msg);
+                self.report_error(msg);
                 return;
             }
         };
@@ -1215,6 +1261,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: None,
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 風荷重の静的解析を実行し、結果を `StaticCaseKey::Wind(dir)` に格納する
@@ -1255,7 +1302,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_wind_job(&mut self, dir: SeismicDir) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -1293,6 +1340,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: None,
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// Z表 CSV（`squid_n_load::z_table::ZTable::from_csv`）を読み込み `self.z_table`
@@ -1303,7 +1351,7 @@ impl App {
                 self.z_table = Some(table);
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(format!("Z表読込エラー: {}", e)),
+            Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
         }
     }
 
@@ -1312,7 +1360,7 @@ impl App {
     /// `false` を返す。
     pub fn apply_z_from_municipality(&mut self, municipality: &str) -> bool {
         let Some(table) = &self.z_table else {
-            self.last_error = Some("Z表が読み込まれていません".to_string());
+            self.report_error("Z表が読み込まれていません");
             return false;
         };
         match table.lookup(municipality) {
@@ -1322,7 +1370,7 @@ impl App {
                 true
             }
             None => {
-                self.last_error = Some(format!("Z表に「{}」が見つかりません", municipality));
+                self.report_error(format!("Z表に「{}」が見つかりません", municipality));
                 false
             }
         }
@@ -1352,12 +1400,11 @@ impl App {
                 .map(|lc| lc.id)
         };
         let Some(dl) = find_first(LoadCaseKind::Dead) else {
-            self.last_error = Some("種別「固定荷重」の荷重ケースが見つかりません".to_string());
+            self.report_error("種別「固定荷重」の荷重ケースが見つかりません");
             return;
         };
         let Some(ll) = find_first(LoadCaseKind::Live) else {
-            self.last_error =
-                Some("種別「積載荷重(長期)」の荷重ケースが見つかりません".to_string());
+            self.report_error("種別「積載荷重(長期)」の荷重ケースが見つかりません");
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
@@ -1434,7 +1481,7 @@ impl App {
                 self.staleness.last_run = Some(SystemTime::now());
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(e),
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -1452,7 +1499,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_pushover_job(&mut self) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -1479,6 +1526,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: Some((Tab::Results, ResultsView::Pushover)),
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 線形時刻歴応答解析の純粋計算部分。所有権を取り `&self` を使わないため、
@@ -1645,7 +1693,7 @@ impl App {
                 self.staleness.last_run = Some(SystemTime::now());
                 self.last_error = None;
             }
-            Err(e) => self.last_error = Some(e),
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -1663,7 +1711,7 @@ impl App {
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_time_history_job(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
         if self.job.is_some() {
-            self.last_error = Some("解析実行中です".to_string());
+            self.report_error("解析実行中です");
             return;
         }
         self.apply_parallelism_setting();
@@ -1690,6 +1738,7 @@ impl App {
             #[cfg(feature = "gui")]
             jump_on_success: Some((Tab::Results, ResultsView::TimeHistory)),
         });
+        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 実行中のジョブの完了を確認し、完了していれば結果を適用する。
@@ -1702,12 +1751,29 @@ impl App {
         };
         match recv {
             Ok(result) => {
+                // ラベルと経過時間は完了ログ用に、jump_on_success は結果タブへの
+                // 自動遷移用に、job を take する前に取り出しておく。
+                let job = self.job.take();
+                let (label, elapsed_secs) = job
+                    .as_ref()
+                    .map(|j| {
+                        (
+                            j.label,
+                            j.started.elapsed().unwrap_or_default().as_secs_f64(),
+                        )
+                    })
+                    .unwrap_or(("解析", 0.0));
                 #[cfg(feature = "gui")]
-                let jump = self.job.take().and_then(|j| j.jump_on_success);
+                let jump = job.and_then(|j| j.jump_on_success);
                 #[cfg(not(feature = "gui"))]
-                {
-                    self.job = None;
-                }
+                let _ = job;
+
+                // ジョブ完了は新しい状態の起点なので、ジョブ実行中に発生した無関係の
+                // エラー表示（例: ファイル保存失敗）をここでクリアしてから結果を適用する。
+                // こうしないと成功判定（下の last_error.is_none()）が古いエラーに
+                // 引きずられ、成功したのに完了ログ・自動遷移が行われない
+                // （エラー自体はイベントログに残っており失われない）。
+                self.last_error = None;
                 match result {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
                     JobResult::TimeHistory(res) => self.apply_time_history_result(res),
@@ -1718,13 +1784,16 @@ impl App {
                         pre_errors,
                     } => self.apply_all_combinations_result(computed, pre_errors),
                 }
-                #[cfg(feature = "gui")]
-                {
-                    if self.last_error.is_none() {
-                        if let Some((tab, view)) = jump {
-                            self.active_tab = tab;
-                            self.results_view = view;
-                        }
+                // 失敗時は各 apply_* が report_error 経由で last_error とログの両方
+                // へ反映済みのため、ここでは成功時のみ完了ログを追加する
+                // （二重ログを避ける）。
+                if self.last_error.is_none() {
+                    self.report_info(format!("✅ {} が完了 ({:.1}s)", label, elapsed_secs));
+                    #[cfg(feature = "gui")]
+                    if let Some((tab, view)) = jump {
+                        self.active_tab = tab;
+                        self.apply_tab_preset(tab);
+                        self.results_view = view;
                     }
                 }
                 true
@@ -1732,11 +1801,50 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.job = None;
-                self.last_error = Some(
-                    "解析スレッドが異常終了しました（結果を受信できませんでした）。".to_string(),
-                );
+                self.report_error("解析スレッドが異常終了しました（結果を受信できませんでした）。");
                 true
             }
+        }
+    }
+
+    /// 工程タブ切替時のドック初期配置プリセット。各タブに適した初期配置への
+    /// ショートカットであり、ユーザーが後からドック開閉・パネル切替を自由に
+    /// 行うことを妨げない（あくまで切替直後の便宜的な既定値）。
+    #[cfg(feature = "gui")]
+    pub(crate) fn apply_tab_preset(&mut self, tab: Tab) {
+        match tab {
+            Tab::Model => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Model;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Loads => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Loads;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Analysis => {
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::AnalysisSettings;
+                self.bottom_tab = BottomTab::Log;
+            }
+            Tab::Results => {
+                self.left_dock_open = true;
+                self.left_panel = LeftPanel::Navigator;
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Design => {
+                self.right_dock_open = true;
+                self.right_panel = RightPanel::Inspector;
+            }
+            Tab::Report => {}
         }
     }
 
@@ -2768,7 +2876,7 @@ impl App {
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
-                self.last_notice = Some(msg);
+                self.report_notice(msg);
                 return;
             }
         };
@@ -2904,6 +3012,110 @@ impl App {
                 })
                 .map(|lc| lc.name.clone())
         })
+    }
+
+    /// モデル整合性チェック（診断）を実行し `self.diagnostics` を再構築する。
+    /// 下ドック「診断」タブを開いたとき／「再チェック」ボタン押下時のみ呼ばれる
+    /// 想定で、O(部材数) 程度の軽い検査に留める（解析等の重い処理は行わない）。
+    pub fn run_diagnostics(&mut self) {
+        let mut diags = Vec::new();
+
+        // モデル検証（節点/部材の ID 整合性など）。最初の1件のみ返る。
+        if let Err(e) = self.model.validate() {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: format!("モデル検証エラー: {}", e),
+                target: None,
+            });
+        }
+
+        // 支点なし: 全節点が無拘束だと解析時に剛体移動し特異行列になる。
+        let has_support = self
+            .model
+            .nodes
+            .iter()
+            .any(|n| n.restraint.0 != squid_n_core::dof::Dof6Mask::FREE.0);
+        if !has_support {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: "支点が定義されていません（解析すると剛体移動します）".to_string(),
+                target: None,
+            });
+        }
+
+        // 断面未割当: 大モデルで診断リストが溢れないよう 100 件で打ち切り、
+        // 超過分は集約1件にまとめる。
+        const MAX_UNASSIGNED_SECTION: usize = 100;
+        let unassigned: Vec<ElemId> = self
+            .model
+            .elements
+            .iter()
+            .filter(|e| e.section.is_none())
+            .map(|e| e.id)
+            .collect();
+        for id in unassigned.iter().take(MAX_UNASSIGNED_SECTION) {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Warning,
+                message: format!("部材 #{}: 断面が未割当です", id.0),
+                target: Some(DiagTarget::Member(*id)),
+            });
+        }
+        if unassigned.len() > MAX_UNASSIGNED_SECTION {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Warning,
+                message: format!(
+                    "…他 {} 部材で断面未割当",
+                    unassigned.len() - MAX_UNASSIGNED_SECTION
+                ),
+                target: None,
+            });
+        }
+
+        // 空の地震荷重ケースを参照する荷重組合せ: そのまま解くと地震項が黙って
+        // 0 になるため（`empty_seismic_case_in_combo` と同じ判定を流用）。
+        for combo in &self.model.combinations {
+            if let Some(name) = self.empty_seismic_case_in_combo(combo) {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Warning,
+                    message: format!(
+                        "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です\
+                         （解析タブの階の自動生成で生成できます）",
+                        combo.name, name
+                    ),
+                    target: None,
+                });
+            }
+        }
+
+        // 空の荷重ケース（節点・部材荷重とも未定義）。誤って荷重を入れ忘れた
+        // ケースに気づけるよう情報表示する。
+        for lc in &self.model.load_cases {
+            if lc.nodal.is_empty() && lc.member.is_empty() {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Info,
+                    message: format!("荷重ケース「{}」に荷重が定義されていません", lc.name),
+                    target: None,
+                });
+            }
+        }
+
+        self.diagnostics = diags;
+        self.staleness.diagnostics_stale = false;
+    }
+
+    /// 診断結果の件数集計（Error数, Warning数）。タブラベル・ステータス表示用。
+    pub fn diagnostics_counts(&self) -> (usize, usize) {
+        let errors = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagSeverity::Error)
+            .count();
+        let warnings = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == DiagSeverity::Warning)
+            .count();
+        (errors, warnings)
     }
 }
 

@@ -35,6 +35,38 @@ pub enum ModelTab {
     MemberDetails,
 }
 
+/// 下ドックのタブ。ログに加え、横幅を要する編集テーブルを収容する
+/// （横長テーブルは幅の狭い左ドックより下ドックの方が視認性が良い）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BottomTab {
+    #[default]
+    Log,
+    /// モデル編集テーブル（節点・部材・断面…の ModelTab サブタブ群）
+    Model,
+    /// 荷重編集テーブル
+    Loads,
+    /// モデル整合性チェック（診断）一覧
+    Diagnostics,
+}
+
+/// 左ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LeftPanel {
+    #[default]
+    Navigator,
+    /// 作成パレット（梁・壁・スラブ作成モードと断面割当）
+    DrawTools,
+}
+
+/// 右ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RightPanel {
+    #[default]
+    Inspector,
+    /// 解析設定（3D を見ながら設定・実行できるよう右ドックに置く）
+    AnalysisSettings,
+}
+
 /// 結果タブ内の切替（3D 各種図・時刻歴グラフ・プッシュオーバー曲線）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ResultsView {
@@ -103,7 +135,7 @@ pub enum StaticKey {
 }
 
 /// stale（要再計算）状態（UI設計 §5）。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Staleness {
     pub results_stale: bool,
     pub design_stale: bool,
@@ -111,6 +143,23 @@ pub struct Staleness {
     /// ファイル保存後に編集があったか（タイトル/ステータスの未保存マーカー用）。
     /// `mark_fresh`（解析完了）ではクリアされず、保存/読込時のみクリアする。
     pub unsaved_changes: bool,
+    /// 診断（モデル整合性チェック）が未実行または編集後で古いか。
+    /// `Default` では「まだ一度も実行していない」ことを表すため true とする
+    /// （他フィールドと異なり、モデル新規作成・読込直後にも診断タブを開いた
+    /// 時点で必ず一度実行させたいため）。
+    pub diagnostics_stale: bool,
+}
+
+impl Default for Staleness {
+    fn default() -> Self {
+        Self {
+            results_stale: false,
+            design_stale: false,
+            last_run: None,
+            unsaved_changes: false,
+            diagnostics_stale: true,
+        }
+    }
 }
 
 impl Staleness {
@@ -119,6 +168,7 @@ impl Staleness {
         self.results_stale = true;
         self.design_stale = true;
         self.unsaved_changes = true;
+        self.diagnostics_stale = true;
     }
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
@@ -126,6 +176,29 @@ impl Staleness {
         self.design_stale = false;
         self.last_run = Some(SystemTime::now());
     }
+}
+
+/// 診断の重要度。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+/// 診断が指す対象（クリックで 3D 選択・インスペクタへ反映するために持つ）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagTarget {
+    Node(NodeId),
+    Member(ElemId),
+}
+
+/// モデル整合性チェックの結果1件。
+#[derive(Clone, Debug)]
+pub struct Diagnostic {
+    pub severity: DiagSeverity,
+    pub message: String,
+    pub target: Option<DiagTarget>,
 }
 
 #[derive(Default)]
@@ -354,6 +427,63 @@ pub struct AnalysisJob {
     pub jump_on_success: Option<(Tab, ResultsView)>,
 }
 
+/// ログの重要度。下ドック（ログパネル）での色分けに使う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Notice,
+    Error,
+}
+
+/// セッション内イベントログの1件。時刻はアプリ起動からの経過時間で持つ
+/// （std のみでは壁時計のローカル時刻表記ができないため。表示は「mm:ss」）。
+pub struct LogEntry {
+    pub elapsed: std::time::Duration,
+    pub level: LogLevel,
+    pub message: String,
+}
+
+impl LogEntry {
+    /// 表示用の経過時間文字列（「mm:ss」。60分を超えても分側の桁が増えるだけでよい）。
+    pub fn timestamp_label(&self) -> String {
+        let secs = self.elapsed.as_secs();
+        format!("{:02}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+/// セッション内イベントログ。下ドック（ログパネル）に表示する。
+pub struct EventLog {
+    started: std::time::Instant,
+    pub entries: Vec<LogEntry>,
+}
+
+impl Default for EventLog {
+    fn default() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl EventLog {
+    /// 保持件数の上限。無制限に溜め続けるとメモリと描画コストが増え続けるため、
+    /// 上限を超えたら古いものから捨てて直近の履歴のみ保持する。
+    const MAX_ENTRIES: usize = 1000;
+
+    pub fn push(&mut self, level: LogLevel, message: impl Into<String>) {
+        self.entries.push(LogEntry {
+            elapsed: self.started.elapsed(),
+            level,
+            message: message.into(),
+        });
+        if self.entries.len() > Self::MAX_ENTRIES {
+            let overflow = self.entries.len() - Self::MAX_ENTRIES;
+            self.entries.drain(..overflow);
+        }
+    }
+}
+
 pub struct App {
     pub model: squid_n_core::model::Model,
     pub results: Option<ResultsBundle>,
@@ -370,6 +500,8 @@ pub struct App {
     /// 例: 精算周期(SemiPrecise)選択時に固有値解析が未実行で EX/EY の地震荷重が
     /// 更新されなかった旨）。`last_error`（赤）とは別枠で情報色表示する。
     pub last_notice: Option<String>,
+    /// セッション内イベントログ（下ドックのログパネルに表示）。
+    pub log: EventLog,
     /// 実行中のバックグラウンド解析ジョブ（プッシュオーバー・時刻歴・線形静的・
     /// 荷重組合せ・全組合せ一括・地震静的・風荷重、P8 §5）。
     /// 完了は `poll_job` で検知して結果を適用する。
@@ -383,6 +515,8 @@ pub struct App {
     pub pending_duplicate_node_coord: Option<[f64; 3]>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
+    /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
+    pub diagnostics: Vec<Diagnostic>,
     /// ナビゲータ（左ペイン）状態
     pub nav: Navigator,
     /// モデルタブ内のサブタブ
@@ -419,9 +553,25 @@ pub struct App {
     /// 直接反映するか（false は静的解析応答＋UI 一律 Rp）。プッシュオーバー未実行時は
     /// 自動的に静的応答へフォールバックする。
     pub ultimate_use_pushover: bool,
-    /// 左ペインの幅（px）。ドラッグで調整可能（180–520 にクランプ）。
+    /// 左ドック（ナビゲータ／編集パネル）の表示状態
     #[cfg(feature = "gui")]
-    pub left_panel_width: f32,
+    pub left_dock_open: bool,
+    /// 左ドックの表示パネル（ナビゲータ／作成パレット）
+    #[cfg(feature = "gui")]
+    pub left_panel: LeftPanel,
+    /// 右ドック（インスペクタ／解析設定）の表示状態
+    #[cfg(feature = "gui")]
+    pub right_dock_open: bool,
+    /// 右ドックの表示パネル（インスペクタ／解析設定）
+    #[cfg(feature = "gui")]
+    pub right_panel: RightPanel,
+    /// 下ドック（ログ／編集テーブル）の表示状態。既定で開き、イベントログを
+    /// 起動直後から見えるようにする（処理の経過が常時追える Zed のターミナル相当）。
+    #[cfg(feature = "gui")]
+    pub bottom_dock_open: bool,
+    /// 下ドックの表示タブ（ログ／モデル編集／荷重編集）
+    #[cfg(feature = "gui")]
+    pub bottom_tab: BottomTab,
     /// 結果タブ内の表示切替（3D / 時刻歴）
     #[cfg(feature = "gui")]
     pub results_view: ResultsView,
@@ -562,11 +712,13 @@ impl Default for App {
             last_static: None,
             last_error: None,
             last_notice: None,
+            log: EventLog::default(),
             job: None,
             node_edit: Vec::new(),
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
+            diagnostics: Vec::new(),
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
             // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
@@ -583,7 +735,17 @@ impl Default for App {
             ultimate_biaxial_bending: false,
             ultimate_use_pushover: false,
             #[cfg(feature = "gui")]
-            left_panel_width: 280.0,
+            left_dock_open: true,
+            #[cfg(feature = "gui")]
+            left_panel: LeftPanel::default(),
+            #[cfg(feature = "gui")]
+            right_dock_open: true,
+            #[cfg(feature = "gui")]
+            right_panel: RightPanel::default(),
+            #[cfg(feature = "gui")]
+            bottom_dock_open: true,
+            #[cfg(feature = "gui")]
+            bottom_tab: BottomTab::default(),
             #[cfg(feature = "gui")]
             results_view: ResultsView::default(),
             #[cfg(feature = "gui")]
@@ -1333,209 +1495,361 @@ impl eframe::App for App {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
 
+        // 作成パレットが見えていない間は作成モードを強制解除する。モードのトグル・
+        // 進捗表示・クリア処理はパレット内にしかないため、非表示のままモードが残ると
+        // 3D クリックで意図しない部材が無言で生成される（可視性と発動可能性を一致させる）。
+        if !(self.left_dock_open && self.left_panel == LeftPanel::DrawTools) {
+            self.reset_draw_modes();
+        }
+
         // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo
-        ui.horizontal(|ui| {
-            ui.menu_button("ファイル", |ui| {
-                if ui.button("📄 新規").clicked() {
-                    // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
-                    self.load_model(squid_n_core::model::Model::with_default_load_cases());
-                    self.project_path = None;
-                    ui.close();
-                }
-                if ui.button("🏠 サンプル(門型ラーメン)").clicked() {
-                    self.load_model(crate::sample::portal_frame());
-                    self.project_path = None;
-                    ui.close();
+        egui::Panel::top("top_toolbar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button("ファイル", |ui| {
+                    if ui.button("📄 新規").clicked() {
+                        // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
+                        self.load_model(squid_n_core::model::Model::with_default_load_cases());
+                        self.project_path = None;
+                        ui.close();
+                    }
+                    if ui.button("🏠 サンプル(門型ラーメン)").clicked() {
+                        self.load_model(crate::sample::portal_frame());
+                        self.project_path = None;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("📂 開く…").clicked() {
+                        self.open_project_dialog();
+                        ui.close();
+                    }
+                    if ui.button("💾 保存").clicked() {
+                        self.save_project_dialog(false);
+                        ui.close();
+                    }
+                    if ui.button("💾 名前を付けて保存…").clicked() {
+                        self.save_project_dialog(true);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("📥 ST-Bridge 読込…")
+                        .on_hover_text(
+                            "ST-Bridge 2.0 サブセット（節点・部材・断面・材料・節点荷重）。支点・部材荷重・組合せは含まれません",
+                        )
+                        .clicked()
+                    {
+                        self.import_stbridge_dialog();
+                        ui.close();
+                    }
+                    if ui
+                        .button("📤 ST-Bridge 書出…")
+                        .on_hover_text(
+                            "標準 ST-Bridge 2.0.2（StbSecColumn_S 等＋形鋼ライブラリ）で書き出す。BIM・他ソフト向け。材料はグレード名で表し、支点・荷重・材料の E/ν は含まれません（完全一致の保存は .scz）",
+                        )
+                        .clicked()
+                    {
+                        self.export_stbridge_dialog();
+                        ui.close();
+                    }
+                });
+                ui.separator();
+                let tabs = [
+                    ("モデル", Tab::Model),
+                    ("荷重", Tab::Loads),
+                    ("解析", Tab::Analysis),
+                    ("結果", Tab::Results),
+                    ("設計", Tab::Design),
+                    ("レポート", Tab::Report),
+                ];
+                for (label, tab) in &tabs {
+                    let selected = self.active_tab == *tab;
+                    let stale_marker = match *tab {
+                        // 進行中の下流タブに stale バッジを付与（§5）
+                        Tab::Results | Tab::Design if self.staleness.results_stale => "⚠",
+                        _ => "",
+                    };
+                    let label_str = format!("{} {}", label, stale_marker);
+                    // プリセットは工程が実際に変わったときのみ適用する。選択中タブの
+                    // 再クリックで手動調整したドック配置が巻き戻らないようにするため。
+                    if ui.selectable_label(selected, label_str).clicked() && !selected {
+                        self.active_tab = *tab;
+                        self.apply_tab_preset(*tab);
+                    }
                 }
                 ui.separator();
-                if ui.button("📂 開く…").clicked() {
-                    self.open_project_dialog();
-                    ui.close();
+                let can_undo = self.undo.can_undo();
+                let can_redo = self.undo.can_redo();
+                if ui
+                    .add_enabled(can_undo, egui::Button::new("↶ Undo"))
+                    .clicked()
+                {
+                    self.undo.undo(&mut self.model);
+                    self.staleness.mark_edited();
                 }
-                if ui.button("💾 保存").clicked() {
-                    self.save_project_dialog(false);
-                    ui.close();
-                }
-                if ui.button("💾 名前を付けて保存…").clicked() {
-                    self.save_project_dialog(true);
-                    ui.close();
+                if ui
+                    .add_enabled(can_redo, egui::Button::new("↷ Redo"))
+                    .clicked()
+                {
+                    self.undo.redo(&mut self.model);
+                    self.staleness.mark_edited();
                 }
                 ui.separator();
+                // 荷重継続性区分は設計タブと関係するが、共有コントロールとして上部に残置
+                ui.label("荷重:");
+                let term = self.design_term;
                 if ui
-                    .button("📥 ST-Bridge 読込…")
-                    .on_hover_text(
-                        "ST-Bridge 2.0 サブセット（節点・部材・断面・材料・節点荷重）。支点・部材荷重・組合せは含まれません",
-                    )
+                    .selectable_label(term == LoadTerm::Long, "長期")
                     .clicked()
                 {
-                    self.import_stbridge_dialog();
-                    ui.close();
+                    self.design_term = LoadTerm::Long;
+                    self.run_design_check();
                 }
                 if ui
-                    .button("📤 ST-Bridge 書出…")
-                    .on_hover_text(
-                        "標準 ST-Bridge 2.0.2（StbSecColumn_S 等＋形鋼ライブラリ）で書き出す。BIM・他ソフト向け。材料はグレード名で表し、支点・荷重・材料の E/ν は含まれません（完全一致の保存は .scz）",
-                    )
+                    .selectable_label(term == LoadTerm::Short, "短期")
                     .clicked()
                 {
-                    self.export_stbridge_dialog();
-                    ui.close();
+                    self.design_term = LoadTerm::Short;
+                    self.run_design_check();
                 }
             });
-            ui.separator();
-            let tabs = [
-                ("モデル", Tab::Model),
-                ("荷重", Tab::Loads),
-                ("解析", Tab::Analysis),
-                ("結果", Tab::Results),
-                ("設計", Tab::Design),
-                ("レポート", Tab::Report),
-            ];
-            for (label, tab) in &tabs {
-                let selected = self.active_tab == *tab;
-                let stale_marker = match *tab {
-                    // 進行中の下流タブに stale バッジを付与（§5）
-                    Tab::Results | Tab::Design if self.staleness.results_stale => "⚠",
-                    _ => "",
-                };
-                let label_str = format!("{} {}", label, stale_marker);
-                if ui.selectable_label(selected, label_str).clicked() {
-                    self.active_tab = *tab;
-                }
-            }
-            ui.separator();
-            let can_undo = self.undo.can_undo();
-            let can_redo = self.undo.can_redo();
-            if ui
-                .add_enabled(can_undo, egui::Button::new("↶ Undo"))
-                .clicked()
-            {
-                self.undo.undo(&mut self.model);
-                self.staleness.mark_edited();
-            }
-            if ui
-                .add_enabled(can_redo, egui::Button::new("↷ Redo"))
-                .clicked()
-            {
-                self.undo.redo(&mut self.model);
-                self.staleness.mark_edited();
-            }
-            ui.separator();
-            // 荷重継続性区分は設計タブと関係するが、共有コントロールとして上部に残置
-            ui.label("荷重:");
-            let term = self.design_term;
-            if ui
-                .selectable_label(term == LoadTerm::Long, "長期")
-                .clicked()
-            {
-                self.design_term = LoadTerm::Long;
-                self.run_design_check();
-            }
-            if ui
-                .selectable_label(term == LoadTerm::Short, "短期")
-                .clicked()
-            {
-                self.design_term = LoadTerm::Short;
-                self.run_design_check();
-            }
         });
-        ui.separator();
 
-        // 4ペイン：左ナビゲータ(+モデル/荷重設定) / 中央 / 右インスペクタ / 下ステータス
-        // 下パネルは描画の都合上最後に置く。左右は egui::SidePanel を模して available_rect で分割。
-        // 左ペインの幅はドラッグで調整可能（self.left_panel_width）。
-        let available = ui.available_rect_before_wrap();
-        let nav_width = self.left_panel_width.clamp(180.0, 520.0);
-        let inspector_width = 240.0;
-        // ステータスバーの高さ: 上に引く区切り線の占有分 ＋ 本文1行 ＋ 余裕。
-        // 固定値（旧 22px）では日本語フォントの行高（Body 13pt で約19px）に足りず、
-        // 文字の下側がウィンドウ外へ見切れる。
-        const STATUS_BAR_SEPARATOR_PX: f32 = 6.0;
-        const STATUS_BAR_MARGIN_PX: f32 = 2.0;
-        let status_height = ui.text_style_height(&egui::TextStyle::Body)
-            + STATUS_BAR_SEPARATOR_PX
-            + ui.spacing().item_spacing.y
-            + STATUS_BAR_MARGIN_PX;
+        // 下：ステータスバー（高さは本文1行分。egui::Panel が枠線を描くため、
+        // 内部の区切り線・矩形分割は不要になった）
+        egui::Panel::bottom("status_bar")
+            .exact_size(ui.text_style_height(&egui::TextStyle::Body) + 8.0)
+            .show_inside(ui, |ui| {
+                self.status_bar(ui);
+            });
 
-        let nav_rect = egui::Rect {
-            min: available.min,
-            max: egui::pos2(available.min.x + nav_width, available.max.y - status_height),
-        };
-        let inspector_rect = egui::Rect {
-            min: egui::pos2(available.max.x - inspector_width, available.min.y),
-            max: egui::pos2(available.max.x, available.max.y - status_height),
-        };
-        let central_rect = egui::Rect {
-            min: egui::pos2(nav_rect.max.x, available.min.y),
-            max: egui::pos2(inspector_rect.min.x, available.max.y - status_height),
-        };
-        let status_rect = egui::Rect {
-            min: egui::pos2(available.min.x, available.max.y - status_height),
-            max: available.max,
-        };
+        // 左：パネル切替式（ナビゲータ／作成パレット）。Zed のようにステータスバーの
+        // アイコンで切り替える（切替自体は status_bar が行う）。
+        if self.left_dock_open {
+            egui::Panel::left("left_dock")
+                .resizable(true)
+                .default_size(280.0)
+                .size_range(180.0..=520.0)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::both()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match self.left_panel {
+                            LeftPanel::Navigator => self.navigator_panel(ui),
+                            LeftPanel::DrawTools => self.draw_tools_panel(ui),
+                        });
+                });
+        }
 
-        // 左：ナビゲータ（常時）＋ モデル/荷重タブ選択中はその設定編集を併設。
-        // モデル作成状況は中央の3Dビューで常時確認できるようにし、設定操作はここに集約する。
-        #[allow(deprecated)]
-        ui.allocate_ui_at_rect(nav_rect, |ui| {
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    self.navigator_panel(ui);
-                    if matches!(self.active_tab, Tab::Model | Tab::Loads) {
-                        ui.add_space(8.0);
-                        ui.separator();
-                        ui.add_space(4.0);
-                        match self.active_tab {
-                            Tab::Model => self.model_tab_panel(ui),
-                            Tab::Loads => crate::tables::loads::loads_table(ui, self),
-                            _ => unreachable!(),
+        // 右：パネル切替式（インスペクタ／解析設定）。Zed のようにステータスバーの
+        // アイコンで切り替える（切替自体は status_bar が行う）。解析設定は3D
+        // ビューを見ながら設定・実行できるようここに置くため、他パネルより
+        // 縦に長くなりがちで、右ドック全体をスクロール可能にする。
+        if self.right_dock_open {
+            egui::Panel::right("right_dock")
+                .resizable(true)
+                .default_size(320.0)
+                .size_range(220.0..=560.0)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match self.right_panel {
+                            RightPanel::Inspector => self.inspector_panel(ui),
+                            RightPanel::AnalysisSettings => self.analysis_settings_panel(ui),
+                        });
+                });
+        }
+
+        // 下（中央領域内）：タブ切替（ログ／モデル編集／荷重編集）。
+        // 横長テーブルは幅の狭い左ドックより下ドックの方が視認性が良いため、
+        // モデル/荷重の編集テーブルもここに収容する。
+        // 左右ドックより後に show_inside することで、中央領域の下部（左右ドックの間）に出す。
+        if self.bottom_dock_open {
+            egui::Panel::bottom("bottom_dock")
+                .resizable(true)
+                .default_size(200.0)
+                .size_range(80.0..=520.0)
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let log_label = format!("ログ ({})", self.log.entries.len());
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Log, log_label)
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Log;
+                        }
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Model, "モデル")
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Model;
+                        }
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Loads, "荷重")
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Loads;
+                        }
+                        // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
+                        // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
+                        let (diag_errors, diag_warnings) = self.diagnostics_counts();
+                        let diag_label = if !self.staleness.diagnostics_stale
+                            && (diag_errors > 0 || diag_warnings > 0)
+                        {
+                            format!("診断 (E{}/W{})", diag_errors, diag_warnings)
+                        } else {
+                            "診断".to_string()
+                        };
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Diagnostics, diag_label)
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Diagnostics;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("✕").clicked() {
+                                self.bottom_dock_open = false;
+                            }
+                            if self.bottom_tab == BottomTab::Log && ui.button("クリア").clicked()
+                            {
+                                self.log.entries.clear();
+                            }
+                            if self.bottom_tab == BottomTab::Diagnostics
+                                && ui.button("再チェック").clicked()
+                            {
+                                self.run_diagnostics();
+                            }
+                        });
+                    });
+                    ui.separator();
+                    // 診断タブを開いた時点で stale なら遅延実行する（編集の度に毎フレーム
+                    // 走らせるとモデル/荷重編集操作が重くなるため）。
+                    if self.bottom_tab == BottomTab::Diagnostics && self.staleness.diagnostics_stale
+                    {
+                        self.run_diagnostics();
+                    }
+                    match self.bottom_tab {
+                        BottomTab::Log => {
+                            if self.log.entries.is_empty() {
+                                ui.colored_label(crate::theme::GRAY_600, "ログはまだありません");
+                            } else {
+                                // id_salt: 4タブは同一パネル内で切り替わるため、明示しないと
+                                // ScrollArea の Id が衝突しスクロール位置がタブ間で共有される。
+                                egui::ScrollArea::vertical()
+                                    .id_salt("bottom_log")
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(true)
+                                    .show(ui, |ui| {
+                                        for entry in &self.log.entries {
+                                            let color = match entry.level {
+                                                LogLevel::Error => crate::theme::ERROR_RED,
+                                                LogLevel::Notice => crate::theme::BEST_YELLOW,
+                                                LogLevel::Info => crate::theme::GRAY_700,
+                                            };
+                                            // 改行を含むメッセージ（複数行の警告など）は1行に畳んで
+                                            // truncate し、全文はホバーで表示する
+                                            // （ステータスバーの last_error 表示と同じ流儀）。
+                                            let one_line = entry.message.replace('\n', " ");
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!(
+                                                        "[{}] {}",
+                                                        entry.timestamp_label(),
+                                                        one_line
+                                                    ))
+                                                    .color(color),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&entry.message);
+                                        }
+                                    });
+                            }
+                        }
+                        BottomTab::Model => {
+                            egui::ScrollArea::both()
+                                .id_salt("bottom_model")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| self.model_tab_panel(ui));
+                        }
+                        BottomTab::Loads => {
+                            egui::ScrollArea::both()
+                                .id_salt("bottom_loads")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| crate::tables::loads::loads_table(ui, self));
+                        }
+                        BottomTab::Diagnostics => {
+                            if self.diagnostics.is_empty() {
+                                ui.colored_label(
+                                    crate::theme::GOOD_GREEN,
+                                    "問題は見つかりませんでした",
+                                );
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("bottom_diag")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        // インデックスで回す（クリック時に selection/nav を
+                                        // 書き換えるため self を可変借用する必要があり、
+                                        // diagnostics への不変参照と両立できない）。
+                                        for i in 0..self.diagnostics.len() {
+                                            let (color, icon, message, target) = {
+                                                let d = &self.diagnostics[i];
+                                                let color = match d.severity {
+                                                    DiagSeverity::Error => crate::theme::ERROR_RED,
+                                                    DiagSeverity::Warning => {
+                                                        crate::theme::BEST_YELLOW
+                                                    }
+                                                    DiagSeverity::Info => crate::theme::GRAY_700,
+                                                };
+                                                let icon = match d.severity {
+                                                    DiagSeverity::Error | DiagSeverity::Warning => {
+                                                        "⚠"
+                                                    }
+                                                    DiagSeverity::Info => "ℹ",
+                                                };
+                                                (color, icon, d.message.clone(), d.target)
+                                            };
+                                            let text = egui::RichText::new(format!(
+                                                "{} {}",
+                                                icon, message
+                                            ))
+                                            .color(color);
+                                            if let Some(target) = target {
+                                                let resp = ui
+                                                    .selectable_label(false, text)
+                                                    .on_hover_text("クリックで 3D 選択");
+                                                if resp.clicked() {
+                                                    match target {
+                                                        DiagTarget::Member(id) => {
+                                                            self.selection.members = vec![id];
+                                                            self.selection.nodes.clear();
+                                                            self.nav.focus_member = Some(id);
+                                                        }
+                                                        DiagTarget::Node(id) => {
+                                                            self.selection.nodes = vec![id];
+                                                            self.selection.members.clear();
+                                                            self.nav.focus_node = Some(id);
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                ui.label(text);
+                                            }
+                                        }
+                                    });
+                            }
                         }
                     }
                 });
-        });
-
-        // 左ペインの右端：ドラッグで幅調整するハンドル
-        let resize_rect = egui::Rect::from_min_max(
-            egui::pos2(nav_rect.max.x - 3.0, nav_rect.min.y),
-            egui::pos2(nav_rect.max.x + 3.0, nav_rect.max.y),
-        );
-        let resize_id = ui.id().with("left_panel_resize");
-        let resize_response = ui.interact(resize_rect, resize_id, egui::Sense::drag());
-        if resize_response.dragged() {
-            self.left_panel_width =
-                (self.left_panel_width + resize_response.drag_delta().x).clamp(180.0, 520.0);
         }
-        if resize_response.hovered() || resize_response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        }
-        ui.painter().vline(
-            nav_rect.max.x,
-            nav_rect.y_range(),
-            ui.visuals().widgets.noninteractive.bg_stroke,
-        );
 
-        // 中央：モデル/荷重タブでは常に3Dビュー（作成状況を即座に確認できるようにする）。
-        // それ以外の工程タブは従来通りの内容を表示する。
-        #[allow(deprecated)]
-        ui.allocate_ui_at_rect(central_rect, |ui| match self.active_tab {
-            Tab::Model | Tab::Loads => crate::viewer::viewer_panel(ui, self),
-            Tab::Analysis => self.analysis_tab_panel(ui),
+        // 中央：モデル/荷重/解析タブでは常に3Dビュー（作成状況・モデルを見ながら
+        // 設定・実行できるようにする。解析の設定フォームは右ドック側にある）。
+        // それ以外の工程タブは各内容を表示する。
+        egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
+            Tab::Model | Tab::Loads | Tab::Analysis => crate::viewer::viewer_panel(ui, self),
             Tab::Results => self.results_tab_panel(ui),
             Tab::Design => self.design_tab_panel(ui),
             Tab::Report => self.report_tab_panel(ui),
-        });
-
-        // 右：インスペクタ
-        #[allow(deprecated)]
-        ui.allocate_ui_at_rect(inspector_rect, |ui| {
-            self.inspector_panel(ui);
-        });
-
-        // 下：ステータスバー
-        #[allow(deprecated)]
-        ui.allocate_ui_at_rect(status_rect, |ui| {
-            self.status_bar(ui);
         });
     }
 }
