@@ -735,7 +735,7 @@ impl App {
                     {
                         match std::fs::read_to_string(&path) {
                             Ok(csv) => self.load_z_table_from_csv(&csv),
-                            Err(e) => self.last_error = Some(format!("Z表読込エラー: {}", e)),
+                            Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
                         }
                     }
                 }
@@ -1066,7 +1066,7 @@ impl App {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                self.last_error = Some(format!("波形読込エラー: {}", e));
+                self.report_error(format!("波形読込エラー: {}", e));
                 return;
             }
         };
@@ -1074,7 +1074,7 @@ impl App {
         let (col1, col2) = match parse_wave_csv(&content, dir) {
             Ok(v) => v,
             Err(e) => {
-                self.last_error = Some(e);
+                self.report_error(e);
                 return;
             }
         };
@@ -1455,7 +1455,7 @@ impl App {
                     .save_file()
                 {
                     if let Err(e) = std::fs::write(&path, &csv) {
-                        self.last_error = Some(format!("レポート保存エラー: {}", e));
+                        self.report_error(format!("レポート保存エラー: {}", e));
                     }
                 }
             }
@@ -1634,9 +1634,7 @@ impl App {
     /// `Label::truncate()` を付けても truncate の基準となる幅が無く効かず、右側のサマリと
     /// 重なって表示されてしまう。そのためサマリの表示幅を先に採寸し、行を「左ゾーン
     /// （明示的に幅を制限する）」と「右ゾーン（サマリ専用）」へ矩形分割してから描画する。
-    pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
-        ui.separator();
-
+    pub(crate) fn status_bar(&mut self, ui: &mut egui::Ui) {
         let summary = format!(
             "部材 {}. 節点 {}. 断面 {}.",
             self.model.elements.len(),
@@ -1646,15 +1644,24 @@ impl App {
         let body_font = egui::TextStyle::Body.resolve(ui.style());
         let summary_width = ui
             .painter()
-            .layout_no_wrap(summary.clone(), body_font, crate::theme::GRAY_700)
+            .layout_no_wrap(summary.clone(), body_font.clone(), crate::theme::GRAY_700)
             .size()
             .x;
+        // 右ゾーンはサマリに加えて右ドックトグル（🔍）も描くため、
+        // アイコン幅＋ボタン余白＋間隔ぶんを確保幅に含める（不足すると左ゾーンと重なる）。
+        let toggle_width = ui
+            .painter()
+            .layout_no_wrap("🔍".to_string(), body_font, crate::theme::GRAY_700)
+            .size()
+            .x
+            + ui.spacing().button_padding.x * 2.0;
 
         let row_rect = ui.available_rect_before_wrap();
         let gap = ui.spacing().item_spacing.x;
+        let right_width = summary_width + gap + toggle_width;
         let right_rect = egui::Rect::from_min_max(
             egui::pos2(
-                (row_rect.max.x - summary_width - gap).max(row_rect.min.x),
+                (row_rect.max.x - right_width - gap).max(row_rect.min.x),
                 row_rect.min.y,
             ),
             row_rect.max,
@@ -1667,6 +1674,22 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(left_rect, |ui| {
             ui.horizontal(|ui| {
+                // ドック開閉トグル（Zed 風。selectable_label で開閉状態を示す）
+                if ui
+                    .selectable_label(self.left_dock_open, "🗂")
+                    .on_hover_text("左パネルの表示/非表示")
+                    .clicked()
+                {
+                    self.left_dock_open = !self.left_dock_open;
+                }
+                if ui
+                    .selectable_label(self.bottom_dock_open, "📜")
+                    .on_hover_text("ログパネルの表示/非表示")
+                    .clicked()
+                {
+                    self.bottom_dock_open = !self.bottom_dock_open;
+                }
+                ui.separator();
                 // プロジェクトファイル名 + 未保存マーカー
                 let file_label = self
                     .project_path
@@ -1703,16 +1726,23 @@ impl App {
                     // ST-Bridge 取込警告（複数件を \n 区切りで連結）など改行を含む
                     // メッセージは1行に畳んでから truncate する（\n はレイアウト上
                     // 明示的な改行として扱われ、行の高さ・幅の見積りが崩れるため）。
-                    // 全文はホバーで表示する。
+                    // 全文はホバーで表示する。クリックでログパネルを開けるようにする
+                    // （エラーの詳細な経緯はログに残っているため）。
                     let one_line = err.replace('\n', " ");
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("⚠ {}", one_line))
-                                .color(crate::theme::ERROR_RED),
+                    let clicked = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("⚠ {}", one_line))
+                                    .color(crate::theme::ERROR_RED),
+                            )
+                            .truncate()
+                            .sense(egui::Sense::click()),
                         )
-                        .truncate(),
-                    )
-                    .on_hover_text(err);
+                        .on_hover_text(format!("{}\n\nクリックでログを開く", err))
+                        .clicked();
+                    if clicked {
+                        self.bottom_dock_open = true;
+                    }
                 }
                 // last_error（赤・処理を止める）とは別枠の注意事項（例: 精算周期
                 // (SemiPrecise)選択時に固有値解析が未実行で EX/EY が未更新である旨）。
@@ -1735,6 +1765,14 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(right_rect, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // サマリの右に配置（right_to_left のため先に追加する）
+                if ui
+                    .selectable_label(self.right_dock_open, "🔍")
+                    .on_hover_text("インスペクタの表示/非表示")
+                    .clicked()
+                {
+                    self.right_dock_open = !self.right_dock_open;
+                }
                 ui.label(summary);
             });
         });

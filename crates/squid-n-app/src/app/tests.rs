@@ -16,6 +16,31 @@ fn test_run_design_check_empty_model() {
     assert!(app.results.is_none() || app.results.as_ref().unwrap().checks.is_empty());
 }
 
+/// `EventLog` の保持件数上限（1000件）: 上限を1件超えて push すると、
+/// 件数は上限に保たれ、最も古い1件（先頭）が捨てられる。
+#[test]
+fn test_event_log_caps_entries() {
+    let mut log = EventLog::default();
+    for i in 0..1001 {
+        log.push(LogLevel::Info, format!("msg{i}"));
+    }
+    assert_eq!(log.entries.len(), 1000);
+    // 先頭（msg0）が捨てられ、msg1 が先頭に繰り上がっている。
+    assert_eq!(log.entries.first().unwrap().message, "msg1");
+    assert_eq!(log.entries.last().unwrap().message, "msg1000");
+}
+
+/// `report_error` が `last_error` とログの両方へ反映されることを確認する。
+#[test]
+fn test_report_error_updates_last_error_and_log() {
+    let mut app = App::default();
+    app.report_error("テストエラー");
+    assert_eq!(app.last_error.as_deref(), Some("テストエラー"));
+    let last = app.log.entries.last().expect("ログにエントリがあるはず");
+    assert_eq!(last.level, LogLevel::Error);
+    assert_eq!(last.message, "テストエラー");
+}
+
 /// 一本部材指定（beam_groups）: 2 分割梁のグループ合成値
 /// （全長・端部/中央モーメント・せん断スパン代表値）の手計算照合。
 #[test]

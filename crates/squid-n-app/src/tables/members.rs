@@ -132,7 +132,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 
         // 免震支承材の作成フォームは未実装（仕様策定中）。ステータスバーに通知のみ。
         if do_isolator_notice {
-            app.last_error = Some("免震支承材の作成フォームは未実装です（仕様策定中）".to_string());
+            app.report_error("免震支承材の作成フォームは未実装です（仕様策定中）");
         }
 
         // 制振ダンパー追加（要素＋既定諸元を原子的に作成）。
