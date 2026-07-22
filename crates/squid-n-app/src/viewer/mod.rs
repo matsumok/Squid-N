@@ -974,9 +974,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 実変位を表示している時のみ描く（モード形は固有ベクトルの規模が任意のため
     // 倍率に物理的な意味がなく、表示しない）。
     if deform_scale_actual > 0.0 && mode != ViewMode::Mode {
-        // N/Q/M 図の凡例（min.y+10）・コンターバー（min.y+30〜52）と重ならない位置へ
+        // N/Q/M 図の凡例（min.y+10）・コンターバー＋ラベル（min.y+30〜56 程度）と
+        // 重ならない位置へ
         let y = match mode {
-            ViewMode::N | ViewMode::Q | ViewMode::M if app.diagram_contour => 62.0,
+            ViewMode::N | ViewMode::Q | ViewMode::M if app.diagram_contour => 70.0,
             ViewMode::N | ViewMode::Q | ViewMode::M => 30.0,
             _ => 10.0,
         };
@@ -1616,12 +1617,33 @@ fn interpolate_unreferenced_disp(
 ) -> Vec<[f64; 6]> {
     let n = model.nodes.len().min(disp.len());
 
-    // 主架構要素が接続する節点（解析自由度を持ち、変位が直接求まる節点）
+    // 解析自由度を持ち変位が直接求まる節点（`DofMap::build` の structural 判定と
+    // 同じ規則）: 主架構要素が接続する節点、または拘束（剛床・剛リンク・MPC）の
+    // マスター節点。剛床代表節点（階自動生成が重心に置く仮想節点）は要素に
+    // 接続しないが正しい解析変位を持つため、補間で上書きしてはいけない。
     let mut referenced = vec![false; n];
     for elem in &model.elements {
         for nd in &elem.nodes {
             if let Some(r) = referenced.get_mut(nd.index()) {
                 *r = true;
+            }
+        }
+    }
+    for c in &model.constraints {
+        use squid_n_core::model::Constraint;
+        match c {
+            Constraint::RigidDiaphragm { master, .. } | Constraint::RigidLink { master, .. } => {
+                if let Some(r) = referenced.get_mut(master.index()) {
+                    *r = true;
+                }
+            }
+            // MPC は `master` フィールドがスレーブ節点、`terms` がマスター側。
+            Constraint::Mpc { terms, .. } => {
+                for (nd, _, _) in terms {
+                    if let Some(r) = referenced.get_mut(nd.index()) {
+                        *r = true;
+                    }
+                }
             }
         }
     }
@@ -1912,7 +1934,7 @@ mod tests {
     };
 
     /// 補間テスト用の節点を作る（拘束なし・付加情報なし）。
-    fn 節点(id: u32, coord: [f64; 3]) -> Node {
+    fn test_node(id: u32, coord: [f64; 3]) -> Node {
         Node {
             id: NodeId(id),
             coord,
@@ -1923,7 +1945,7 @@ mod tests {
     }
 
     /// 補間テスト用の 2 節点梁要素を作る。
-    fn 梁要素(id: u32, i: u32, j: u32) -> ElementData {
+    fn test_beam(id: u32, i: u32, j: u32) -> ElementData {
         ElementData {
             id: ElemId(id),
             kind: ElementKind::Beam,
@@ -1944,9 +1966,9 @@ mod tests {
     #[test]
     fn 主架構に接続する節点の変位は補間で変更されない() {
         let mut model = Model::default();
-        model.nodes.push(節点(0, [0.0, 0.0, 0.0]));
-        model.nodes.push(節点(1, [6000.0, 0.0, 0.0]));
-        model.elements.push(梁要素(0, 0, 1));
+        model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
+        model.nodes.push(test_node(1, [6000.0, 0.0, 0.0]));
+        model.elements.push(test_beam(0, 0, 1));
 
         let disp = vec![
             [1.0, 2.0, 3.0, 0.1, 0.2, 0.3],
@@ -1961,10 +1983,10 @@ mod tests {
         // 大梁 n0-n1 のスパン 1/4 点に、節点共有なしで載る小梁支持点 n2
         // （ST-Bridge 取り込みモデルの典型）を置く。
         let mut model = Model::default();
-        model.nodes.push(節点(0, [0.0, 0.0, 0.0]));
-        model.nodes.push(節点(1, [8000.0, 0.0, 0.0]));
-        model.nodes.push(節点(2, [2000.0, 0.0, 0.0]));
-        model.elements.push(梁要素(0, 0, 1));
+        model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
+        model.nodes.push(test_node(1, [8000.0, 0.0, 0.0]));
+        model.nodes.push(test_node(2, [2000.0, 0.0, 0.0]));
+        model.elements.push(test_beam(0, 0, 1));
 
         let disp = vec![
             [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -1983,10 +2005,10 @@ mod tests {
         // 大梁からオフセットした位置の節点（床境界の幾何節点など）は、
         // 最寄り線分への射影点（クランプ込み）の変位で追従する。
         let mut model = Model::default();
-        model.nodes.push(節点(0, [0.0, 0.0, 0.0]));
-        model.nodes.push(節点(1, [4000.0, 0.0, 0.0]));
-        model.nodes.push(節点(2, [2000.0, 500.0, 0.0]));
-        model.elements.push(梁要素(0, 0, 1));
+        model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
+        model.nodes.push(test_node(1, [4000.0, 0.0, 0.0]));
+        model.nodes.push(test_node(2, [2000.0, 500.0, 0.0]));
+        model.elements.push(test_beam(0, 0, 1));
 
         let disp = vec![[0.0; 6], [10.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0; 6]];
         let out = interpolate_unreferenced_disp(&model, disp);
@@ -1997,10 +2019,37 @@ mod tests {
     #[test]
     fn 主架構の線材が無ければ未参照節点の変位はゼロのまま() {
         let mut model = Model::default();
-        model.nodes.push(節点(0, [0.0, 0.0, 0.0]));
-        model.nodes.push(節点(1, [1000.0, 0.0, 0.0]));
+        model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
+        model.nodes.push(test_node(1, [1000.0, 0.0, 0.0]));
         // 要素なし → 補間ソースがなく、変位はゼロのまま
         let out = interpolate_unreferenced_disp(&model, vec![[0.0; 6]; 2]);
         assert!(out.iter().all(|v| v.iter().all(|&x| x == 0.0)));
+    }
+
+    #[test]
+    fn 剛床マスター節点の変位は補間で上書きされない() {
+        // 剛床代表節点（階自動生成が重心に置く仮想節点）は要素に接続しないが、
+        // 拘束のマスターとして解析自由度を持ち正しい変位が求まる
+        // （`DofMap::build` の structural 判定と同じ規則）。補間対象にしてはいけない。
+        let mut model = Model::default();
+        model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
+        model.nodes.push(test_node(1, [8000.0, 0.0, 0.0]));
+        model.nodes.push(test_node(2, [4000.0, 0.0, 0.0])); // 剛床マスター
+        model.elements.push(test_beam(0, 0, 1));
+        model
+            .constraints
+            .push(squid_n_core::model::Constraint::RigidDiaphragm {
+                story: squid_n_core::ids::StoryId(0),
+                master: NodeId(2),
+                slaves: vec![NodeId(0), NodeId(1)],
+            });
+
+        let disp = vec![
+            [0.0; 6],
+            [10.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [7.0, 0.0, 0.0, 0.0, 0.0, 0.0], // マスターの解析変位（補間値 5.0 とは異なる）
+        ];
+        let out = interpolate_unreferenced_disp(&model, disp.clone());
+        assert_eq!(out, disp);
     }
 }
