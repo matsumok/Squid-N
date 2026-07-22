@@ -102,27 +102,12 @@ pub fn status_color(ratio: f64) -> Color32 {
     }
 }
 
-/// Viridis カラーマップのアンカー点（matplotlib 版, t=0.000〜1.000 を 0.125 刻み）。
-/// `viridis` はこの LUT を区間線形補間する。
-const VIRIDIS_LUT: [(f32, Color32); 9] = [
-    (0.000, Color32::from_rgb(0x44, 0x01, 0x54)),
-    (0.125, Color32::from_rgb(0x48, 0x28, 0x78)),
-    (0.250, Color32::from_rgb(0x3E, 0x49, 0x89)),
-    (0.375, Color32::from_rgb(0x31, 0x68, 0x8E)),
-    (0.500, Color32::from_rgb(0x26, 0x82, 0x8E)),
-    (0.625, Color32::from_rgb(0x1F, 0x9E, 0x89)),
-    (0.750, Color32::from_rgb(0x35, 0xB7, 0x79)),
-    (0.875, Color32::from_rgb(0x6D, 0xCD, 0x59)),
-    (1.000, Color32::from_rgb(0xFD, 0xE7, 0x25)),
-];
-
-/// 連続値を Viridis カラーマップへ写像する（TONMANUAL §3「カラーマップ（連続値）」:
-/// 応力コンター等の連続値表示は、知覚均等で色覚多様性に配慮した Viridis を既定とする）。
-/// `t`（0.0–1.0、範囲外はクランプ）に応じて濃紫（0.0）→青緑→黄（1.0）へ区間線形補間する。
-pub fn viridis(t: f32) -> Color32 {
+/// LUT（`(t, Color32)` のアンカー点列。t 昇順・[0,1] を覆う）を区間線形補間する
+/// 共通ヘルパ。各カラーマップ（[`ColorMap::sample`]）はこれを呼ぶだけの薄い実装にする。
+/// `t` は 0.0–1.0 にクランプしてから探索する。
+fn lut_sample(lut: &[(f32, Color32)], t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
-    // LUT 内で t を挟む2点を探し、その区間で線形補間する（末尾は最終アンカーを返す）。
-    for w in VIRIDIS_LUT.windows(2) {
+    for w in lut.windows(2) {
         let (t0, c0) = w[0];
         let (t1, c1) = w[1];
         if t <= t1 {
@@ -135,7 +120,113 @@ pub fn viridis(t: f32) -> Color32 {
             );
         }
     }
-    VIRIDIS_LUT[VIRIDIS_LUT.len() - 1].1
+    lut.last().map(|&(_, c)| c).unwrap_or(WHITE)
+}
+
+/// Viridis カラーマップのアンカー点（matplotlib 版, t=0.000〜1.000 を 0.125 刻み）。
+const VIRIDIS_LUT: [(f32, Color32); 9] = [
+    (0.000, Color32::from_rgb(0x44, 0x01, 0x54)),
+    (0.125, Color32::from_rgb(0x48, 0x28, 0x78)),
+    (0.250, Color32::from_rgb(0x3E, 0x49, 0x89)),
+    (0.375, Color32::from_rgb(0x31, 0x68, 0x8E)),
+    (0.500, Color32::from_rgb(0x26, 0x82, 0x8E)),
+    (0.625, Color32::from_rgb(0x1F, 0x9E, 0x89)),
+    (0.750, Color32::from_rgb(0x35, 0xB7, 0x79)),
+    (0.875, Color32::from_rgb(0x6D, 0xCD, 0x59)),
+    (1.000, Color32::from_rgb(0xFD, 0xE7, 0x25)),
+];
+
+/// Plasma カラーマップのアンカー点（matplotlib 版, t=0.000〜1.000 を 0.125 刻み）。
+const PLASMA_LUT: [(f32, Color32); 9] = [
+    (0.000, Color32::from_rgb(0x0D, 0x08, 0x87)),
+    (0.125, Color32::from_rgb(0x46, 0x03, 0x9F)),
+    (0.250, Color32::from_rgb(0x72, 0x01, 0xA8)),
+    (0.375, Color32::from_rgb(0x9C, 0x17, 0x9E)),
+    (0.500, Color32::from_rgb(0xBD, 0x37, 0x86)),
+    (0.625, Color32::from_rgb(0xD8, 0x57, 0x6B)),
+    (0.750, Color32::from_rgb(0xED, 0x79, 0x53)),
+    (0.875, Color32::from_rgb(0xFB, 0x9F, 0x3A)),
+    (1.000, Color32::from_rgb(0xF0, 0xF9, 0x21)),
+];
+
+/// Turbo カラーマップのアンカー点（t=0.000〜1.000 を 0.125 刻み）。
+/// 端点（t=0.000/1.000）は Google 公開の 256 点参照テーブルの正確な値
+/// （インデックス 0 = `#30123B`、255 = `#7A0403`）、中間 7 点は広く知られた
+/// Turbo の 5 次多項式近似から算出した値で、暗青→シアン→緑→黄→橙→暗赤の
+/// 帯域配分を保つ。
+const TURBO_LUT: [(f32, Color32); 9] = [
+    (0.000, Color32::from_rgb(0x30, 0x12, 0x3B)),
+    (0.125, Color32::from_rgb(0x45, 0x69, 0xEE)),
+    (0.250, Color32::from_rgb(0x26, 0xBC, 0xE1)),
+    (0.375, Color32::from_rgb(0x3F, 0xF3, 0x93)),
+    (0.500, Color32::from_rgb(0x95, 0xFB, 0x51)),
+    (0.625, Color32::from_rgb(0xEC, 0xD1, 0x2E)),
+    (0.750, Color32::from_rgb(0xFF, 0x82, 0x1D)),
+    (0.875, Color32::from_rgb(0xCB, 0x2F, 0x0D)),
+    (1.000, Color32::from_rgb(0x7A, 0x04, 0x03)),
+];
+
+/// Jet カラーマップのアンカー点（伝統的な虹色レインボー。青→シアン→緑→黄→赤）。
+const JET_LUT: [(f32, Color32); 9] = [
+    (0.000, Color32::from_rgb(0x00, 0x00, 0x7F)),
+    (0.125, Color32::from_rgb(0x00, 0x00, 0xFF)),
+    (0.250, Color32::from_rgb(0x00, 0x7F, 0xFF)),
+    (0.375, Color32::from_rgb(0x00, 0xFF, 0xFF)),
+    (0.500, Color32::from_rgb(0x7F, 0xFF, 0x7F)),
+    (0.625, Color32::from_rgb(0xFF, 0xFF, 0x00)),
+    (0.750, Color32::from_rgb(0xFF, 0x7F, 0x00)),
+    (0.875, Color32::from_rgb(0xFF, 0x00, 0x00)),
+    (1.000, Color32::from_rgb(0x7F, 0x00, 0x00)),
+];
+
+/// 発散型（青-白-赤）カラーマップのアンカー点。独自色は使わず theme.rs の
+/// 既存色（[`DATA_BLUE`] / [`WHITE`] / [`PARETO_RED`]）のみで構成する。
+const BLUE_WHITE_RED_LUT: [(f32, Color32); 3] = [(0.0, DATA_BLUE), (0.5, WHITE), (1.0, PARETO_RED)];
+
+/// コンター等の連続値表示で選択可能なカラーマップ。
+///
+/// TONMANUAL §3「カラーマップ（連続値）」は「知覚均等で色覚多様性に配慮した Viridis を
+/// 既定とする」と規定しており、この規定は本 enum の `#[default]` を [`ColorMap::Viridis`]
+/// にすることで維持している。他の選択肢は UI からの明示的な切替のためのものであり、
+/// 既定動作を変更するものではない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ColorMap {
+    /// 知覚均等・色覚多様性配慮（TONMANUAL §3 既定）
+    #[default]
+    Viridis,
+    /// 知覚均等系（紫→赤→黄）
+    Plasma,
+    /// Google 開発の改良レインボー（知覚的な歪みを抑えたレインボー配色）
+    Turbo,
+    /// 伝統的な虹色レインボー（知覚均等ではないが慣れ親しまれている）
+    Jet,
+    /// 発散型（負=青／中央=白／正=赤）。符号のある値の可視化向け
+    BlueWhiteRed,
+}
+
+impl ColorMap {
+    /// UI 表示用ラベル。
+    pub fn label(&self) -> &'static str {
+        match self {
+            ColorMap::Viridis => "Viridis",
+            ColorMap::Plasma => "Plasma",
+            ColorMap::Turbo => "Turbo",
+            ColorMap::Jet => "Jet",
+            ColorMap::BlueWhiteRed => "青-白-赤",
+        }
+    }
+
+    /// `t`（0.0–1.0、範囲外はクランプ）をこのカラーマップの色へ写像する。
+    pub fn sample(&self, t: f32) -> Color32 {
+        let lut: &[(f32, Color32)] = match self {
+            ColorMap::Viridis => &VIRIDIS_LUT,
+            ColorMap::Plasma => &PLASMA_LUT,
+            ColorMap::Turbo => &TURBO_LUT,
+            ColorMap::Jet => &JET_LUT,
+            ColorMap::BlueWhiteRed => &BLUE_WHITE_RED_LUT,
+        };
+        lut_sample(lut, t)
+    }
 }
 
 /// TONMANUAL に沿ったテーマ（ライト基準・ブルークローム・角丸 4/6px・タイポスケール）を
@@ -231,18 +322,74 @@ pub fn apply_theme(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
-    /// アンカー点（t=0.0, 0.5, 1.0）は LUT の色そのものを返す。
+    /// TONMANUAL §3 の規定どおり、既定のカラーマップは Viridis。
     #[test]
-    fn viridis_matches_anchor_points() {
-        assert_eq!(viridis(0.0), Color32::from_rgb(0x44, 0x01, 0x54));
-        assert_eq!(viridis(0.5), Color32::from_rgb(0x26, 0x82, 0x8E));
-        assert_eq!(viridis(1.0), Color32::from_rgb(0xFD, 0xE7, 0x25));
+    fn colormap_default_is_viridis() {
+        assert_eq!(ColorMap::default(), ColorMap::Viridis);
     }
 
-    /// 範囲外の値はクランプされる。
+    /// 各カラーマップの端点（t=0.0 / t=1.0）が LUT の先頭・末尾の色と一致する。
     #[test]
-    fn viridis_clamps_out_of_range() {
-        assert_eq!(viridis(-5.0), viridis(0.0));
-        assert_eq!(viridis(5.0), viridis(1.0));
+    fn colormap_sample_matches_endpoint_anchors() {
+        assert_eq!(
+            ColorMap::Viridis.sample(0.0),
+            Color32::from_rgb(0x44, 0x01, 0x54)
+        );
+        assert_eq!(
+            ColorMap::Viridis.sample(1.0),
+            Color32::from_rgb(0xFD, 0xE7, 0x25)
+        );
+        assert_eq!(
+            ColorMap::Plasma.sample(0.0),
+            Color32::from_rgb(0x0D, 0x08, 0x87)
+        );
+        assert_eq!(
+            ColorMap::Plasma.sample(1.0),
+            Color32::from_rgb(0xF0, 0xF9, 0x21)
+        );
+        assert_eq!(
+            ColorMap::Turbo.sample(0.0),
+            Color32::from_rgb(0x30, 0x12, 0x3B)
+        );
+        assert_eq!(
+            ColorMap::Turbo.sample(1.0),
+            Color32::from_rgb(0x7A, 0x04, 0x03)
+        );
+        assert_eq!(
+            ColorMap::Jet.sample(0.0),
+            Color32::from_rgb(0x00, 0x00, 0x7F)
+        );
+        assert_eq!(
+            ColorMap::Jet.sample(1.0),
+            Color32::from_rgb(0x7F, 0x00, 0x00)
+        );
+        assert_eq!(ColorMap::BlueWhiteRed.sample(0.0), DATA_BLUE);
+        assert_eq!(ColorMap::BlueWhiteRed.sample(1.0), PARETO_RED);
+    }
+
+    /// 発散型（青-白-赤）は中央 t=0.5 がニュートラルな白になる。
+    #[test]
+    fn colormap_blue_white_red_midpoint_is_white() {
+        assert_eq!(ColorMap::BlueWhiteRed.sample(0.5), WHITE);
+    }
+
+    /// 範囲外の値はクランプされる（全カラーマップ共通の `lut_sample` の挙動）。
+    #[test]
+    fn colormap_sample_clamps_out_of_range() {
+        assert_eq!(
+            ColorMap::Viridis.sample(-5.0),
+            ColorMap::Viridis.sample(0.0)
+        );
+        assert_eq!(ColorMap::Viridis.sample(5.0), ColorMap::Viridis.sample(1.0));
+    }
+
+    /// 表示ラベルが想定どおり。
+    #[test]
+    fn colormap_labels() {
+        assert_eq!(ColorMap::Viridis.label(), "Viridis");
+        assert_eq!(ColorMap::Plasma.label(), "Plasma");
+        assert_eq!(ColorMap::Turbo.label(), "Turbo");
+        assert_eq!(ColorMap::Jet.label(), "Jet");
+        assert_eq!(ColorMap::BlueWhiteRed.label(), "青-白-赤");
     }
 }

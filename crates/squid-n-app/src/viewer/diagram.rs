@@ -103,14 +103,14 @@ fn diagram_poly_repr_val(poly: &[(f64, f64)]) -> f64 {
     }
 }
 
-/// コンター配色: `t = val/max_abs ∈ [-1,1]`（範囲外はクランプ）を色へ写像する。
-/// TONMANUAL §3「カラーマップ（連続値）」の規定に従い、知覚均等で色覚多様性に
-/// 配慮した [`theme::viridis`] を既定とする（−max=濃紫 → 0=青緑 → +max=黄）。
-/// 実体は `theme::viridis((t+1)/2)` への単純な写像で、独自の配色は持たない
-/// （テーマ＝配色の単一情報源は theme.rs 側に置く）。
-pub(crate) fn contour_color(t: f64) -> egui::Color32 {
+/// コンター配色: `t = val/max_abs ∈ [-1,1]`（範囲外はクランプ）を `map` の色へ写像する。
+/// TONMANUAL §3「カラーマップ（連続値）」は Viridis を既定に定めており（[`theme::ColorMap`]
+/// の `#[default]`）、UI からは他のカラーマップにも切り替えられる。実体は
+/// `map.sample((t+1)/2)` への単純な写像で、独自の配色は持たない（テーマ＝配色の
+/// 単一情報源は theme.rs 側に置く）。
+pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
     let t = (t as f32).clamp(-1.0, 1.0);
-    theme::viridis((t + 1.0) * 0.5)
+    map.sample((t + 1.0) * 0.5)
 }
 
 /// 部材ローカルに沿って N/Q/M 図を描く。
@@ -153,6 +153,7 @@ pub(super) fn draw_force_diagram(
     let amp_world = 60.0 / max_abs / scale as f64;
 
     let contour = app.diagram_contour;
+    let colormap = app.contour_colormap;
     // コンター時は色の階調のため各区間を細分する。モノクロ時は単色なので不要。
     let subdiv = if contour { CONTOUR_SUBDIV } else { 1 };
     // 塗りの不透明度: コンターは色そのものが情報を持つためモノクロより濃くする。
@@ -234,7 +235,7 @@ pub(super) fn draw_force_diagram(
                 poly.iter().map(|&(xi, v)| to_screen(xi, v)).collect();
             let fill_color = if contour {
                 let repr = diagram_poly_repr_val(&poly) / max_abs;
-                theme::translucent(contour_color(repr), fill_alpha)
+                theme::translucent(contour_color(repr, colormap), fill_alpha)
             } else {
                 theme::translucent(theme::DATA_BLUE, fill_alpha)
             };
@@ -277,14 +278,14 @@ pub(super) fn draw_force_diagram(
         theme::GRAY_700,
     );
     if contour {
-        draw_contour_legend(painter, max_abs);
+        draw_contour_legend(painter, max_abs, colormap);
     }
 }
 
 /// コンター表示時、凡例の下にカラーバー（グラデーション）を描く。
 /// 横 160px×縦 10px 程度のバーを短冊状に並べて描き、左端 −max・中央 0・右端 +max
 /// のラベルを添える。
-fn draw_contour_legend(painter: &egui::Painter, max_abs: f64) {
+fn draw_contour_legend(painter: &egui::Painter, max_abs: f64, colormap: theme::ColorMap) {
     const BAR_W: f32 = 160.0;
     const BAR_H: f32 = 10.0;
     const STRIPS: usize = 32;
@@ -295,7 +296,7 @@ fn draw_contour_legend(painter: &egui::Painter, max_abs: f64) {
 
     for i in 0..STRIPS {
         let t = (i as f64 + 0.5) / STRIPS as f64 * 2.0 - 1.0; // 短冊中央の t∈[-1,1]
-        let color = contour_color(t);
+        let color = contour_color(t, colormap);
         let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
         let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
         painter.rect_filled(
@@ -405,20 +406,21 @@ mod tests {
         assert!(diagram_fill_polygons(&[(0.0, 1.0)], 1).is_empty());
     }
 
-    /// t=-1 は Viridis の濃紫端（#440154）、t=+1 は黄端（#FDE725）、
+    /// Viridis（既定カラーマップ）で t=-1 は濃紫端（#440154）、t=+1 は黄端（#FDE725）、
     /// t=0 は中央の青緑（#26828E）へ写像される。
     #[test]
     fn contour_color_endpoints_and_neutral() {
+        let map = theme::ColorMap::Viridis;
         assert_eq!(
-            contour_color(-1.0),
+            contour_color(-1.0, map),
             egui::Color32::from_rgb(0x44, 0x01, 0x54)
         );
         assert_eq!(
-            contour_color(1.0),
+            contour_color(1.0, map),
             egui::Color32::from_rgb(0xFD, 0xE7, 0x25)
         );
         assert_eq!(
-            contour_color(0.0),
+            contour_color(0.0, map),
             egui::Color32::from_rgb(0x26, 0x82, 0x8E)
         );
     }
@@ -426,17 +428,27 @@ mod tests {
     /// 範囲外の値はクランプされる（t<-1 は t=-1 と同じ、t>1 は t=1 と同じ）。
     #[test]
     fn contour_color_clamps_out_of_range() {
-        assert_eq!(contour_color(-5.0), contour_color(-1.0));
-        assert_eq!(contour_color(5.0), contour_color(1.0));
+        let map = theme::ColorMap::Viridis;
+        assert_eq!(contour_color(-5.0, map), contour_color(-1.0, map));
+        assert_eq!(contour_color(5.0, map), contour_color(1.0, map));
     }
 
     /// Viridis は t の増加とともに G 成分が単調非減少（濃紫→青緑→黄で緑みが増す）。
     #[test]
     fn contour_color_green_channel_is_monotonic() {
+        let map = theme::ColorMap::Viridis;
         let ts = [-1.0, -0.5, 0.0, 0.5, 1.0];
-        let greens: Vec<u8> = ts.iter().map(|&t| contour_color(t).g()).collect();
+        let greens: Vec<u8> = ts.iter().map(|&t| contour_color(t, map).g()).collect();
         for w in greens.windows(2) {
             assert!(w[0] <= w[1], "G成分が非単調: {:?}", greens);
         }
+    }
+
+    /// カラーマップを切り替えると異なる色になる（同じ t でも Viridis と Jet で異なる）。
+    #[test]
+    fn contour_color_respects_selected_colormap() {
+        let viridis = contour_color(0.0, theme::ColorMap::Viridis);
+        let jet = contour_color(0.0, theme::ColorMap::Jet);
+        assert_ne!(viridis, jet);
     }
 }

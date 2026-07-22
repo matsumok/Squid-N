@@ -466,10 +466,28 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.selectable_value(&mut cmq_component, CmqComponent::Q, "Q(せん断)");
         });
     }
-    // N/Q/M 図: 単色塗り／コンター（値に応じた色分け）を切替
+    // N/Q/M 図: 単色塗り／コンター（値に応じた色分け）を切替。
+    // コンター ON 時のみカラーマップ選択（既定 Viridis。TONMANUAL §3）を表示する。
     if matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut app.diagram_contour, "コンター");
+            if app.diagram_contour {
+                let mut colormap = app.contour_colormap;
+                egui::ComboBox::from_id_salt("contour_colormap")
+                    .selected_text(colormap.label())
+                    .show_ui(ui, |ui| {
+                        for cm in [
+                            theme::ColorMap::Viridis,
+                            theme::ColorMap::Plasma,
+                            theme::ColorMap::Turbo,
+                            theme::ColorMap::Jet,
+                            theme::ColorMap::BlueWhiteRed,
+                        ] {
+                            ui.selectable_value(&mut colormap, cm, cm.label());
+                        }
+                    });
+                app.contour_colormap = colormap;
+            }
         });
     }
     if mode == ViewMode::Mode {
