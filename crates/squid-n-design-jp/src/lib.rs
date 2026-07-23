@@ -140,10 +140,12 @@ impl CheckKind {
 }
 
 /// 1 検定式分の結果（検定比の内訳）。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CheckComponent {
     pub kind: CheckKind,
     pub ratio: f64,
+    /// この検定式に固有の数値根拠（許容値・作用値・中間係数など）。
+    pub detail: String,
 }
 
 /// 1 検定位置の検定結果（検定を実施できた場合）。
@@ -155,6 +157,8 @@ pub struct CheckComponent {
 /// 検定式が確定している）。
 pub struct CheckResult {
     pub basis: String,
+    /// 全検定式に共通の数値根拠（断面諸元など）。式固有の情報は各
+    /// `CheckComponent::detail` に持つ。
     pub detail: String,
     /// 式別の検定比内訳（1件以上）。
     pub components: Vec<CheckComponent>,
@@ -321,6 +325,17 @@ impl CheckOutcome {
             }
         }
     }
+}
+
+/// 共通 detail と全式の detail を連結する（分割で情報が失われていないことの検証用）。
+#[cfg(test)]
+pub(crate) fn full_detail(cr: &CheckResult) -> String {
+    let mut s = cr.detail.clone();
+    for c in &cr.components {
+        s.push_str(", ");
+        s.push_str(&c.detail);
+    }
+    s
 }
 
 pub trait DesignCheck {

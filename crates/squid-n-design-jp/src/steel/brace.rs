@@ -36,6 +36,8 @@ pub(crate) fn check_brace(
         LoadTerm::Short => "短期",
     };
 
+    // 単一式（Axial）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     if forces.n < 0.0 {
         // 圧縮: σc/fc（座屈を考慮した許容圧縮応力度、鋼構造設計規準 1973）。
         let sigma_c = forces.n.abs() / area;
@@ -46,13 +48,14 @@ pub(crate) fn check_brace(
                 "鋼構造設計規準 {} ブレース: 圧縮 σc/fc(座屈考慮){}",
                 term_label, buckling_note
             ),
-            detail: format!(
-                "σc={:.4} N/mm², fc={:.4} N/mm², λ={:.3}",
-                sigma_c, fc_val, lambda
-            ),
+            detail: String::new(),
             components: vec![CheckComponent {
                 kind: CheckKind::Axial,
                 ratio,
+                detail: format!(
+                    "σc={:.4} N/mm², fc={:.4} N/mm², λ={:.3}",
+                    sigma_c, fc_val, lambda
+                ),
             }],
         }
     } else {
@@ -62,10 +65,11 @@ pub(crate) fn check_brace(
         let ratio = sigma_t / safe_denom(ft_val);
         CheckResult {
             basis: format!("鋼構造設計規準 {} ブレース: 引張 σt/ft", term_label),
-            detail: format!("σt={:.4} N/mm², ft={:.4} N/mm²", sigma_t, ft_val),
+            detail: String::new(),
             components: vec![CheckComponent {
                 kind: CheckKind::Axial,
                 ratio,
+                detail: format!("σt={:.4} N/mm², ft={:.4} N/mm²", sigma_t, ft_val),
             }],
         }
     }

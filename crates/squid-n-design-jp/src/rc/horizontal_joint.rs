@@ -309,12 +309,15 @@ fn finish(state: &str, tau_xy: f64, tau_u: f64) -> CheckResult {
     } else {
         f64::INFINITY
     };
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis: format!("PCa 水平接合面（{state}状態）せん断検定"),
-        detail: format!("τxy={tau_xy:.4} N/mm², τu={tau_u:.4} N/mm², ratio={ratio:.4}"),
+        detail: String::new(),
         components: vec![CheckComponent {
             kind: CheckKind::Shear,
             ratio,
+            detail: format!("τxy={tau_xy:.4} N/mm², τu={tau_u:.4} N/mm², ratio={ratio:.4}"),
         }],
     }
 }

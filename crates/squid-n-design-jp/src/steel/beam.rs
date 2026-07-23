@@ -201,27 +201,33 @@ pub(crate) fn check_beam(
         "鋼構造設計規準 {} 梁: 軸力+二軸曲げ・せん断・von Mises ({}, fb={})",
         term_label, axial_basis, fb_rule_label
     );
-    let mut detail = format!(
+    // 曲げ系（組合せ・単独曲げ・von Mises 合成応力度、いずれも Bending の
+    // ratio_bending を構成する値）。σax は組合せ・Mises の両方で使うため
+    // Bending 側に置く（Shear の τ とは独立）。
+    let bending_detail = format!(
         "σax={:.4} N/mm², σby={:.4} N/mm², σbz={:.4} N/mm², fc={:.4} N/mm², fb={:.4} N/mm², \
-τy={:.4} N/mm², τz={:.4} N/mm², 組合せ比={:.4}, My比={:.4}, Mz比={:.4}, Vy比={:.4}, Vz比={:.4}, \
-Mises比={:.4}",
+組合せ比={:.4}, My比={:.4}, Mz比={:.4}, Mises比={:.4}",
         sigma_ax,
         sigma_by,
         sigma_bz,
         fc_val,
         fb_strong,
-        tau_y,
-        tau_z,
         ratio_comb,
         ratio_my,
         ratio_mz,
-        ratio_vy,
-        ratio_vz,
         mises_ratio
     );
+    // せん断（強軸 Vy・弱軸 Vz）。
+    let shear_detail = format!(
+        "τy={:.4} N/mm², τz={:.4} N/mm², Vy比={:.4}, Vz比={:.4}",
+        tau_y, tau_z, ratio_vy, ratio_vz
+    );
 
+    // 共通: 検定比には含まれない参考情報（必要横補剛数・たわみ）。
+    // いずれの検定式の ratio 算定にも使われないため共通側に置く。
+    let mut detail = String::new();
     if let Some((n, lambda_y)) = steel_required_lateral_bracing_count(f, ctx.length, sec) {
-        detail.push_str(&format!(", 必要横補剛数n={} (λy={:.3})", n, lambda_y));
+        detail.push_str(&format!("必要横補剛数n={} (λy={:.3})", n, lambda_y));
     }
     if let Some(s) = steel_beam_deflection(ctx, sec, mat) {
         let ratio_str = if s.abs() > 1e-9 {
@@ -229,7 +235,10 @@ Mises比={:.4}",
         } else {
             "1/∞".to_string()
         };
-        detail.push_str(&format!(", たわみS={:.4} mm (S/l={})", s, ratio_str));
+        if !detail.is_empty() {
+            detail.push_str(", ");
+        }
+        detail.push_str(&format!("たわみS={:.4} mm (S/l={})", s, ratio_str));
     }
 
     // 曲げ系（組合せ・単独曲げ・von Mises 合成応力度）を Bending、
@@ -240,10 +249,12 @@ Mises比={:.4}",
         CheckComponent {
             kind: CheckKind::Bending,
             ratio: ratio_bending,
+            detail: bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_shear,
+            detail: shear_detail,
         },
     ];
 
@@ -413,6 +424,46 @@ mod tests {
     use crate::steel::SteelDesign;
     use crate::{DesignCheck, MemberKind};
     use squid_n_core::ids::SectionId;
+
+    // -------------------------------------------------------------
+    // 断片が意図した component に配置されていることの確認
+    // -------------------------------------------------------------
+
+    /// Bending の detail に "組合せ比=" が含まれ、Shear の detail には
+    /// 含まれない。逆に Shear 固有の "Vy比=" は Bending に含まれない。
+    #[test]
+    fn test_check_beam_detail_fragments_assigned_to_intended_components() {
+        let sec = h_section(400.0, 200.0, 8.0, 13.0);
+        let m = mat("SN400B");
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: 0.0,
+            qy: 10_000.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 1.0e8,
+        };
+        let ctx = DesignCtx {
+            kind: MemberKind::Beam,
+            length: 4000.0,
+            ..Default::default()
+        };
+        let result = SteelDesign.check(&forces, &sec, &m, &ctx).unwrap_checked();
+        let bending = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .expect("Bending component が存在するはず");
+        let shear = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Shear)
+            .expect("Shear component が存在するはず");
+        assert!(bending.detail.contains("組合せ比="));
+        assert!(!shear.detail.contains("組合せ比="));
+        assert!(shear.detail.contains("Vy比="));
+        assert!(!bending.detail.contains("Vy比="));
+    }
 
     // -------------------------------------------------------------
     // SteelDesignAttr の配線（断面欠損 Z'・横座屈長さ lb）
@@ -586,11 +637,9 @@ mod tests {
         let (i_t, af) = steel_lateral_buckling_i_af(&sec, 13.0, 8.0);
         let fb_direct_expected = steel_fb_h(f, LoadTerm::Long, 6000.0, i_t, 400.0, af, 1.5);
         assert!(
-            direct
-                .detail
-                .contains(&format!("fb={:.4}", fb_direct_expected)),
+            crate::full_detail(&direct).contains(&format!("fb={:.4}", fb_direct_expected)),
             "detail={}",
-            direct.detail
+            crate::full_detail(&direct)
         );
     }
 
@@ -637,11 +686,9 @@ mod tests {
         let lb = 3000.0;
         let fb_c1_expected = steel_fb_h(f, LoadTerm::Long, lb, i_t, 400.0, af, 1.0);
         assert!(
-            no_direct
-                .detail
-                .contains(&format!("fb={:.4}", fb_c1_expected)),
+            crate::full_detail(&no_direct).contains(&format!("fb={:.4}", fb_c1_expected)),
             "部分区間では C=1.0 が採用されるはず: detail={}",
-            no_direct.detail
+            crate::full_detail(&no_direct)
         );
 
         let ctx_direct = DesignCtx {
@@ -666,9 +713,9 @@ mod tests {
             .unwrap_checked();
         let fb_c2_expected = steel_fb_h(f, LoadTerm::Long, lb, i_t, 400.0, af, 2.0);
         assert!(
-            direct.detail.contains(&format!("fb={:.4}", fb_c2_expected)),
+            crate::full_detail(&direct).contains(&format!("fb={:.4}", fb_c2_expected)),
             "直接入力の C=2.0 が採用され C=1.0 に落ちないはず: detail={}",
-            direct.detail
+            crate::full_detail(&direct)
         );
     }
 
@@ -712,9 +759,9 @@ mod tests {
         let (i_t, af) = steel_lateral_buckling_i_af(&sec, 13.0, 8.0);
         let fb_expected = steel_fb_h(f, LoadTerm::Long, 6000.0, i_t, 400.0, af, 1.0);
         assert!(
-            result.detail.contains(&format!("fb={:.4}", fb_expected)),
+            crate::full_detail(&result).contains(&format!("fb={:.4}", fb_expected)),
             "c_direct<=0 は無視され C=1.0（自動算定）になるはず: detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -758,7 +805,7 @@ mod tests {
             expected_ratio
         );
         assert!(result.ok());
-        assert!(result.detail.contains("18.7500"));
+        assert!(crate::full_detail(&result).contains("18.7500"));
         // 曲げ単独ケースでも components に Bending・Shear が入ることを確認する。
         assert_eq!(result.components.len(), 2);
         assert!(result
@@ -872,9 +919,9 @@ mod tests {
             .unwrap_checked();
         // F=215（40mm 超）→ fb=ft=215/1.5=143.33...
         assert!(
-            result.detail.contains("fb=143.3"),
+            crate::full_detail(&result).contains("fb=143.3"),
             "detail should show fb from F=215: {}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -1176,9 +1223,9 @@ mod tests {
         let (i_t, af) = steel_lateral_buckling_i_af(&sec, 13.0, 8.0);
         let fb_expected = steel_fb_h(f, LoadTerm::Long, 6000.0, i_t, 400.0, af, 1.0);
         assert!(
-            result.detail.contains(&format!("fb={:.4}", fb_expected)),
+            crate::full_detail(&result).contains(&format!("fb={:.4}", fb_expected)),
             "detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -1253,9 +1300,9 @@ mod tests {
             expected
         );
         assert!(
-            result.detail.contains(&format!("fb={:.4}", fb_expected)),
+            crate::full_detail(&result).contains(&format!("fb={:.4}", fb_expected)),
             "detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -1457,9 +1504,9 @@ mod tests {
             .check(&forces, &sec, &mat_v, &ctx)
             .unwrap_checked();
         assert!(
-            result.detail.contains("必要横補剛数n="),
+            crate::full_detail(&result).contains("必要横補剛数n="),
             "detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -1572,9 +1619,9 @@ mod tests {
             .check(&forces, &sec, &mat_v, &ctx_long)
             .unwrap_checked();
         assert!(
-            result_long.detail.contains("たわみS="),
+            crate::full_detail(&result_long).contains("たわみS="),
             "detail={}",
-            result_long.detail
+            crate::full_detail(&result_long)
         );
 
         let ctx_short = DesignCtx {
@@ -1589,9 +1636,9 @@ mod tests {
             .check(&forces, &sec, &mat_v, &ctx_short)
             .unwrap_checked();
         assert!(
-            !result_short.detail.contains("たわみS="),
+            !crate::full_detail(&result_short).contains("たわみS="),
             "detail={}",
-            result_short.detail
+            crate::full_detail(&result_short)
         );
     }
 }

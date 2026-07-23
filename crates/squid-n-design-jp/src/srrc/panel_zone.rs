@@ -111,17 +111,18 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         "SRC規準 柱梁接合部（パネル）せん断検定 {} ({})",
         shape_label, term_label
     );
-    let detail = format!(
-        "cV={:.1} mm3, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
-        cv, beta, j_delta, fs, ma, md, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components: vec![CheckComponent {
             kind: CheckKind::Shear,
             ratio,
+            detail: format!(
+                "cV={:.1} mm3, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
+                cv, beta, j_delta, fs, ma, md, ratio
+            ),
         }],
     }
 }

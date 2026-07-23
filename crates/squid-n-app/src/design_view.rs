@@ -92,6 +92,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         ratio: Option<f64>,
         ok: Option<bool>,
         basis: String,
+        /// 全検定式に共通の数値根拠（根拠セルのホバー表示用）。
+        detail: String,
         components: Vec<squid_n_design_jp::CheckComponent>,
     }
     let checks: Vec<CheckRow> = app
@@ -108,6 +110,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                             ratio: Some(cr.ratio()),
                             ok: Some(cr.ok()),
                             basis: cr.basis.clone(),
+                            detail: cr.detail.clone(),
                             components: cr.components.clone(),
                         },
                         squid_n_design_jp::CheckOutcome::Skipped { reason } => CheckRow {
@@ -116,6 +119,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                             ratio: None,
                             ok: None,
                             basis: reason.clone(),
+                            detail: String::new(),
                             components: Vec::new(),
                         },
                     })
@@ -218,7 +222,11 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
                 row.col(|ui| {
-                    ui.label(&r.basis);
+                    if r.detail.is_empty() {
+                        ui.label(&r.basis);
+                    } else {
+                        ui.label(&r.basis).on_hover_text(&r.detail);
+                    }
                 });
                 row.col(|ui| {
                     if r.components.is_empty() {
@@ -232,7 +240,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                                 ui.colored_label(
                                     crate::theme::status_color(c.ratio),
                                     format!("{} {:.2}", c.kind.label(), c.ratio),
-                                );
+                                )
+                                .on_hover_text(&c.detail);
                             }
                         });
                     }
@@ -270,6 +279,9 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         ratio: Option<f64>,
         ok: Option<bool>,
         basis: String,
+        /// 根拠セルのホバー表示用（単一式なので component の detail。
+        /// 共通 detail がある場合はその後に連結する）。
+        detail: String,
     }
     let joint_checks: Vec<JointCheckRow> = app
         .results
@@ -278,19 +290,30 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             r.joint_checks
                 .iter()
                 .map(|j| match &j.outcome {
-                    squid_n_design_jp::CheckOutcome::Checked(cr) => JointCheckRow {
-                        node: j.node,
-                        label: j.label.clone(),
-                        ratio: Some(cr.ratio()),
-                        ok: Some(cr.ok()),
-                        basis: cr.basis.clone(),
-                    },
+                    squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                        let mut detail = cr.detail.clone();
+                        if let Some(c) = cr.components.first() {
+                            if !detail.is_empty() {
+                                detail.push_str(", ");
+                            }
+                            detail.push_str(&c.detail);
+                        }
+                        JointCheckRow {
+                            node: j.node,
+                            label: j.label.clone(),
+                            ratio: Some(cr.ratio()),
+                            ok: Some(cr.ok()),
+                            basis: cr.basis.clone(),
+                            detail,
+                        }
+                    }
                     squid_n_design_jp::CheckOutcome::Skipped { reason } => JointCheckRow {
                         node: j.node,
                         label: j.label.clone(),
                         ratio: None,
                         ok: None,
                         basis: reason.clone(),
+                        detail: String::new(),
                     },
                 })
                 .collect()
@@ -350,7 +373,11 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(&j.basis);
+                        if j.detail.is_empty() {
+                            ui.label(&j.basis);
+                        } else {
+                            ui.label(&j.basis).on_hover_text(&j.detail);
+                        }
                     });
                 });
             });

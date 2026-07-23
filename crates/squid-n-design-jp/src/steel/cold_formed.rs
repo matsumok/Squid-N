@@ -79,25 +79,26 @@ pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     };
     let basis =
         "2008年版冷間成形角形鋼管設計・施工マニュアル 柱梁耐力比（NG時も耐力低減なし）".to_string();
-    let detail = format!(
-        "nu_upper={:.4}, nu_lower={:.4}, SumMpc={:.1} N*mm, 1.5*SumMpb={:.1} N*mm, 1.3*Mpp={:.1} N*mm, required={:.1} N*mm, ratio={:.4}",
-        nu_upper,
-        nu_lower,
-        sum_mpc,
-        beam_req,
-        1.3 * inp.panel_mpp,
-        required,
-        ratio
-    );
-
+    // 単一式（AxialBending）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         // 柱の軸力低減耐力νと梁の全塑性モーメント和の比較（柱梁耐力比）のため
         // AxialBending（軸力＋曲げの複合）に分類する。
         components: vec![CheckComponent {
             kind: CheckKind::AxialBending,
             ratio,
+            detail: format!(
+                "nu_upper={:.4}, nu_lower={:.4}, SumMpc={:.1} N*mm, 1.5*SumMpb={:.1} N*mm, 1.3*Mpp={:.1} N*mm, required={:.1} N*mm, ratio={:.4}",
+                nu_upper,
+                nu_lower,
+                sum_mpc,
+                beam_req,
+                1.3 * inp.panel_mpp,
+                required,
+                ratio
+            ),
         }],
     }
 }

@@ -121,33 +121,33 @@ pub(crate) fn src_beam_check(
     } else {
         "弾性分担"
     };
-    let detail = format!(
-        "sMo={:.1} N·mm, rMA={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm, \
-         sQ={:.1} N, rQ={:.1} N, sQA={:.1} N, rQA={:.1} N, α={:.3}, pw={:.5}, \
+    // Bending 固有: 鉄骨・RC 単純累加の許容曲げモーメントと作用モーメント。
+    let bending_detail = format!(
+        "sMo={:.1} N·mm, rMA={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm",
+        s_mo, r_ma, ma, forces.mz,
+    );
+    // Shear 固有: 鉄骨・RC の弾性分担せん断力・許容せん断力・せん断スパン比・
+    // せん断補強筋比・設計用せん断力の決定方式。
+    let shear_detail = format!(
+        "sQ={:.1} N, rQ={:.1} N, sQA={:.1} N, rQA={:.1} N, α={:.3}, pw={:.5}, \
          設計用せん断力={qd_note}",
-        s_mo,
-        r_ma,
-        ma,
-        forces.mz,
-        shear.s_q,
-        shear.r_q,
-        shear.s_qa,
-        shear.r_qa,
-        shear.alpha,
-        shear.pw
+        shear.s_q, shear.r_q, shear.s_qa, shear.r_qa, shear.alpha, shear.pw
     );
 
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components: vec![
             CheckComponent {
                 kind: CheckKind::Bending,
                 ratio: ratio_m,
+                detail: bending_detail,
             },
             CheckComponent {
                 kind: CheckKind::Shear,
                 ratio: shear.ratio,
+                detail: shear_detail,
             },
         ],
     }

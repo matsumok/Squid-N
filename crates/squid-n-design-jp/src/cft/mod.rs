@@ -371,31 +371,31 @@ fn cft_box_check(
     let ratio_shear = ratio_shear_y.max(ratio_shear_z);
 
     let basis = "CFT柱(角形): SRC規準に基づく累加強度式".to_string();
-    let detail = format!(
+    // AxialBending 固有: 軸耐力（コンクリート・鋼管の圧縮/引張）と作用軸力・
+    // 二軸曲げ耐力・作用モーメント（いずれも軸+曲げの複合検定の値）。
+    let axial_bending_detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MAz={:.1} N·mm, MAy={:.1} N·mm, \
-         mz={:.1} N·mm, my={:.1} N·mm, sQAy={:.1} N, sQAz={:.1} N, qy={:.1} N, qz={:.1} N",
-        cnc,
-        s_nc,
-        s_nt,
-        n_design,
-        ma_z,
-        ma_y,
-        forces.mz,
-        forces.my,
-        s_qa_y,
-        s_qa_z,
-        forces.qy,
-        forces.qz
+         mz={:.1} N·mm, my={:.1} N·mm",
+        cnc, s_nc, s_nt, n_design, ma_z, ma_y, forces.mz, forces.my,
     );
+    // Shear 固有: 許容せん断力・作用せん断力。
+    let shear_detail = format!(
+        "sQAy={:.1} N, sQAz={:.1} N, qy={:.1} N, qz={:.1} N",
+        s_qa_y, s_qa_z, forces.qy, forces.qz
+    );
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    let detail = String::new();
 
     let components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial.max(ratio_biaxial),
+            detail: axial_bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_shear,
+            detail: shear_detail,
         },
     ];
 
@@ -475,20 +475,30 @@ fn cft_pipe_check(
     let ratio_shear = if s_qa > 1e-9 { q_res / s_qa } else { 0.0 };
 
     let basis = "CFT柱(円形): SRC規準に基づく累加強度式".to_string();
-    let detail = format!(
+    // AxialBending 固有: 軸耐力・作用軸力・曲げ耐力・作用モーメント。
+    let axial_bending_detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MA={:.1} N·mm, mz={:.1} N·mm, \
-         my={:.1} N·mm, sQA={:.1} N, qy={:.1} N, qz={:.1} N",
-        cnc, s_nc, s_nt, n_design, ma, forces.mz, forces.my, s_qa, forces.qy, forces.qz
+         my={:.1} N·mm",
+        cnc, s_nc, s_nt, n_design, ma, forces.mz, forces.my,
     );
+    // Shear 固有: 許容せん断力・作用せん断力（二軸合成）。
+    let shear_detail = format!(
+        "sQA={:.1} N, qy={:.1} N, qz={:.1} N",
+        s_qa, forces.qy, forces.qz
+    );
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    let detail = String::new();
 
     let components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial.max(ratio_biaxial),
+            detail: axial_bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_shear,
+            detail: shear_detail,
         },
     ];
 

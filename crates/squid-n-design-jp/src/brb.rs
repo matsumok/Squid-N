@@ -55,17 +55,20 @@ pub fn brb_check(
     let ratio = ratio_axial.max(ratio_length);
     let term_label = if long_term { "長期" } else { "短期" };
 
+    // 単一式（Axial）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis: "座屈補剛ブレース（メーカー許容値による検定）".to_string(),
-        detail: format!(
-            "{}: |N|={:.4} N, Na={:.4} N, N/Na={:.4} / Lk={:.4} mm, 限界座屈長={:.4} mm, Lk/限界座屈長={:.4}",
-            term_label, n_design.abs(), na, ratio_axial, lk, attr.critical_length, ratio_length
-        ),
+        detail: String::new(),
         // 軸力検定・座屈長さ検定ともブレース軸材の負担能力に関する検定のため
         // Axial にまとめる。
         components: vec![CheckComponent {
             kind: CheckKind::Axial,
             ratio,
+            detail: format!(
+                "{}: |N|={:.4} N, Na={:.4} N, N/Na={:.4} / Lk={:.4} mm, 限界座屈長={:.4} mm, Lk/限界座屈長={:.4}",
+                term_label, n_design.abs(), na, ratio_axial, lk, attr.critical_length, ratio_length
+            ),
         }],
     }
 }

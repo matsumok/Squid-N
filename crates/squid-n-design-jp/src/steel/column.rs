@@ -145,30 +145,31 @@ pub(crate) fn check_column(
         "鋼構造設計規準 {} 柱: {}{}, せん断 von Mises",
         term_label, axial_basis, buckling_note
     );
-    let detail = format!(
+    // AxialBending 固有: 応力度・許容応力度（座屈考慮 fc・横座屈考慮 fbX・
+    // fbY）・細長比 λ・軸+曲げ検定比。
+    let axial_bending_detail = format!(
         "σax={:.4} N/mm², σbX={:.4} N/mm², σbY={:.4} N/mm², fc={:.4} N/mm², fbX={:.4} N/mm², \
-fbY={:.4} N/mm², λ={:.3}, τ={:.4} N/mm², fs={:.4} N/mm², 軸曲げ比={:.4}, せん断比={:.4}",
-        axial_stress,
-        sigma_bx,
-        sigma_by,
-        fc_val,
-        fb_strong,
-        fb_weak,
-        lambda,
-        tau,
-        fs_val,
-        ratio_axial_bend,
-        ratio_shear
+fbY={:.4} N/mm², λ={:.3}, 軸曲げ比={:.4}",
+        axial_stress, sigma_bx, sigma_by, fc_val, fb_strong, fb_weak, lambda, ratio_axial_bend,
     );
+    // Shear 固有: せん断応力度・許容せん断応力度・せん断（von Mises）検定比。
+    let shear_detail = format!(
+        "τ={:.4} N/mm², fs={:.4} N/mm², せん断比={:.4}",
+        tau, fs_val, ratio_shear
+    );
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    let detail = String::new();
 
     let components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial_bend,
+            detail: axial_bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_shear,
+            detail: shear_detail,
         },
     ];
 
@@ -189,6 +190,47 @@ mod tests {
     // -------------------------------------------------------------
     // 柱検定
     // -------------------------------------------------------------
+
+    /// 断片が意図した component に配置されていることの確認
+    /// （AxialBending の detail に "軸曲げ比" が含まれ、Shear の detail には
+    /// 含まれない。逆に Shear 固有の "せん断比" は AxialBending に含まれない）。
+    #[test]
+    fn test_column_check_detail_fragments_assigned_to_intended_components() {
+        let mut sec = rect_section(300.0, 300.0, "H-300x300x10x15");
+        sec.thickness = Some(15.0);
+        let mat_v = mat("SN400");
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: -500_000.0,
+            qy: 20_000.0,
+            qz: 0.0,
+            my: 20e6,
+            mz: 50e6,
+        };
+        let ctx = DesignCtx {
+            term: LoadTerm::Long,
+            kind: MemberKind::Column,
+            length: 3500.0,
+            ..Default::default()
+        };
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
+        let axial_bending = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::AxialBending)
+            .expect("AxialBending component が存在するはず");
+        let shear = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Shear)
+            .expect("Shear component が存在するはず");
+        assert!(axial_bending.detail.contains("軸曲げ比"));
+        assert!(!shear.detail.contains("軸曲げ比"));
+        assert!(shear.detail.contains("せん断比"));
+        assert!(!axial_bending.detail.contains("せん断比"));
+    }
 
     #[test]
     fn test_column_check_axial_biaxial_bending_hand_calc() {
@@ -226,7 +268,7 @@ mod tests {
         let fc = steel_fc(235.0, lambda, LoadTerm::Long);
         let ft = steel_ft(235.0, LoadTerm::Long);
         // fbX は横座屈考慮（H形）、fbY=ft。ここでは非負・上限 ft であることのみ検証。
-        assert!(result.detail.contains("軸曲げ比"));
+        assert!(crate::full_detail(&result).contains("軸曲げ比"));
         assert!(sigma_c > 0.0 && sigma_bx > 0.0 && sigma_by > 0.0 && fc > 0.0 && ft > 0.0);
         // 軸+曲げ比は少なくとも σc/fc 単独の比より大きい（曲げ項が加算されるため）。
         assert!(result.ratio() >= sigma_c / fc - 1e-9);
@@ -481,9 +523,9 @@ mod tests {
         let c = steel_c_factor(&ctx, false);
         let fb_expected = steel_fb_h(f, LoadTerm::Long, 3500.0, i_t, 400.0, af, c);
         assert!(
-            result.detail.contains(&format!("fbX={:.4}", fb_expected)),
+            crate::full_detail(&result).contains(&format!("fbX={:.4}", fb_expected)),
             "detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 
@@ -534,9 +576,9 @@ mod tests {
             p_lambda_b,
         );
         assert!(
-            result.detail.contains(&format!("fbX={:.4}", fb_expected)),
+            crate::full_detail(&result).contains(&format!("fbX={:.4}", fb_expected)),
             "detail={}",
-            result.detail
+            crate::full_detail(&result)
         );
     }
 }

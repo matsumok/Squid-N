@@ -129,17 +129,18 @@ pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
     };
     let term_label = if inp.long_term { "長期" } else { "短期" };
     let basis = format!("RC規準18条 耐震壁せん断検定 ({})", term_label);
-    let detail = format!(
-        "fs={:.4} N/mm2, r={:.4}, le={:.1} mm, Q1={:.1} N, Qw={:.1} N, SumQc={:.1} N, Q2={:.1} N, Qa={:.1} N, ratio={:.4}",
-        fs, r, le, q1, qw, sum_qc, q2, qa, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components: vec![CheckComponent {
             kind: CheckKind::Shear,
             ratio,
+            detail: format!(
+                "fs={:.4} N/mm2, r={:.4}, le={:.1} mm, Q1={:.1} N, Qw={:.1} N, SumQc={:.1} N, Q2={:.1} N, Qa={:.1} N, ratio={:.4}",
+                fs, r, le, q1, qw, sum_qc, q2, qa, ratio
+            ),
         }],
     }
 }

@@ -184,7 +184,40 @@ fn test_cft_box_n_exceeds_cnc_steel_only() {
     };
     let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
     assert!(r.ratio().is_finite());
-    assert!(r.detail.contains("cNc"));
+    assert!(crate::full_detail(&r).contains("cNc"));
+}
+
+/// 断片が意図した component に配置されていることの確認
+/// （AxialBending の detail に "cNc=" が含まれ、Shear の detail には
+/// 含まれない。逆に Shear 固有の "sQAy=" は AxialBending に含まれない）。
+#[test]
+fn test_cft_box_detail_fragments_assigned_to_intended_components() {
+    let sec = cft_box_section(400.0, 300.0, 9.0);
+    let mat = make_material(24.0, "SN400B");
+    let ctx = ctx_column(LoadTerm::Long);
+    let design = CftDesign;
+
+    let forces = MemberForcesAt {
+        n: -500_000.0,
+        mz: 1_000_000.0,
+        qy: 20_000.0,
+        ..zero_forces()
+    };
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    let axial_bending = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::AxialBending)
+        .expect("AxialBending component が存在するはず");
+    let shear = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::Shear)
+        .expect("Shear component が存在するはず");
+    assert!(axial_bending.detail.contains("cNc="));
+    assert!(!shear.detail.contains("cNc="));
+    assert!(shear.detail.contains("sQAy="));
+    assert!(!axial_bending.detail.contains("sQAy="));
 }
 
 #[test]

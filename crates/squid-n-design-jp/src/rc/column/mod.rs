@@ -128,31 +128,30 @@ pub(crate) fn column_check(
         let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
         let basis = "RC 規準14条（円形柱、等価矩形近似）".to_string();
-        let detail = format!(
-            "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm, \
-             QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw={:.5}, at={:.1} mm², d={:.1} mm",
-            na,
-            n_design,
-            ma,
-            forces.mz,
-            forces.my,
-            qay,
-            qaz,
-            alpha_y,
-            alpha_z,
-            axis.props.pw,
-            axis.props.at,
-            axis.props.d
+        // AxialBending 固有: 軸耐力・作用軸力・等価矩形近似の曲げ耐力・作用モーメント。
+        let axial_bending_detail = format!(
+            "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm",
+            na, n_design, ma, forces.mz, forces.my,
         );
+        // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比。
+        let shear_detail = format!(
+            "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw={:.5}",
+            qay, qaz, alpha_y, alpha_z, axis.props.pw,
+        );
+        // 共通: 軸+曲げ（N-M 相関曲線）・せん断の双方で用いる断面諸元
+        // （円形柱は強軸・弱軸で axis.props を共有するため）。
+        let detail = format!("at={:.1} mm², d={:.1} mm", axis.props.at, axis.props.d);
 
         let components = vec![
             CheckComponent {
                 kind: CheckKind::AxialBending,
                 ratio: ratio_axial.max(ratio_moment),
+                detail: axial_bending_detail,
             },
             CheckComponent {
                 kind: CheckKind::Shear,
                 ratio: ratio_qy.max(ratio_qz),
+                detail: shear_detail,
             },
         ];
 
@@ -285,31 +284,30 @@ pub(crate) fn column_check(
     let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
     let basis = "RC 規準14条（柱、軸力+二軸曲げ+せん断）".to_string();
-    let detail = format!(
-        "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, \
-         QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw_z={:.5}, pw_y={:.5}",
-        na,
-        n_design,
-        ma_z,
-        ma_y,
-        forces.mz,
-        forces.my,
-        qay,
-        qaz,
-        alpha_y,
-        alpha_z,
-        axis_z.props.pw,
-        axis_y.props.pw
+    // AxialBending 固有: 軸耐力・作用軸力・強軸/弱軸それぞれの曲げ耐力・作用モーメント。
+    let axial_bending_detail = format!(
+        "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm",
+        na, n_design, ma_z, ma_y, forces.mz, forces.my,
     );
+    // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比
+    // （矩形柱は強軸・弱軸で axis_z/axis_y が別断面諸元のため、pw も方向別）。
+    let shear_detail = format!(
+        "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw_z={:.5}, pw_y={:.5}",
+        qay, qaz, alpha_y, alpha_z, axis_z.props.pw, axis_y.props.pw
+    );
+    // 矩形柱は強軸・弱軸で断面諸元を共有しないため共通 detail は空文字列とする。
+    let detail = String::new();
 
     let components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial.max(ratio_moment),
+            detail: axial_bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_qy.max(ratio_qz),
+            detail: shear_detail,
         },
     ];
 

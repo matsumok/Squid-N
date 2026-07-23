@@ -508,10 +508,11 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
         "側柱付き壁でせん断非線形トリリニアが出力される"
     );
     let (_, _, cr) = nl.unwrap();
+    let full = crate::full_detail(cr);
     assert!(
-        cr.detail.contains("Qc=") && cr.detail.contains("βu=") && cr.detail.contains("Qu="),
+        full.contains("Qc=") && full.contains("βu=") && full.contains("Qu="),
         "detail にトリリニア諸元が含まれる: {}",
-        cr.detail
+        full
     );
     assert!(cr.ratio() > 0.0, "Qu 検定比が正: {}", cr.ratio());
 
@@ -654,5 +655,6 @@ fn rc_cross_joint_emits_ultimate_check() {
         .expect("十字形 RC 接合部は終局検定が出力されるはず");
     // Vju/Qdu が有限で、詳細に κ=1.00（十字形）が含まれる。
     assert!(ult.2.ratio().is_finite());
-    assert!(ult.2.detail.contains("κ=1.00"), "detail={}", ult.2.detail);
+    let full = crate::full_detail(&ult.2);
+    assert!(full.contains("κ=1.00"), "detail={}", full);
 }

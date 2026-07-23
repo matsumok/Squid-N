@@ -134,17 +134,18 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         JointShape::Corner => "L字形(kappaA=3)",
     };
     let basis = format!("RC規準15条 柱梁接合部せん断検定 {}", shape_label);
-    let detail = format!(
-        "fs={:.4} N/mm2, bj={:.2} mm, QAj={:.1} N, xi={:.4}, Qdj1={:.1} N, Qdj2={:.1} N, Qdj={:.1} N, ratio={:.4}",
-        fs, bj, qaj, xi, qdj1, qdj2, qdj, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components: vec![CheckComponent {
             kind: CheckKind::Shear,
             ratio,
+            detail: format!(
+                "fs={:.4} N/mm2, bj={:.2} mm, QAj={:.1} N, xi={:.4}, Qdj1={:.1} N, Qdj2={:.1} N, Qdj={:.1} N, ratio={:.4}",
+                fs, bj, qaj, xi, qdj1, qdj2, qdj, ratio
+            ),
         }],
     }
 }

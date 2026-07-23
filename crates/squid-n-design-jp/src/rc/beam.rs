@@ -179,9 +179,12 @@ pub(crate) fn beam_check(
     let ratio_bond = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
 
     let basis = "RC 規準13条（梁の曲げ・せん断・付着）".to_string();
-    let bond_detail = match &bond {
-        Some(b) => format!(
-            ", ld={:.1} mm, ldb={:.1} mm, K={:.3}, W={:.3} mm, fb={:.3} N/mm², \
+    // 付着検定を実施できた場合はその detail を Bond component に持たせる。
+    // 実施できない（bond=None）場合は Bond component 自体が存在しないため、
+    // 省略の旨は共通 detail の末尾に置く。
+    let bond_detail = bond.as_ref().map(|b| {
+        format!(
+            "ld={:.1} mm, ldb={:.1} mm, K={:.3}, W={:.3} mm, fb={:.3} N/mm², \
              σt={:.1} N/mm², 付着検定比={:.3}（{}）",
             b.ld,
             b.ldb,
@@ -195,45 +198,54 @@ pub(crate) fn beam_check(
             } else {
                 "中央・下端筋"
             }
-        ),
-        None => ", 付着検定: 部材長(柱面間距離)が未設定のため省略".to_string(),
-    };
+        )
+    });
+    // 高強度せん断補強筋: w_ft の根拠はせん断検定固有の係数のため Shear へ。
     let shear_grade_detail = match shear_grade {
         Some(g) => format!(", 高強度せん断補強筋={g}, w_ft={:.1} N/mm²", allow.w_ft),
         None => String::new(),
     };
+    // Bending 固有: 許容曲げモーメント（引張・圧縮支配それぞれ）と作用モーメント。
+    let bending_detail = format!(
+        "MA_t={:.1} N·mm, MA_c={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm",
+        bm.ma_t, bm.ma_c, bm.ma, forces.mz,
+    );
+    // Shear 固有: 許容せん断力・作用せん断力・せん断スパン比 α・
+    // せん断補強筋比 pw（いずれもせん断式の係数）。
+    let shear_detail = format!(
+        "QA={:.1} N, |qy|={:.1} N, α={:.3}, pw={:.5}{}",
+        qa, forces.qy, alpha, props.pw, shear_grade_detail,
+    );
+    // 共通: 曲げ・付着の双方で使う断面諸元（at・d・j）。付着省略時はその旨を追記。
     let detail = format!(
-        "MA_t={:.1} N·mm, MA_c={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm, \
-         QA={:.1} N, |qy|={:.1} N, α={:.3}, pw={:.5}, at={:.1} mm², d={:.1} mm, j={:.1} mm{}{}",
-        bm.ma_t,
-        bm.ma_c,
-        bm.ma,
-        forces.mz,
-        qa,
-        forces.qy,
-        alpha,
-        props.pw,
+        "at={:.1} mm², d={:.1} mm, j={:.1} mm{}",
         props.at,
         props.d,
         props.j,
-        shear_grade_detail,
-        bond_detail,
+        if bond.is_some() {
+            ""
+        } else {
+            ", 付着検定: 部材長(柱面間距離)が未設定のため省略"
+        },
     );
 
     let mut components = vec![
         CheckComponent {
             kind: CheckKind::Bending,
             ratio: ratio_m,
+            detail: bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: ratio_q,
+            detail: shear_detail,
         },
     ];
-    if bond.is_some() {
+    if let Some(bond_detail) = bond_detail {
         components.push(CheckComponent {
             kind: CheckKind::Bond,
             ratio: ratio_bond,
+            detail: bond_detail,
         });
     }
 
@@ -420,8 +432,8 @@ mod tests {
         };
         let design = crate::rc::RcDesign;
         let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-        assert!(result.detail.contains("KH785"));
-        assert!(result.detail.contains("w_ft=590"));
+        assert!(crate::full_detail(&result).contains("KH785"));
+        assert!(crate::full_detail(&result).contains("w_ft=590"));
     }
 
     /// 軽量1種の RcDesign 検定は、普通コンクリートより検定比が大きくなる
@@ -524,8 +536,8 @@ mod tests {
         };
         let design = crate::rc::RcDesign;
         let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-        assert!(result.detail.contains("ld="));
-        assert!(result.detail.contains("付着検定比"));
+        assert!(crate::full_detail(&result).contains("ld="));
+        assert!(crate::full_detail(&result).contains("付着検定比"));
         // 付着検定が実施される（bond=Some）場合は components に Bond が含まれる。
         assert!(result
             .components
@@ -551,6 +563,42 @@ mod tests {
         };
         let design = crate::rc::RcDesign;
         let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
-        assert!(result.detail.contains("省略"));
+        assert!(crate::full_detail(&result).contains("省略"));
+    }
+
+    /// 断片が意図した component に配置されていることの確認
+    /// （Bending の detail に "MA_t=" が含まれ、Shear の detail には含まれない）。
+    #[test]
+    fn test_beam_check_detail_fragments_assigned_to_intended_components() {
+        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let ctx = ctx_beam(LoadTerm::Long);
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: 0.0,
+            qy: 20_000.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 30_000_000.0,
+        };
+        let design = crate::rc::RcDesign;
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        let bending = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .expect("Bending component が存在するはず");
+        let shear = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Shear)
+            .expect("Shear component が存在するはず");
+        assert!(bending.detail.contains("MA_t="));
+        assert!(!shear.detail.contains("MA_t="));
+        assert!(shear.detail.contains("QA="));
+        assert!(!bending.detail.contains("QA="));
+        // 断面諸元（at・d・j）は共通 detail 側にある。
+        assert!(result.detail.contains("at="));
     }
 }

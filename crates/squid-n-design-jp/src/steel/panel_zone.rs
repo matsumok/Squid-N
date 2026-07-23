@@ -106,17 +106,18 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
         f64::INFINITY
     };
     let basis = format!("鋼構造接合部設計指針 パネルゾーン検定 {}断面", shape_label);
-    let detail = format!(
-        "Ve={:.1} mm2, kappa={:.4}, n={:.4}, pM={:.1} N*mm, pMy={:.1} N*mm, ratio={:.4}",
-        ve, kappa, n, p_m, p_my, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components: vec![CheckComponent {
             kind: CheckKind::Shear,
             ratio,
+            detail: format!(
+                "Ve={:.1} mm2, kappa={:.4}, n={:.4}, pM={:.1} N*mm, pMy={:.1} N*mm, ratio={:.4}",
+                ve, kappa, n, p_m, p_my, ratio
+            ),
         }],
     }
 }

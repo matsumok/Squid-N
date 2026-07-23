@@ -424,42 +424,38 @@ pub(crate) fn src_column_check(
     } else {
         "弾性分担"
     };
-    let detail = format!(
+    // AxialBending 固有: 軸耐力（RC・鉄骨、圧縮/引張）・作用軸力・
+    // 二軸曲げ耐力・作用モーメント・鉄骨フランジ食い込みによる fc' 低減
+    // （s_pc・fc' は rNc の算定に用いるため軸+曲げ側）。
+    let axial_bending_detail = format!(
         "rNc={:.1} N, rNt={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, \
-         MAz={:.1} N·mm, MAy={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, \
-         sQAz={:.1} N, rQAz={:.1} N, sQAy={:.1} N, rQAy={:.1} N, s_pc={:.5}, fc'={:.3}, \
+         MAz={:.1} N·mm, MAy={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, s_pc={:.5}, fc'={:.3}",
+        rnc, rnt, s_nc, s_nt, n_design, ma_z, ma_y, forces.mz, forces.my, s_pc, fc_prime
+    );
+    // Shear 固有: 鉄骨・RC の許容せん断力（強軸・弱軸）と設計用せん断力の決定方式。
+    let shear_detail = format!(
+        "sQAz={:.1} N, rQAz={:.1} N, sQAy={:.1} N, rQAy={:.1} N, \
          設計用せん断力(z)={qd_note_z}, 設計用せん断力(y)={qd_note_y}",
-        rnc,
-        rnt,
-        s_nc,
-        s_nt,
-        n_design,
-        ma_z,
-        ma_y,
-        forces.mz,
-        forces.my,
-        shear_z.s_qa,
-        shear_z.r_qa,
-        shear_y.s_qa,
-        shear_y.r_qa,
-        s_pc,
-        fc_prime
+        shear_z.s_qa, shear_z.r_qa, shear_y.s_qa, shear_y.r_qa,
     );
 
     let components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial.max(ratio_biaxial),
+            detail: axial_bending_detail,
         },
         CheckComponent {
             kind: CheckKind::Shear,
             ratio: shear_z.ratio.max(shear_y.ratio),
+            detail: shear_detail,
         },
     ];
 
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
     CheckResult {
         basis,
-        detail,
+        detail: String::new(),
         components,
     }
 }
@@ -547,7 +543,7 @@ mod tests {
         let design = crate::SrcDesign;
         let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(result.ratio().is_finite());
-        assert!(result.detail.contains("rNc"));
+        assert!(crate::full_detail(&result).contains("rNc"));
         let _ = shape;
     }
 
@@ -625,8 +621,8 @@ mod tests {
         let r_large = design
             .check(&forces, &sec_large, &mat, &ctx)
             .unwrap_checked();
-        assert!(r_small.detail.contains("rNc"));
-        assert!(r_large.detail.contains("rNc"));
+        assert!(crate::full_detail(&r_small).contains("rNc"));
+        assert!(crate::full_detail(&r_large).contains("rNc"));
     }
 
     /// SRC 柱でも軽量コンクリートの 0.9 倍低減が rNc（RC 部分の許容圧縮）に

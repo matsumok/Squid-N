@@ -588,6 +588,7 @@ mod tests {
                 vec![CheckComponent {
                     kind: CheckKind::Bending,
                     ratio,
+                    detail: String::new(),
                 }]
             } else {
                 components
@@ -711,6 +712,7 @@ mod tests {
             vec![CheckComponent {
                 kind: CheckKind::Shear,
                 ratio: 1.13,
+                detail: String::new(),
             }],
         );
         assert_eq!(
@@ -728,10 +730,12 @@ mod tests {
                 CheckComponent {
                     kind: CheckKind::Bending,
                     ratio: 0.82,
+                    detail: String::new(),
                 },
                 CheckComponent {
                     kind: CheckKind::Shear,
                     ratio: 1.13,
+                    detail: String::new(),
                 },
             ],
         );
@@ -753,6 +757,7 @@ mod tests {
             vec![CheckComponent {
                 kind: CheckKind::Bending,
                 ratio: 0.5,
+                detail: String::new(),
             }],
         );
         assert_eq!(
@@ -770,10 +775,12 @@ mod tests {
                 CheckComponent {
                     kind: CheckKind::Shear,
                     ratio: 0.4,
+                    detail: String::new(),
                 },
                 CheckComponent {
                     kind: CheckKind::Shear,
                     ratio: 0.9,
+                    detail: String::new(),
                 },
             ],
         );
@@ -806,10 +813,12 @@ mod tests {
                 CheckComponent {
                     kind: CheckKind::Bending,
                     ratio: 0.82,
+                    detail: String::new(),
                 },
                 CheckComponent {
                     kind: CheckKind::Shear,
                     ratio: 1.13,
+                    detail: String::new(),
                 },
             ],
         };
@@ -825,10 +834,12 @@ mod tests {
             vec![CheckComponent {
                 kind: CheckKind::Shear,
                 ratio: 0.5,
+                detail: String::new(),
             }],
             vec![CheckComponent {
                 kind: CheckKind::Bending,
                 ratio: 0.6,
+                detail: String::new(),
             }],
         ];
         let kinds = available_check_kinds(comps.iter().map(|c| c.as_slice()));
@@ -842,6 +853,7 @@ mod tests {
         let comps: Vec<Vec<CheckComponent>> = vec![vec![CheckComponent {
             kind: CheckKind::Axial,
             ratio: 0.3,
+            detail: String::new(),
         }]];
         let kinds = available_check_kinds(comps.iter().map(|c| c.as_slice()));
         assert_eq!(kinds, vec![CheckKind::Axial]);
@@ -923,10 +935,12 @@ mod tests {
                         CheckComponent {
                             kind: CheckKind::Bending,
                             ratio: 0.5,
+                            detail: String::new(),
                         },
                         CheckComponent {
                             kind: CheckKind::Shear,
                             ratio: 0.4,
+                            detail: String::new(),
                         },
                     ],
                 ),
@@ -938,6 +952,7 @@ mod tests {
                     vec![CheckComponent {
                         kind: CheckKind::Shear,
                         ratio: 1.13,
+                        detail: String::new(),
                     }],
                 ),
             },
