@@ -131,13 +131,6 @@ pub fn steel_material_strength_factor(name: &str) -> f64 {
     }
 }
 
-/// 保有水平耐力計算（プッシュオーバー）用の鋼材の材料強度 [N/mm²]
-/// （前方一致、板厚 [mm] 区分対応。F 値 × [`steel_material_strength_factor`]）。
-/// 名称から解決できない材料は `None`。
-pub fn steel_material_strength_prefix(name: &str, thickness: f64) -> Option<f64> {
-    steel_f_value_prefix(name, thickness).map(|f| f * steel_material_strength_factor(name))
-}
-
 /// 保有水平耐力計算（プッシュオーバー）で、材料の降伏強度 fy を
 /// **鋼材**として用いる文脈（鋼材断面の集中ばね・純鋼材ファイバー・
 /// 曲げヒンジ・せん断降伏閾値）の材料強度割増係数。
@@ -401,28 +394,6 @@ mod tests {
             1.2
         );
         assert_eq!(material_strength_factor_rebar(&mk("Fc24", Some(1.0))), 1.0);
-    }
-
-    /// 材料強度（割増込み）: F×係数、板厚区分も引き継ぐ。
-    #[test]
-    fn test_steel_material_strength_prefix() {
-        assert_eq!(
-            steel_material_strength_prefix("SS400", 40.0),
-            Some(235.0 * 1.1)
-        );
-        assert_eq!(
-            steel_material_strength_prefix("SS400", 41.0),
-            Some(215.0 * 1.1)
-        );
-        assert_eq!(
-            steel_material_strength_prefix("SA440", 40.0),
-            Some(440.0 * 1.05)
-        );
-        assert_eq!(
-            steel_material_strength_prefix("TMCP440", 41.0),
-            Some(440.0 * 1.05)
-        );
-        assert_eq!(steel_material_strength_prefix("未知", 40.0), None);
     }
 
     #[test]

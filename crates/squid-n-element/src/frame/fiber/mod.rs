@@ -249,19 +249,12 @@ pub struct FiberBeam {
 }
 
 impl FiberBeam {
-    /// ファイバー梁の生成（公称値・[`crate::factory::StrengthBasis::Nominal`]）。
+    /// ファイバー梁の生成（材料強度の基準は `basis` で指定する）。
     /// 時刻歴応答解析など、材料強度割増を伴わない解析用の薄いラッパー。
-    pub fn new(
-        data: &squid_n_core::model::ElementData,
-        model: &squid_n_core::model::Model,
-    ) -> Self {
-        Self::new_with(data, model, crate::factory::StrengthBasis::Nominal)
-    }
-
     /// ファイバー梁の生成（材料強度の基準 `basis` を明示指定する版）。
     /// 保有水平耐力計算（プッシュオーバー）は
     /// `StrengthBasis::MaterialStrength` を渡す。
-    pub fn new_with(
+    pub fn new(
         data: &squid_n_core::model::ElementData,
         model: &squid_n_core::model::Model,
         basis: crate::factory::StrengthBasis,
@@ -421,55 +414,30 @@ impl FiberBeam {
     /// ファイバーモデル化）。端部の塑性化領域（長さ `lp`）にファイバー断面を
     /// 配置（積分点 ξ=∓1、重み Lp）し、中央 [Lp, L−Lp] は断面諸元
     /// （EA・EIy・EIz）による弾性剛性として厳密に B 積分する。
-    pub fn with_plastic_zone(
-        data: &squid_n_core::model::ElementData,
-        model: &squid_n_core::model::Model,
-        lp: f64,
-    ) -> Self {
-        Self::with_plastic_zone_with(data, model, lp, crate::factory::StrengthBasis::Nominal)
-    }
-
     /// 塑性化域考慮のファイバー要素の生成（材料強度の基準 `basis` を明示指定する版）。
-    pub fn with_plastic_zone_with(
+    pub fn with_plastic_zone(
         data: &squid_n_core::model::ElementData,
         model: &squid_n_core::model::Model,
         lp: f64,
         basis: crate::factory::StrengthBasis,
     ) -> Self {
-        Self::build_plastic_zone_with(data, model, lp, 12, 20, basis)
+        Self::build_plastic_zone(data, model, lp, 12, 20, basis)
     }
 
-    /// 塑性化域考慮要素の実体（公称値・[`crate::factory::StrengthBasis::Nominal`]）。
+    /// 塑性化域考慮要素の実体。
     /// `nw × nd` は端部断面のファイバ分割数
     /// （マルチファイバー: 12×20、マルチスプリング: 2×5 の粗い配置）。
+    /// 塑性化域考慮要素の実体（材料強度の基準 `basis` を明示指定する版）。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_plastic_zone(
         data: &squid_n_core::model::ElementData,
         model: &squid_n_core::model::Model,
         lp: f64,
         nw: usize,
         nd: usize,
-    ) -> Self {
-        Self::build_plastic_zone_with(
-            data,
-            model,
-            lp,
-            nw,
-            nd,
-            crate::factory::StrengthBasis::Nominal,
-        )
-    }
-
-    /// 塑性化域考慮要素の実体（材料強度の基準 `basis` を明示指定する版）。
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn build_plastic_zone_with(
-        data: &squid_n_core::model::ElementData,
-        model: &squid_n_core::model::Model,
-        lp: f64,
-        nw: usize,
-        nd: usize,
         basis: crate::factory::StrengthBasis,
     ) -> Self {
-        let mut fb = Self::new_with(data, model, basis);
+        let mut fb = Self::new(data, model, basis);
         let l = fb.length;
         if l <= 0.0 {
             return fb;

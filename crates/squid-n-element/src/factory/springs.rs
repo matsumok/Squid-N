@@ -30,7 +30,7 @@ pub(super) fn build_fiber(
         .filter(|d| *d > 0.0)
         .unwrap_or(200.0);
     let lp = data.plastic_zone.unwrap_or(0.5 * depth);
-    crate::fiber::FiberBeam::with_plastic_zone_with(data, model, lp, basis)
+    crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis)
 }
 
 /// 部材の曲げ終局（降伏）モーメント My [N·mm]（技術基準解説書の曲げ終局強度）。

@@ -1581,7 +1581,7 @@ fn test_track_shear_yield_axial_compression_raises_qy_end_to_end() {
 }
 
 // ---- 保有水平耐力計算（プッシュオーバー）の材料強度割増: 部材組み立て時の
-// 係数配線方式（`build_nonlinear_behavior_with(.., StrengthBasis::MaterialStrength)`
+// 係数配線方式（`build_nonlinear_behavior(.., StrengthBasis::MaterialStrength)`
 // および pushover 専用モジュール hinge.rs / shear_yield.rs の無条件適用）の検証。
 // 旧方式（モデル複製 `scale_steel_material_strength`）は廃止したため、
 // `compute_hinge_thresholds` / `compute_shear_yield_thresholds` が返す

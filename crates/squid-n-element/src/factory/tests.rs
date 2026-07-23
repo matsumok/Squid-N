@@ -222,7 +222,7 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(&beam, &model);
+    let (behavior, _state) = build_nonlinear_behavior(&beam, &model, StrengthBasis::Nominal);
     let snap = behavior.snapshot_state();
     let is_spring = snap
         .downcast_ref::<(
@@ -259,7 +259,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(&col, &model);
+    let (behavior, _state) = build_nonlinear_behavior(&col, &model, StrengthBasis::Nominal);
     let snap = behavior.snapshot_state();
     let is_fiber = snap
         .downcast_ref::<(
@@ -366,7 +366,7 @@ fn test_build_behavior_brace_tension_only_full_stiffness() {
 #[test]
 fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
-    let (behavior, state) = build_nonlinear_behavior(&elem, &model);
+    let (behavior, state) = build_nonlinear_behavior(&elem, &model, StrengthBasis::Nominal);
     let ctx = crate::behavior::Ctx { model: &model };
     let k = behavior.tangent_stiffness(&state, &ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;

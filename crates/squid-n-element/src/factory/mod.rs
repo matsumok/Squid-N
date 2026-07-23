@@ -75,7 +75,12 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
             ElemState::default(),
         ),
         ElementKind::MultiSpring => (
-            Box::new(crate::multi_spring::MultiSpringElement::new(data, model)),
+            // 弾性解析（線形）は常に公称値。
+            Box::new(crate::multi_spring::MultiSpringElement::new(
+                data,
+                model,
+                StrengthBasis::Nominal,
+            )),
             ElemState::default(),
         ),
         // Fiber 要素：将来 FiberBeam が実装されるまでの暫定 BeamElement
@@ -202,21 +207,10 @@ impl StrengthBasis {
 /// `Bilinear(My=1e20)` で実質弾性のため、真の降伏は `fc` を持つコンクリート断面でのみ生じる。
 /// 鋼材の降伏・集中ばね梁の実体化には Model への降伏応力／スケルトン追加が前提（follow-up）。
 ///
-/// 材料強度は公称値（[`StrengthBasis::Nominal`]）を用いる薄いラッパー。時刻歴応答解析
-/// （`dynamic/timehistory/nonlinear.rs`）はこちらを使う。保有水平耐力計算（プッシュオーバー）は
-/// [`build_nonlinear_behavior_with`] を `StrengthBasis::MaterialStrength` で呼ぶこと。
+/// 部材耐力算定に用いる材料強度（鋼材 fy・RC 主筋 σy）の基準は `basis` で指定する。
+/// 時刻歴応答解析（`dynamic/timehistory/nonlinear.rs`）は [`StrengthBasis::Nominal`]、
+/// 保有水平耐力計算（プッシュオーバー）は [`StrengthBasis::MaterialStrength`] を渡す。
 pub fn build_nonlinear_behavior(
-    data: &ElementData,
-    model: &Model,
-) -> (Box<dyn ElementBehavior>, ElemState) {
-    build_nonlinear_behavior_with(data, model, StrengthBasis::Nominal)
-}
-
-/// 非線形解析用の要素生成（材料強度の基準 `basis` を明示指定する版）。
-/// 挙動は [`build_nonlinear_behavior`] と同じだが、部材耐力算定に用いる
-/// 材料強度（鋼材 fy・RC 主筋 σy）の基準を選べる。保有水平耐力計算
-/// （プッシュオーバー）は `StrengthBasis::MaterialStrength` を渡す。
-pub fn build_nonlinear_behavior_with(
     data: &ElementData,
     model: &Model,
     basis: StrengthBasis,
@@ -254,7 +248,9 @@ pub fn build_nonlinear_behavior_with(
         ),
         // MS 要素: 端部バネ断面 + 中央弾性の非線形要素（P5.5 §3）
         ElementKind::MultiSpring => (
-            Box::new(crate::multi_spring::MultiSpringElement::new(data, model)),
+            Box::new(crate::multi_spring::MultiSpringElement::new(
+                data, model, basis,
+            )),
             ElemState::default(),
         ),
         // 一般ブレース(弾塑性): E·A/L の弾性トラス要素（材料力学）。引張専用ブレースの
