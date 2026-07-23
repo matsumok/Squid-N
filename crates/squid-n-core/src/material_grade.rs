@@ -107,6 +107,37 @@ pub fn steel_f_value_prefix(name: &str, thickness: f64) -> Option<f64> {
         .and_then(|g| steel_f_value(g, thickness))
 }
 
+/// 保有水平耐力計算（プッシュオーバー）用の材料強度割増係数。
+///
+/// 材料強度の基準強度は表の数値の 1.1 倍以下（JIS 規格品・大臣認定品）、
+/// ただし 590N 級（SA440・TMCP440。HBL®440/G440 等の認定条件）は 1.05 倍以下と
+/// できる規定（H12 建告第2464号の運用・各認定条件）に基づく。
+/// 名称から鋼材グレードを解決できない材料（直接入力材料）は割増しない（1.0）。
+///
+/// 本係数は保有水平耐力計算（プッシュオーバー）の部材耐力算定にのみ用い、
+/// 許容応力度計算（一次設計）には適用しない。
+pub fn steel_material_strength_factor(name: &str) -> f64 {
+    let Some(grade) = STEEL_GRADES
+        .iter()
+        .filter(|g| name.starts_with(*g))
+        .max_by_key(|g| g.len())
+    else {
+        return 1.0;
+    };
+    match *grade {
+        // 590N 級（建築構造用高性能 590N/mm² 鋼材・TMCP 590N 級）は 1.05 倍
+        "SA440" | "TMCP440" => 1.05,
+        _ => 1.1,
+    }
+}
+
+/// 保有水平耐力計算（プッシュオーバー）用の鋼材の材料強度 [N/mm²]
+/// （前方一致、板厚 [mm] 区分対応。F 値 × [`steel_material_strength_factor`]）。
+/// 名称から解決できない材料は `None`。
+pub fn steel_material_strength_prefix(name: &str, thickness: f64) -> Option<f64> {
+    steel_f_value_prefix(name, thickness).map(|f| f * steel_material_strength_factor(name))
+}
+
 /// 鉄筋の基準強度 [N/mm²]（H12 建告第2464号）。
 ///
 /// 異形鉄筋 `SD` ・丸鋼 `SR` は続く数値が基準強度を表す
@@ -301,6 +332,42 @@ mod tests {
         assert_eq!(steel_f_value_prefix("SNR400A", 40.0), Some(235.0));
         assert_eq!(steel_f_value_prefix("SNR490B", 40.0), Some(325.0));
         assert_eq!(steel_f_value_prefix("未知", 40.0), None);
+    }
+
+    /// 材料強度割増係数: 既知鋼材=1.1、590N 級（SA440/TMCP440）=1.05、未知=1.0。
+    #[test]
+    fn test_steel_material_strength_factor() {
+        assert_eq!(steel_material_strength_factor("SS400"), 1.1);
+        assert_eq!(steel_material_strength_factor("SN490B"), 1.1);
+        assert_eq!(steel_material_strength_factor("BCR295"), 1.1);
+        assert_eq!(steel_material_strength_factor("LY225"), 1.1);
+        assert_eq!(steel_material_strength_factor("TMCP385"), 1.1);
+        assert_eq!(steel_material_strength_factor("SA440"), 1.05);
+        assert_eq!(steel_material_strength_factor("TMCP440"), 1.05);
+        assert_eq!(steel_material_strength_factor("未知の材料"), 1.0);
+        assert_eq!(steel_material_strength_factor("SD345"), 1.0);
+    }
+
+    /// 材料強度（割増込み）: F×係数、板厚区分も引き継ぐ。
+    #[test]
+    fn test_steel_material_strength_prefix() {
+        assert_eq!(
+            steel_material_strength_prefix("SS400", 40.0),
+            Some(235.0 * 1.1)
+        );
+        assert_eq!(
+            steel_material_strength_prefix("SS400", 41.0),
+            Some(215.0 * 1.1)
+        );
+        assert_eq!(
+            steel_material_strength_prefix("SA440", 40.0),
+            Some(440.0 * 1.05)
+        );
+        assert_eq!(
+            steel_material_strength_prefix("TMCP440", 41.0),
+            Some(440.0 * 1.05)
+        );
+        assert_eq!(steel_material_strength_prefix("未知", 40.0), None);
     }
 
     #[test]
