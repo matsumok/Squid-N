@@ -230,6 +230,14 @@ mod tests {
         assert!((steel_f_value("SM520", 76.0).unwrap() - 325.0).abs() < 1e-9);
     }
 
+    /// squid_n_core::material_grade への委譲後も TMCP・LY 系（板厚区分なし）が
+    /// 解決できることを確認する。
+    #[test]
+    fn test_f_value_tmcp_ly() {
+        assert_eq!(steel_f_value("TMCP440", 41.0), Some(440.0));
+        assert_eq!(steel_f_value("LY225", 40.0), Some(205.0));
+    }
+
     #[test]
     fn test_f_value_prefix_longest_match() {
         assert!((steel_f_value_prefix("SN400B", 30.0).unwrap() - 235.0).abs() < 1e-9);
