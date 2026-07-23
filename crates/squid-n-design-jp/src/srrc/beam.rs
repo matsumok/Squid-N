@@ -115,8 +115,6 @@ pub(crate) fn src_beam_check(
         &seismic,
     );
 
-    let ratio = ratio_m.max(shear.ratio);
-
     let basis = "SRC規準(1987) 梁: 累加強度式(曲げ)+ せん断弾性分担".to_string();
     let qd_note = if shear.used_qd {
         "構造規定方式"
@@ -140,8 +138,6 @@ pub(crate) fn src_beam_check(
     );
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
         detail,
         components: vec![
@@ -193,11 +189,15 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!((result.ratio - 0.5).abs() < 1e-6, "ratio={}", result.ratio);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(
+            (result.ratio() - 0.5).abs() < 1e-6,
+            "ratio={}",
+            result.ratio()
+        );
         assert!(result.basis.contains("SRC規準"));
 
-        // components に Bending・Shear が入り、最大値が ratio と一致する。
+        // components に Bending・Shear が入ることを確認する。
         assert_eq!(result.components.len(), 2);
         assert!(result
             .components
@@ -207,11 +207,5 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 }

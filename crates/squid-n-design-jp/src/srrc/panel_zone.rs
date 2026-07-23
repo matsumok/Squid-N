@@ -100,8 +100,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let shape_label = match inp.shape {
         JointShape::Cross => "十字形(jdelta=3)",
         JointShape::Tee => "T字形(jdelta=2)",
@@ -119,8 +117,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
     );
 
     CheckResult {
-        ratio,
-        ok,
         basis,
         detail,
         components: vec![CheckComponent {
@@ -163,7 +159,7 @@ mod tests {
         let ma = cv * 3.0 * fs * (1.0 + beta); // jdelta=3 (十字形)
         let expected_ratio = inp.sum_beam_moments / ma;
 
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -177,7 +173,7 @@ mod tests {
         let ma = cv * 3.0 * fs; // (1+beta) = 1
         let expected_ratio = inp.sum_beam_moments / ma;
 
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -189,7 +185,7 @@ mod tests {
 
         // Ma(十字形) = 3・Ma(L字形)（他諸元は同一）なので
         // ratio(L字形) = 3・ratio(十字形)。
-        assert!((corner.ratio / cross.ratio - 3.0).abs() < 1e-6);
+        assert!((corner.ratio() / cross.ratio() - 3.0).abs() < 1e-6);
     }
 
     #[test]
@@ -206,11 +202,11 @@ mod tests {
 
         let ma = cv * 3.0 * fs_long * (1.0 + beta);
         let expected_ratio = inp.sum_beam_moments / ma;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
 
         // 長期は fs が小さく Ma も小さいため、ratio は短期より大きい。
         let res_short = src_panel_zone_check(&base_src_panel_input());
-        assert!(res.ratio > res_short.ratio);
+        assert!(res.ratio() > res_short.ratio());
     }
 
     #[test]
@@ -223,12 +219,12 @@ mod tests {
         inp_s.beam_is_steel = true;
         let res_rc = src_panel_zone_check(&inp_rc);
         let res_s = src_panel_zone_check(&inp_s);
-        assert!((res_rc.ratio - res_s.ratio).abs() < 1e-12);
+        assert!((res_rc.ratio() - res_s.ratio()).abs() < 1e-12);
 
         let cv = inp_rc.col_width * inp_rc.m_bd * inp_rc.m_cd;
         let beta = inp_rc.n_ratio * inp_rc.j_tw * inp_rc.s_cd / (inp_rc.col_width * inp_rc.m_cd);
         let fs = crate::rc::concrete_allowable_shear(inp_rc.fc, false);
         let ma = cv * 3.0 * fs * (1.0 + beta);
-        assert!((res_rc.ratio - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
+        assert!((res_rc.ratio() - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
     }
 }

@@ -51,7 +51,7 @@
 //! - [`column`][]: 鉄骨鉄筋コンクリート造柱の断面検定（累加強度式・fc′低減）。
 //! - [`panel_zone`][]: SRC 造柱梁接合部（パネルゾーン）の断面検定（SRC 規準）。
 
-use crate::{CheckResult, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind, QdMethod};
+use crate::{CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind, QdMethod};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -405,28 +405,20 @@ impl DesignCheck for SrcDesign {
         sec: &Section,
         mat: &Material,
         ctx: &DesignCtx,
-    ) -> CheckResult {
+    ) -> CheckOutcome {
         let fc_raw = mat.fc.unwrap_or(0.0);
         if fc_raw <= 0.0 {
-            return CheckResult {
-                ratio: 0.0,
-                ok: true,
-                basis: "SRC検定: Fc未設定".to_string(),
-                detail: "Material.fc が None/0 のため検定をスキップしました。".to_string(),
-                components: Vec::new(),
+            return CheckOutcome::Skipped {
+                reason: "SRC検定: Fc未設定（Material.fc が None/0 です）".to_string(),
             };
         }
 
         let shape = match &sec.shape {
             Some(s @ SectionShape::SrcRect { .. }) => s,
             _ => {
-                return CheckResult {
-                    ratio: 0.0,
-                    ok: true,
-                    basis: "SRC検定: 断面形状不一致".to_string(),
-                    detail: "Section.shape が SrcRect ではないため検定をスキップしました。"
+                return CheckOutcome::Skipped {
+                    reason: "SRC検定: 断面形状不一致（Section.shape が SrcRect ではありません）"
                         .to_string(),
-                    components: Vec::new(),
                 };
             }
         };
@@ -445,7 +437,7 @@ impl DesignCheck for SrcDesign {
             unreachable!()
         };
 
-        match ctx.kind {
+        let cr = match ctx.kind {
             MemberKind::Beam | MemberKind::Brace => beam::src_beam_check(
                 forces,
                 mat,
@@ -474,7 +466,8 @@ impl DesignCheck for SrcDesign {
                 steel_grade,
                 fc_raw,
             ),
-        }
+        };
+        CheckOutcome::Checked(cr)
     }
 }
 

@@ -146,8 +146,6 @@ pub(super) fn check_rc_joint(
                 nid,
                 "接合部終局(RC)".to_string(),
                 CheckResult {
-                    ratio,
-                    ok: ratio <= 1.0,
                     basis: "靭性保証型指針 柱梁接合部終局(Vju=κ·φ·Fj·bj·Dj)".to_string(),
                     detail: format!(
                         "κ={:.2}, φ={:.2}, Fj={:.3} N/mm², bj={:.1} mm, Dj={:.1} mm, \

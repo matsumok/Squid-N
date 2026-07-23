@@ -137,8 +137,6 @@ pub(crate) fn check_column(
     let ratio_shear = ((sigma_total.powi(2) + 3.0 * tau.powi(2)).sqrt() / safe_denom(ft_val))
         .max(tau / safe_denom(fs_val));
 
-    let ratio = ratio_axial_bend.max(ratio_shear);
-
     let term_label = match term {
         LoadTerm::Long => "長期",
         LoadTerm::Short => "短期",
@@ -175,8 +173,6 @@ fbY={:.4} N/mm², λ={:.3}, τ={:.4} N/mm², fs={:.4} N/mm², 軸曲げ比={:.4}
     ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis,
         detail,
         components,
@@ -214,7 +210,9 @@ mod tests {
             length: 3500.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
 
         let area = sec.area;
         let z_strong = sec.iy / (sec.depth / 2.0);
@@ -231,9 +229,9 @@ mod tests {
         assert!(result.detail.contains("軸曲げ比"));
         assert!(sigma_c > 0.0 && sigma_bx > 0.0 && sigma_by > 0.0 && fc > 0.0 && ft > 0.0);
         // 軸+曲げ比は少なくとも σc/fc 単独の比より大きい（曲げ項が加算されるため）。
-        assert!(result.ratio >= sigma_c / fc - 1e-9);
+        assert!(result.ratio() >= sigma_c / fc - 1e-9);
 
-        // components に AxialBending・Shear が入り、その最大値が ratio と一致する。
+        // components に AxialBending・Shear が入ることを確認する。
         assert_eq!(result.components.len(), 2);
         assert!(result
             .components
@@ -243,12 +241,6 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 
     #[test]
@@ -279,15 +271,19 @@ mod tests {
             length: 3000.0,
             ..Default::default()
         };
-        let r1 = SteelDesign.check(&forces_x_only, &sec, &mat_v, &ctx);
-        let r2 = SteelDesign.check(&forces_biaxial, &sec, &mat_v, &ctx);
+        let r1 = SteelDesign
+            .check(&forces_x_only, &sec, &mat_v, &ctx)
+            .unwrap_checked();
+        let r2 = SteelDesign
+            .check(&forces_biaxial, &sec, &mat_v, &ctx)
+            .unwrap_checked();
         // 円形鋼管は sqrt(mz^2+my^2) で合成するため、合成曲げモーメントの大きさが
         // 同じであれば mz のみと mz/my 分配後で軸+曲げ比はほぼ一致するはず。
         assert!(
-            (r1.ratio - r2.ratio).abs() < 1e-6,
+            (r1.ratio() - r2.ratio()).abs() < 1e-6,
             "pipe combined sigma_b mismatch: {} vs {}",
-            r1.ratio,
-            r2.ratio
+            r1.ratio(),
+            r2.ratio()
         );
     }
 
@@ -311,7 +307,9 @@ mod tests {
             length: 3000.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
 
         let area = sec.area;
         let tau = 2.0 * 300_000.0_f64.abs() / area; // 角形: τ=2Q/A
@@ -320,9 +318,9 @@ mod tests {
         // σ=0（純せん断）なので von Mises 側は sqrt(3)*τ/ft。
         let expected = (3.0_f64.sqrt() * tau / ft).max(tau / fs);
         assert!(
-            (result.ratio - expected).abs() < 1e-6,
+            (result.ratio() - expected).abs() < 1e-6,
             "ratio={} expected={}",
-            result.ratio,
+            result.ratio(),
             expected
         );
     }
@@ -349,12 +347,14 @@ mod tests {
             length: 0.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
         assert!(result.basis.contains("座屈無視"));
         // λ=0 なので fc=ft、単純圧縮比 = σc/ft と一致するはず。
         let ft = steel_ft(235.0, LoadTerm::Long);
         let expected = (100_000.0 / sec.area) / ft;
-        assert!((result.ratio - expected).abs() < 1e-6);
+        assert!((result.ratio() - expected).abs() < 1e-6);
     }
 
     // -------------------------------------------------------------
@@ -382,7 +382,9 @@ mod tests {
             length: 4000.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
 
         let area = sec.area;
         let i_min = (sec.iy.min(sec.iz) / area).sqrt();
@@ -390,9 +392,9 @@ mod tests {
         let fc = steel_fc(235.0, lambda, LoadTerm::Long);
         let expected = (100_000.0 / area) / fc;
         assert!(
-            (result.ratio - expected).abs() < 1e-9,
+            (result.ratio() - expected).abs() < 1e-9,
             "ratio={} expected(legacy i_min)={}",
-            result.ratio,
+            result.ratio(),
             expected
         );
     }
@@ -420,7 +422,9 @@ mod tests {
             lk_z: Some(3000.0),
             ..Default::default()
         };
-        let base = SteelDesign.check(&forces, &sec, &mat_v, &ctx_base);
+        let base = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx_base)
+            .unwrap_checked();
 
         let ctx_long_z = DesignCtx {
             term: LoadTerm::Long,
@@ -430,13 +434,15 @@ mod tests {
             lk_z: Some(9000.0), // 弱軸のみ座屈長さを 3 倍に
             ..Default::default()
         };
-        let long_z = SteelDesign.check(&forces, &sec, &mat_v, &ctx_long_z);
+        let long_z = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx_long_z)
+            .unwrap_checked();
 
         assert!(
-            long_z.ratio > base.ratio,
+            long_z.ratio() > base.ratio(),
             "lk_z を伸ばすと検定比が上がるはず: base={} long_z={}",
-            base.ratio,
-            long_z.ratio
+            base.ratio(),
+            long_z.ratio()
         );
     }
 
@@ -465,7 +471,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ctx.steel_fb_rule, SteelFbRule::Old);
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
 
         let f = 235.0;
         let af = 200.0 * 13.0;
@@ -501,7 +509,9 @@ mod tests {
             steel_fb_rule: SteelFbRule::New,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
 
         let f = 235.0;
         let z_strong = sec.iy / (sec.depth / 2.0);

@@ -178,7 +178,6 @@ pub(crate) fn beam_check(
     );
     let ratio_bond = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
 
-    let ratio = ratio_m.max(ratio_q).max(ratio_bond);
     let basis = "RC 規準13条（梁の曲げ・せん断・付着）".to_string();
     let bond_detail = match &bond {
         Some(b) => format!(
@@ -239,8 +238,6 @@ pub(crate) fn beam_check(
     }
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis,
         detail,
         components,
@@ -307,10 +304,10 @@ mod tests {
         // QD=80kN > 解析値 60kN なのでせん断検定比が 4/3 倍になる
         // （曲げ・付着が支配しない前提の内力設定）。
         assert!(
-            with_qd.ratio > base.ratio,
+            with_qd.ratio() > base.ratio(),
             "with_qd={} <= base={}",
-            with_qd.ratio,
-            base.ratio
+            with_qd.ratio(),
+            base.ratio()
         );
     }
 
@@ -371,15 +368,16 @@ mod tests {
             mz: 30_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!(result.ratio > 0.0);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(result.ratio() > 0.0);
         assert!(result.basis.contains("13条"));
     }
 
-    /// components に曲げ・せん断（付着は ctx.length=0 のため省略）の内訳が
-    /// 入り、その最大値が ratio と一致することを確認する。
+    /// components に曲げ・せん断（付着は ctx.length=0 のため省略）の内訳が入る
+    /// ことを確認する（`ratio()`/`ok()` が components から導出される不変条件は
+    /// 型で保証されるため、ここでは内訳の内容のみ検証する）。
     #[test]
-    fn test_beam_check_components_bending_and_shear_max_matches_ratio() {
+    fn test_beam_check_components_bending_and_shear() {
         let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
@@ -393,7 +391,7 @@ mod tests {
             mz: 30_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(!result.components.is_empty());
         assert!(result
             .components
@@ -403,12 +401,6 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 
     #[test]
@@ -427,7 +419,7 @@ mod tests {
             mz: 5_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(result.detail.contains("KH785"));
         assert!(result.detail.contains("w_ft=590"));
     }
@@ -450,13 +442,13 @@ mod tests {
             mz: 5_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let r_n = design.check(&forces, &sec, &mat_n, &ctx);
-        let r_l = design.check(&forces, &sec, &mat_l, &ctx);
+        let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
+        let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
         assert!(
-            r_l.ratio > r_n.ratio,
+            r_l.ratio() > r_n.ratio(),
             "軽量1種は許容応力度低減により検定比が大きくなるはず: normal={}, light={}",
-            r_n.ratio,
-            r_l.ratio
+            r_n.ratio(),
+            r_l.ratio()
         );
     }
 
@@ -485,19 +477,27 @@ mod tests {
         };
         let design = crate::rc::RcDesign;
 
-        let r_l_damage = design.check(&forces, &sec, &mat_l, &ctx_damage);
-        let r_l_safety = design.check(&forces, &sec, &mat_l, &ctx_safety);
+        let r_l_damage = design
+            .check(&forces, &sec, &mat_l, &ctx_damage)
+            .unwrap_checked();
+        let r_l_safety = design
+            .check(&forces, &sec, &mat_l, &ctx_safety)
+            .unwrap_checked();
         assert!(
-            (r_l_damage.ratio - r_l_safety.ratio).abs() < 1e-12,
+            (r_l_damage.ratio() - r_l_safety.ratio()).abs() < 1e-12,
             "軽量+高強度は損傷制御指定でも安全確保式: damage={}, safety={}",
-            r_l_damage.ratio,
-            r_l_safety.ratio
+            r_l_damage.ratio(),
+            r_l_safety.ratio()
         );
 
-        let r_n_damage = design.check(&forces, &sec, &mat_n, &ctx_damage);
-        let r_n_safety = design.check(&forces, &sec, &mat_n, &ctx_safety);
+        let r_n_damage = design
+            .check(&forces, &sec, &mat_n, &ctx_damage)
+            .unwrap_checked();
+        let r_n_safety = design
+            .check(&forces, &sec, &mat_n, &ctx_safety)
+            .unwrap_checked();
         assert!(
-            (r_n_damage.ratio - r_n_safety.ratio).abs() > 1e-9,
+            (r_n_damage.ratio() - r_n_safety.ratio()).abs() > 1e-9,
             "普通コンクリートでは損傷制御式と安全確保式は異なるはず（回帰）"
         );
     }
@@ -523,7 +523,7 @@ mod tests {
             mz: 30_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(result.detail.contains("ld="));
         assert!(result.detail.contains("付着検定比"));
         // 付着検定が実施される（bond=Some）場合は components に Bond が含まれる。
@@ -531,12 +531,6 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Bond));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 
     #[test]
@@ -556,7 +550,7 @@ mod tests {
             mz: 1_000_000.0,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(result.detail.contains("省略"));
     }
 }

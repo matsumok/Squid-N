@@ -8,13 +8,17 @@
 //! 着色対象は [`CheckRatioFilter`]（最大＝全式の max、または特定の検定式のみ）で
 //! 切り替えられ、部材内の検定位置ごとに正方形マーカーを重ねる「位置別マーカー」、
 //! ホバー時に位置×式の内訳を見せるツールチップも提供する。
+//!
+//! 検定不能（[`CheckOutcome::Skipped`]）の位置は、検定式フィルタ適用後は
+//! いずれも `None`（対象外）として扱う。ある部材の全位置が検定不能の場合、
+//! その部材は未検定と同様に無着色となる（位置別マーカーも描かない）。
 
 use std::collections::HashMap;
 
-use crate::app::App;
+use crate::app::{App, MemberChecks, PositionCheck};
 use crate::theme;
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_design_jp::{CheckComponent, CheckKind, CheckResult};
+use squid_n_design_jp::{CheckComponent, CheckKind, CheckOutcome, CheckResult};
 
 use super::CheckRatioFilter;
 
@@ -29,15 +33,24 @@ const ALL_KINDS: [CheckKind; 6] = [
     CheckKind::Deflection,
 ];
 
-/// フィルタ `filter` を `cr` に適用した結果（検定比, OK か）を返す（純粋関数）。
+/// フィルタ `filter` を検定結果 `outcome` に適用した結果（検定比, OK か）を
+/// 返す（純粋関数）。
 ///
-/// - `Max`: `cr.ratio`／`cr.ok` をそのまま返す（従来動作）。
+/// - [`CheckOutcome::Skipped`]（検定不能）は常に `None`（フィルタ対象外。
+///   未検定と同様に着色しない）。
+/// - `Max`: `cr.ratio()`／`cr.ok()` を返す（従来動作）。
 /// - `Kind(k)`: `cr.components` から `kind == k` の最大検定比を探し
 ///   `Some((r, r <= 1.0))` を返す。該当する式が無ければ `None`
 ///   （＝この検定位置は当該式の検定対象外。着色・マーカーとも描かない）。
-pub(super) fn ratio_for_filter(cr: &CheckResult, filter: CheckRatioFilter) -> Option<(f64, bool)> {
+pub(super) fn ratio_for_filter(
+    outcome: &CheckOutcome,
+    filter: CheckRatioFilter,
+) -> Option<(f64, bool)> {
+    let CheckOutcome::Checked(cr) = outcome else {
+        return None;
+    };
     match filter {
-        CheckRatioFilter::Max => Some((cr.ratio, cr.ok)),
+        CheckRatioFilter::Max => Some((cr.ratio(), cr.ok())),
         CheckRatioFilter::Kind(k) => {
             let max_ratio = cr
                 .components
@@ -91,8 +104,8 @@ where
 
 /// 部材（または節点）ごとに、フィルタ適用後の検定比・OK フラグを集計する
 /// （純粋関数）。`items` は `(キー, フィルタ適用後の (検定比, OK) または None)`。
-/// `None`（フィルタ対象外の位置）は無視され、対象位置が一つも無い部材・節点は
-/// 集計結果に含まれない（＝未検定として扱われ、着色されない）。
+/// `None`（フィルタ対象外の位置。検定不能を含む）は無視され、対象位置が一つも
+/// 無い部材・節点は集計結果に含まれない（＝未検定として扱われ、着色されない）。
 fn max_ratio_by_key<K, I>(items: I) -> HashMap<K, (f64, bool)>
 where
     K: Eq + std::hash::Hash,
@@ -136,57 +149,80 @@ pub(super) fn mid_label_text(ratio: f64, dominant: Option<CheckKind>) -> String 
     }
 }
 
-/// 部材 `elem_id` の全検定位置を `(xi, ok, components)` として抽出する
-/// （純粋関数。ホバー詳細ツールチップの表データ生成に使う）。
+/// 部材 `elem_id` の全検定位置（`xi` 昇順）を返す（純粋関数。ホバー詳細
+/// ツールチップの表データ生成に使う）。`member_checks` は部材単位に
+/// グループ化済みのため、線形走査ではなく直接引ける。
 pub(super) fn elem_check_positions(
-    checks: &[(ElemId, f64, CheckResult)],
+    member_checks: &[MemberChecks],
     elem_id: ElemId,
-) -> Vec<(f64, bool, Vec<CheckComponent>)> {
-    checks
+) -> &[PositionCheck] {
+    member_checks
         .iter()
-        .filter(|(id, _, _)| *id == elem_id)
-        .map(|(_, xi, cr)| (*xi, cr.ok, cr.components.clone()))
-        .collect()
+        .find(|m| m.elem == elem_id)
+        .map(|m| m.positions.as_slice())
+        .unwrap_or(&[])
+}
+
+/// ホバー詳細ツールチップの1行分（1検定位置）の判定表示。
+pub(super) enum RowVerdict {
+    Ok,
+    Ng,
+    /// 検定不能（理由）。
+    Skipped(String),
 }
 
 /// ホバー詳細ツールチップの1行分（1検定位置）のデータ。
 pub(super) struct TooltipRow {
     /// 検定位置 xi ∈ [0,1]
     pub xi: f64,
-    /// 列（`kinds`）に対応する検定比。該当式が無い列は `None`。
+    /// 列（`kinds`）に対応する検定比。該当式が無い列・検定不能の行は `None`。
     pub values: Vec<Option<f64>>,
-    pub ok: bool,
+    pub verdict: RowVerdict,
 }
 
 /// 部材1本分の「位置×式」ツールチップ表データを生成する（純粋関数）。
-/// `positions` は当該部材の全検定位置 `(xi, ok, components)`
-/// （[`elem_check_positions`] の戻り値）。
+/// `positions` は当該部材の全検定位置（[`elem_check_positions`] の戻り値）。
 ///
 /// 戻り値は `(列に出す式の集合＝出現順の CheckKind, 各行データ)`。
-pub(super) fn build_tooltip_rows(
-    positions: &[(f64, bool, Vec<CheckComponent>)],
-) -> (Vec<CheckKind>, Vec<TooltipRow>) {
-    let kinds = available_check_kinds(positions.iter().map(|(_, _, c)| c.as_slice()));
+/// 検定不能（[`CheckOutcome::Skipped`]）の位置は列の判定には寄与せず
+/// （`available_check_kinds` には含めない）、行の判定は
+/// [`RowVerdict::Skipped`] になる。
+pub(super) fn build_tooltip_rows(positions: &[PositionCheck]) -> (Vec<CheckKind>, Vec<TooltipRow>) {
+    let kinds = available_check_kinds(positions.iter().filter_map(|p| match &p.outcome {
+        CheckOutcome::Checked(cr) => Some(cr.components.as_slice()),
+        CheckOutcome::Skipped { .. } => None,
+    }));
     let rows = positions
         .iter()
-        .map(|(xi, ok, comps)| {
-            let values = kinds
-                .iter()
-                .map(|k| {
-                    comps
-                        .iter()
-                        .filter(|c| c.kind == *k)
-                        .map(|c| c.ratio)
-                        .fold(None, |acc: Option<f64>, r| {
-                            Some(acc.map_or(r, |a| a.max(r)))
-                        })
-                })
-                .collect();
-            TooltipRow {
-                xi: *xi,
-                values,
-                ok: *ok,
+        .map(|p| match &p.outcome {
+            CheckOutcome::Checked(cr) => {
+                let values = kinds
+                    .iter()
+                    .map(|k| {
+                        cr.components
+                            .iter()
+                            .filter(|c| c.kind == *k)
+                            .map(|c| c.ratio)
+                            .fold(None, |acc: Option<f64>, r| {
+                                Some(acc.map_or(r, |a| a.max(r)))
+                            })
+                    })
+                    .collect();
+                TooltipRow {
+                    xi: p.xi,
+                    values,
+                    verdict: if cr.ok() {
+                        RowVerdict::Ok
+                    } else {
+                        RowVerdict::Ng
+                    },
+                }
             }
+            CheckOutcome::Skipped { reason } => TooltipRow {
+                xi: p.xi,
+                values: vec![None; kinds.len()],
+                verdict: RowVerdict::Skipped(reason.clone()),
+            },
         })
         .collect();
     (kinds, rows)
@@ -201,7 +237,7 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[[f32; 
     };
     // 部材検定・節点検定のどちらかがあれば描画する（耐震壁のみのモデル等では
     // 部材検定が空でも節点検定だけが存在しうる）。
-    if results.checks.is_empty() && results.joint_checks.is_empty() {
+    if results.member_checks.is_empty() && results.joint_checks.is_empty() {
         draw_no_result_legend(painter);
         return;
     }
@@ -209,24 +245,23 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[[f32; 
     let filter = app.check_ratio_filter;
     let markers = app.check_ratio_markers;
 
-    let elem_ratios = max_ratio_by_elem(
-        results
-            .checks
+    let elem_ratios = max_ratio_by_elem(results.member_checks.iter().flat_map(|m| {
+        m.positions
             .iter()
-            .map(|(id, _xi, cr)| (*id, ratio_for_filter(cr, filter))),
-    );
+            .map(|p| (m.elem, ratio_for_filter(&p.outcome, filter)))
+    }));
     let node_ratios = max_ratio_by_node(
         results
             .joint_checks
             .iter()
-            .map(|(id, _label, cr)| (*id, ratio_for_filter(cr, filter))),
+            .map(|j| (j.node, ratio_for_filter(&j.outcome, filter))),
     );
 
-    // 部材ごとの検定位置一覧（B-2 位置別マーカー・B-4 支配式ラベル用）。
-    let mut checks_by_elem: HashMap<ElemId, Vec<(f64, &CheckResult)>> = HashMap::new();
-    for (id, xi, cr) in &results.checks {
-        checks_by_elem.entry(*id).or_default().push((*xi, cr));
-    }
+    // 部材ごとの検定位置索引（B-2 位置別マーカー・B-4 支配式ラベル用）。
+    // `member_checks` は既に部材単位にグループ化済みのため、部材IDから直接
+    // 引けるよう索引を作るだけでよい（位置ごとの全行線形走査は不要）。
+    let checks_by_elem: HashMap<ElemId, &MemberChecks> =
+        results.member_checks.iter().map(|m| (m.elem, m)).collect();
 
     // --- 部材の着色 ---
     for elem in &app.model.elements {
@@ -270,17 +305,19 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[[f32; 
         let width = if ok { 4.0_f32 } else { 5.0_f32 };
         painter.line_segment([p0, p1], egui::Stroke::new(width, color));
 
-        let positions: &[(f64, &CheckResult)] = checks_by_elem
+        let positions: &[PositionCheck] = checks_by_elem
             .get(&elem.id)
-            .map(|v| v.as_slice())
+            .map(|m| m.positions.as_slice())
             .unwrap_or(&[]);
 
-        // B-2: 位置別マーカー（検定位置ごとに正方形。フィルタ対象外の位置は描かない）。
+        // B-2: 位置別マーカー（検定位置ごとに正方形。フィルタ対象外の位置
+        // （検定不能を含む）は描かない）。
         if markers {
-            for &(xi, cr) in positions {
-                let Some((r, _)) = ratio_for_filter(cr, filter) else {
+            for p in positions {
+                let Some((r, _)) = ratio_for_filter(&p.outcome, filter) else {
                     continue;
                 };
+                let xi = p.xi;
                 let mx = p0.x + (p1.x - p0.x) * xi as f32;
                 let my = p0.y + (p1.y - p0.y) * xi as f32;
                 let mcolor = theme::status_color(r);
@@ -307,12 +344,17 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[[f32; 
             }
         }
 
-        // B-4: 中点ラベル（部材内最大＝ratio）。フィルタ=最大のときは支配式を併記する。
+        // B-4: 中点ラベル（部材内最大＝ratio）。フィルタ=最大のときは支配式を併記する
+        // （検定不能の位置は対象外。Checked の中から最大を選ぶ）。
         let dominant = if filter == CheckRatioFilter::Max {
             positions
                 .iter()
-                .max_by(|a, b| a.1.ratio.partial_cmp(&b.1.ratio).unwrap())
-                .and_then(|(_, cr)| dominant_kind(cr))
+                .filter_map(|p| match &p.outcome {
+                    CheckOutcome::Checked(cr) => Some(cr),
+                    CheckOutcome::Skipped { .. } => None,
+                })
+                .max_by(|a, b| a.ratio().partial_cmp(&b.ratio()).unwrap())
+                .and_then(dominant_kind)
         } else {
             None
         };
@@ -353,22 +395,22 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[[f32; 
 }
 
 /// B-3: 部材 `elem_id` の検定詳細（位置×式）をポインタ位置にツールチップ表示する。
-/// `app.results.checks` に当該部材の検定が無ければ何も描かない。
+/// `app.results.member_checks` に当該部材の検定が無ければ何も描かない。
 pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     let Some(results) = &app.results else {
         return;
     };
-    let positions = elem_check_positions(&results.checks, elem_id);
+    let positions = elem_check_positions(&results.member_checks, elem_id);
     if positions.is_empty() {
         return;
     }
-    let basis = results
-        .checks
-        .iter()
-        .find(|(id, _, _)| *id == elem_id)
-        .map(|(_, _, cr)| cr.basis.clone())
-        .unwrap_or_default();
-    let (kinds, rows) = build_tooltip_rows(&positions);
+    // ヘッダに添える根拠・理由: 先頭位置の検定結果（Checked なら basis、
+    // Skipped なら reason）を代表値として使う。
+    let basis = match &positions[0].outcome {
+        CheckOutcome::Checked(cr) => cr.basis.clone(),
+        CheckOutcome::Skipped { reason } => reason.clone(),
+    };
+    let (kinds, rows) = build_tooltip_rows(positions);
 
     // `show_tooltip_at_pointer` は egui 0.34 で非推奨（`Tooltip` 型を使う新 API へ
     // 移行中）だが、ウィジェットに紐付かない任意位置へのツールチップ表示という
@@ -402,10 +444,16 @@ pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
                                 }
                             }
                         }
-                        if row.ok {
-                            ui.label("OK");
-                        } else {
-                            ui.colored_label(theme::PARETO_RED, "NG");
+                        match &row.verdict {
+                            RowVerdict::Ok => {
+                                ui.label("OK");
+                            }
+                            RowVerdict::Ng => {
+                                ui.colored_label(theme::PARETO_RED, "NG");
+                            }
+                            RowVerdict::Skipped(reason) => {
+                                ui.colored_label(theme::GRAY_600, format!("検定不能（{reason}）"));
+                            }
                         }
                         ui.end_row();
                     }
@@ -500,7 +548,7 @@ fn draw_legend(
     let untested_rect = painter.text(
         egui::pos2(x, y),
         egui::Align2::LEFT_TOP,
-        "未検定: グレー",
+        "未検定・検定不能: グレー",
         egui::FontId::proportional(11.0),
         theme::GRAY_600,
     );
@@ -532,13 +580,24 @@ fn draw_legend(
 mod tests {
     use super::*;
 
-    fn cr(ratio: f64, ok: bool, components: Vec<CheckComponent>) -> CheckResult {
-        CheckResult {
-            ratio,
-            ok,
+    fn checked(ratio: f64, components: Vec<CheckComponent>) -> CheckOutcome {
+        CheckOutcome::Checked(CheckResult {
             basis: "テスト規準".to_string(),
             detail: String::new(),
-            components,
+            components: if components.is_empty() {
+                vec![CheckComponent {
+                    kind: CheckKind::Bending,
+                    ratio,
+                }]
+            } else {
+                components
+            },
+        })
+    }
+
+    fn skipped(reason: &str) -> CheckOutcome {
+        CheckOutcome::Skipped {
+            reason: reason.to_string(),
         }
     }
 
@@ -644,23 +703,27 @@ mod tests {
 
     // ── ratio_for_filter ────────────────────────────────────────────────
 
-    /// フィルタ=最大は cr.ratio / cr.ok をそのまま返す。
+    /// フィルタ=最大は cr.ratio() / cr.ok() をそのまま返す。
     #[test]
     fn ratio_for_filter_max_returns_ratio_and_ok() {
-        let c = cr(1.13, false, vec![]);
+        let c = checked(
+            1.13,
+            vec![CheckComponent {
+                kind: CheckKind::Shear,
+                ratio: 1.13,
+            }],
+        );
         assert_eq!(
             ratio_for_filter(&c, CheckRatioFilter::Max),
             Some((1.13, false))
         );
     }
 
-    /// フィルタ=特定式は該当式の最大検定比を返し、OK 判定は 1.0 以下かで決まる
-    /// （cr.ok とは独立、components の値のみで判定する）。
+    /// フィルタ=特定式は該当式の最大検定比を返し、OK 判定は 1.0 以下かで決まる。
     #[test]
     fn ratio_for_filter_kind_picks_matching_component() {
-        let c = cr(
+        let c = checked(
             1.13,
-            false,
             vec![
                 CheckComponent {
                     kind: CheckKind::Bending,
@@ -685,9 +748,8 @@ mod tests {
     /// 該当する式が components に無ければ None（フィルタ対象外）。
     #[test]
     fn ratio_for_filter_kind_absent_returns_none() {
-        let c = cr(
+        let c = checked(
             0.5,
-            true,
             vec![CheckComponent {
                 kind: CheckKind::Bending,
                 ratio: 0.5,
@@ -702,9 +764,8 @@ mod tests {
     /// 同一 kind の component が複数ある場合は最大値を採用する。
     #[test]
     fn ratio_for_filter_kind_multiple_same_kind_picks_max() {
-        let c = cr(
+        let c = checked(
             0.9,
-            true,
             vec![
                 CheckComponent {
                     kind: CheckKind::Shear,
@@ -722,15 +783,26 @@ mod tests {
         );
     }
 
+    /// 検定不能（Skipped）はフィルタ種別によらず常に None。
+    #[test]
+    fn ratio_for_filter_skipped_returns_none() {
+        let s = skipped("Fc 未設定");
+        assert_eq!(ratio_for_filter(&s, CheckRatioFilter::Max), None);
+        assert_eq!(
+            ratio_for_filter(&s, CheckRatioFilter::Kind(CheckKind::Bending)),
+            None
+        );
+    }
+
     // ── dominant_kind ───────────────────────────────────────────────────
 
     /// 最大検定比を与える component の kind を返す。
     #[test]
     fn dominant_kind_picks_max_component() {
-        let c = cr(
-            1.13,
-            false,
-            vec![
+        let cr = CheckResult {
+            basis: String::new(),
+            detail: String::new(),
+            components: vec![
                 CheckComponent {
                     kind: CheckKind::Bending,
                     ratio: 0.82,
@@ -740,15 +812,8 @@ mod tests {
                     ratio: 1.13,
                 },
             ],
-        );
-        assert_eq!(dominant_kind(&c), Some(CheckKind::Shear));
-    }
-
-    /// components が空なら None。
-    #[test]
-    fn dominant_kind_empty_components_returns_none() {
-        let c = cr(0.5, true, vec![]);
-        assert_eq!(dominant_kind(&c), None);
+        };
+        assert_eq!(dominant_kind(&cr), Some(CheckKind::Shear));
     }
 
     // ── available_check_kinds ───────────────────────────────────────────
@@ -810,52 +875,98 @@ mod tests {
     fn elem_check_positions_filters_by_elem_id() {
         let a = ElemId(0);
         let b = ElemId(1);
-        let checks = vec![
-            (a, 0.0, cr(0.5, true, vec![])),
-            (b, 0.0, cr(1.5, false, vec![])),
-            (a, 1.0, cr(0.9, true, vec![])),
+        let member_checks = vec![
+            MemberChecks {
+                elem: a,
+                positions: vec![
+                    PositionCheck {
+                        xi: 0.0,
+                        outcome: checked(0.5, vec![]),
+                    },
+                    PositionCheck {
+                        xi: 1.0,
+                        outcome: checked(0.9, vec![]),
+                    },
+                ],
+            },
+            MemberChecks {
+                elem: b,
+                positions: vec![PositionCheck {
+                    xi: 0.0,
+                    outcome: checked(1.5, vec![]),
+                }],
+            },
         ];
-        let positions = elem_check_positions(&checks, a);
+        let positions = elem_check_positions(&member_checks, a);
         assert_eq!(positions.len(), 2);
-        assert_eq!(positions[0].0, 0.0);
-        assert_eq!(positions[1].0, 1.0);
+        assert_eq!(positions[0].xi, 0.0);
+        assert_eq!(positions[1].xi, 1.0);
+    }
+
+    /// 検定位置の無い部材は空スライスを返す。
+    #[test]
+    fn elem_check_positions_unknown_elem_returns_empty() {
+        let member_checks: Vec<MemberChecks> = vec![];
+        let positions = elem_check_positions(&member_checks, ElemId(9));
+        assert!(positions.is_empty());
     }
 
     /// 位置×式の表データが、出現した式を列に、位置ごとの値・判定を行に持つ。
     #[test]
     fn build_tooltip_rows_builds_table() {
         let positions = vec![
-            (
-                0.0,
-                true,
-                vec![
-                    CheckComponent {
-                        kind: CheckKind::Bending,
-                        ratio: 0.5,
-                    },
-                    CheckComponent {
+            PositionCheck {
+                xi: 0.0,
+                outcome: checked(
+                    0.5,
+                    vec![
+                        CheckComponent {
+                            kind: CheckKind::Bending,
+                            ratio: 0.5,
+                        },
+                        CheckComponent {
+                            kind: CheckKind::Shear,
+                            ratio: 0.4,
+                        },
+                    ],
+                ),
+            },
+            PositionCheck {
+                xi: 0.5,
+                outcome: checked(
+                    1.13,
+                    vec![CheckComponent {
                         kind: CheckKind::Shear,
-                        ratio: 0.4,
-                    },
-                ],
-            ),
-            (
-                0.5,
-                false,
-                vec![CheckComponent {
-                    kind: CheckKind::Shear,
-                    ratio: 1.13,
-                }],
-            ),
+                        ratio: 1.13,
+                    }],
+                ),
+            },
         ];
         let (kinds, rows) = build_tooltip_rows(&positions);
         assert_eq!(kinds, vec![CheckKind::Bending, CheckKind::Shear]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].values, vec![Some(0.5), Some(0.4)]);
-        assert!(rows[0].ok);
+        assert!(matches!(rows[0].verdict, RowVerdict::Ok));
         // 2 行目は Bending 式が無いため None。
         assert_eq!(rows[1].values, vec![None, Some(1.13)]);
-        assert!(!rows[1].ok);
+        assert!(matches!(rows[1].verdict, RowVerdict::Ng));
+    }
+
+    /// 検定不能の位置は列の判定には寄与せず、行の判定は Skipped(理由) になる。
+    #[test]
+    fn build_tooltip_rows_skipped_position() {
+        let positions = vec![PositionCheck {
+            xi: 0.0,
+            outcome: skipped("Fc 未設定"),
+        }];
+        let (kinds, rows) = build_tooltip_rows(&positions);
+        assert!(kinds.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].values.is_empty());
+        match &rows[0].verdict {
+            RowVerdict::Skipped(reason) => assert_eq!(reason, "Fc 未設定"),
+            _ => panic!("expected Skipped"),
+        }
     }
 
     /// 検定位置が無ければ表も空。

@@ -511,18 +511,27 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 検定比図: 検定式フィルタ（最大／式別、結果に現れる式のみ選択肢に出す）と
     // 位置別マーカーの表示切替。
     if mode == ViewMode::CheckRatio {
+        fn checked_components(
+            outcome: &squid_n_design_jp::CheckOutcome,
+        ) -> Option<&[squid_n_design_jp::CheckComponent]> {
+            match outcome {
+                squid_n_design_jp::CheckOutcome::Checked(cr) => Some(cr.components.as_slice()),
+                squid_n_design_jp::CheckOutcome::Skipped { .. } => None,
+            }
+        }
         let available_kinds = app
             .results
             .as_ref()
             .map(|r| {
                 check_ratio::available_check_kinds(
-                    r.checks
+                    r.member_checks
                         .iter()
-                        .map(|(_, _, cr)| cr.components.as_slice())
+                        .flat_map(|m| m.positions.iter())
+                        .filter_map(|p| checked_components(&p.outcome))
                         .chain(
                             r.joint_checks
                                 .iter()
-                                .map(|(_, _, cr)| cr.components.as_slice()),
+                                .filter_map(|j| checked_components(&j.outcome)),
                         ),
                 )
             })

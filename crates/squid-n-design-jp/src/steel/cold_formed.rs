@@ -77,8 +77,6 @@ pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let basis =
         "2008年版冷間成形角形鋼管設計・施工マニュアル 柱梁耐力比（NG時も耐力低減なし）".to_string();
     let detail = format!(
@@ -93,8 +91,6 @@ pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     );
 
     CheckResult {
-        ratio,
-        ok,
         basis,
         detail,
         // 柱の軸力低減耐力νと梁の全塑性モーメント和の比較（柱梁耐力比）のため
@@ -225,7 +221,7 @@ mod tests {
         let sum_mpc = nu * f * zp * 2.0;
         let expected_required = (1.5 * inp.sum_beam_mp).min(1.3 * mpp);
         let expected_ratio = expected_required / sum_mpc;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -246,6 +242,6 @@ mod tests {
         let nu = nu_factor(0.3);
         let sum_mpc = nu * f * zp * 2.0;
         let expected_ratio = (1.5 * inp.sum_beam_mp) / sum_mpc;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 }

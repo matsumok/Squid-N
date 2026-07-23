@@ -56,8 +56,6 @@ pub fn brb_check(
     let term_label = if long_term { "長期" } else { "短期" };
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis: "座屈補剛ブレース（メーカー許容値による検定）".to_string(),
         detail: format!(
             "{}: |N|={:.4} N, Na={:.4} N, N/Na={:.4} / Lk={:.4} mm, 限界座屈長={:.4} mm, Lk/限界座屈長={:.4}",
@@ -93,8 +91,12 @@ mod tests {
     fn test_brb_check_hand_calc_length_governs() {
         let a = attr();
         let result = brb_check(&a, 500_000.0, 5000.0, false);
-        assert!((result.ratio - 1.1).abs() < 1e-6, "ratio={}", result.ratio);
-        assert!(!result.ok);
+        assert!(
+            (result.ratio() - 1.1).abs() < 1e-6,
+            "ratio={}",
+            result.ratio()
+        );
+        assert!(!result.ok());
     }
 
     /// 軸力が支配するケース: N=1,200,000N（短期許容 1,000,000N 超過）、
@@ -104,8 +106,12 @@ mod tests {
     fn test_brb_check_axial_governs_and_fails() {
         let a = attr();
         let result = brb_check(&a, 1_200_000.0, 3000.0, false);
-        assert!((result.ratio - 1.2).abs() < 1e-6, "ratio={}", result.ratio);
-        assert!(!result.ok);
+        assert!(
+            (result.ratio() - 1.2).abs() < 1e-6,
+            "ratio={}",
+            result.ratio()
+        );
+        assert!(!result.ok());
     }
 
     /// L1（座屈長さ低減距離）を大きくすると Lk が短くなり、座屈長さ検定比が
@@ -117,10 +123,10 @@ mod tests {
         let l = 5000.0;
 
         a.length_reduction = 300.0;
-        let ratio_small_l1 = brb_check(&a, n, l, false).ratio;
+        let ratio_small_l1 = brb_check(&a, n, l, false).ratio();
 
         a.length_reduction = 800.0;
-        let ratio_large_l1 = brb_check(&a, n, l, false).ratio;
+        let ratio_large_l1 = brb_check(&a, n, l, false).ratio();
 
         assert!(
             ratio_large_l1 < ratio_small_l1,
@@ -136,8 +142,8 @@ mod tests {
         let a = attr();
         // Lk = 3000 - 600 = 2400 < 4000（余裕）、N/Na = 400,000/1,000,000=0.4。
         let result = brb_check(&a, 400_000.0, 3000.0, false);
-        assert!(result.ratio <= 1.0, "ratio={}", result.ratio);
-        assert!(result.ok);
+        assert!(result.ratio() <= 1.0, "ratio={}", result.ratio());
+        assert!(result.ok());
     }
 
     /// 長期は短期許容値の 1/1.5 を用いる: 同じ N でも長期の方が検定比が
@@ -149,8 +155,8 @@ mod tests {
         // Lk=1000-600=400、座屈長さ検定比=400/4000=0.1 は軸力検定比より
         // 十分小さく保ち、軸力検定が支配するようにする。
         let l = 1000.0;
-        let ratio_short = brb_check(&a, n, l, false).ratio;
-        let ratio_long = brb_check(&a, n, l, true).ratio;
+        let ratio_short = brb_check(&a, n, l, false).ratio();
+        let ratio_long = brb_check(&a, n, l, true).ratio();
         assert!(
             (ratio_short - 0.3).abs() < 1e-9,
             "ratio_short={}",

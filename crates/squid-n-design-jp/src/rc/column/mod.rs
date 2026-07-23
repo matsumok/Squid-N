@@ -127,8 +127,6 @@ pub(crate) fn column_check(
         );
         let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
-        let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
-
         let basis = "RC 規準14条（円形柱、等価矩形近似）".to_string();
         let detail = format!(
             "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm, \
@@ -159,8 +157,6 @@ pub(crate) fn column_check(
         ];
 
         return CheckResult {
-            ratio,
-            ok: ratio <= 1.0,
             basis,
             detail,
             components,
@@ -288,8 +284,6 @@ pub(crate) fn column_check(
     );
     let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
-    let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
-
     let basis = "RC 規準14条（柱、軸力+二軸曲げ+せん断）".to_string();
     let detail = format!(
         "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, \
@@ -320,8 +314,6 @@ pub(crate) fn column_check(
     ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis,
         detail,
         components,
@@ -468,8 +460,10 @@ mod tests {
             mz: 1.0,
         };
         let design = crate::rc::RcDesign;
-        let r0 = design.check(&forces_z_only, &sec, &mat, &ctx);
-        let ma_z_approx = 1.0 / r0.ratio.max(1e-30);
+        let r0 = design
+            .check(&forces_z_only, &sec, &mat, &ctx)
+            .unwrap_checked();
+        let ma_z_approx = 1.0 / r0.ratio().max(1e-30);
 
         let mz_test = ma_z_approx * 0.3;
         let forces = MemberForcesAt {
@@ -480,18 +474,18 @@ mod tests {
             my: 0.0,
             mz: mz_test,
         };
-        let r = design.check(&forces, &sec, &mat, &ctx);
+        let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(
-            (r.ratio - 0.3).abs() < 0.05,
+            (r.ratio() - 0.3).abs() < 0.05,
             "mz 単独 0.3 割合のとき ratio ≒ 0.3 のはず: ratio={}",
-            r.ratio
+            r.ratio()
         );
     }
 
     /// 矩形柱: components に AxialBending・Shear が含まれ、その最大値が
     /// ratio と一致することを確認する。
     #[test]
-    fn test_column_check_components_axial_bending_and_shear_max_matches_ratio() {
+    fn test_column_check_components_axial_bending_and_shear() {
         let b = 400.0;
         let d_full = 400.0;
         let shape = rc_rect_shape(b, d_full, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
@@ -507,7 +501,7 @@ mod tests {
             mz: 20.0e6,
         };
         let design = crate::rc::RcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert_eq!(result.components.len(), 2);
         assert!(result
             .components
@@ -517,11 +511,5 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 }

@@ -358,14 +358,11 @@ fn test_src_fc_missing_skip() {
     let mat = make_material_no_fc("SD345");
     let ctx = ctx_column(LoadTerm::Long);
     let design = SrcDesign;
-    let result = design.check(&zero_forces(), &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert_eq!(result.ratio, 0.0);
-    assert!(result.basis.contains("Fc"));
-    assert!(
-        result.components.is_empty(),
-        "Fc 未設定の退化ケースは components が空のはず"
-    );
+    let outcome = design.check(&zero_forces(), &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("Fc")),
+        CheckOutcome::Checked(_) => panic!("Fc 未設定は検定不能(Skipped)のはず"),
+    }
 }
 
 #[test]
@@ -388,13 +385,11 @@ fn test_src_shape_mismatch_skip() {
     let mat = make_material(24.0, "SD345");
     let ctx = ctx_column(LoadTerm::Long);
     let design = SrcDesign;
-    let result = design.check(&zero_forces(), &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert!(result.basis.contains("断面形状不一致"));
-    assert!(
-        result.components.is_empty(),
-        "断面形状不一致の退化ケースは components が空のはず"
-    );
+    let outcome = design.check(&zero_forces(), &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("断面形状不一致")),
+        CheckOutcome::Checked(_) => panic!("断面形状不一致は検定不能(Skipped)のはず"),
+    }
 }
 
 // ------------------------------------------------------------------

@@ -105,8 +105,6 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let basis = format!("鋼構造接合部設計指針 パネルゾーン検定 {}断面", shape_label);
     let detail = format!(
         "Ve={:.1} mm2, kappa={:.4}, n={:.4}, pM={:.1} N*mm, pMy={:.1} N*mm, ratio={:.4}",
@@ -114,8 +112,6 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
     );
 
     CheckResult {
-        ratio,
-        ok,
         basis,
         detail,
         components: vec![CheckComponent {
@@ -194,7 +190,7 @@ mod tests {
         let res = s_panel_zone_check(inp);
         let p_m = inp.beam_moment_left + inp.beam_moment_right
             - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0;
-        p_m.abs() / res.ratio
+        p_m.abs() / res.ratio()
     }
 
     #[test]
@@ -205,16 +201,19 @@ mod tests {
             - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0;
         // pM = 200e6+200e6 - (50000+50000)*500/2 = 400e6 - 25e6 = 375e6
         assert!((expected_pm - 375_000_000.0).abs() < 1e-3);
-        assert!(res.ratio > 0.0);
+        assert!(res.ratio() > 0.0);
     }
 
     #[test]
     fn s_panel_axial_ratio_at_or_above_one_clamps_to_zero() {
         let inp = base_panel_h_input(1.0);
         let res = s_panel_zone_check(&inp);
-        assert!(res.ratio.is_infinite(), "pMy=0 のとき ratio は無限大になる");
+        assert!(
+            res.ratio().is_infinite(),
+            "pMy=0 のとき ratio は無限大になる"
+        );
         let inp2 = base_panel_h_input(1.5);
         let res2 = s_panel_zone_check(&inp2);
-        assert!(res2.ratio.is_infinite());
+        assert!(res2.ratio().is_infinite());
     }
 }

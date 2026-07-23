@@ -42,8 +42,6 @@ pub(crate) fn check_brace(
         let fc_val = steel_fc(f, lambda, term);
         let ratio = sigma_c / safe_denom(fc_val);
         CheckResult {
-            ratio,
-            ok: ratio <= 1.0,
             basis: format!(
                 "鋼構造設計規準 {} ブレース: 圧縮 σc/fc(座屈考慮){}",
                 term_label, buckling_note
@@ -63,8 +61,6 @@ pub(crate) fn check_brace(
         let ft_val = steel_ft(f, term);
         let ratio = sigma_t / safe_denom(ft_val);
         CheckResult {
-            ratio,
-            ok: ratio <= 1.0,
             basis: format!("鋼構造設計規準 {} ブレース: 引張 σt/ft", term_label),
             detail: format!("σt={:.4} N/mm², ft={:.4} N/mm²", sigma_t, ft_val),
             components: vec![CheckComponent {
@@ -100,10 +96,12 @@ mod tests {
             length: 4000.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
         let expected = (200_000.0 / sec.area) / (235.0 / 1.5);
-        assert!((result.ratio - expected).abs() < 1e-9);
-        assert!(result.ok);
+        assert!((result.ratio() - expected).abs() < 1e-9);
+        assert!(result.ok());
     }
 
     #[test]
@@ -125,13 +123,15 @@ mod tests {
             length: 6000.0, // 非常に細長い
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
         assert!(
-            !result.ok,
+            !result.ok(),
             "slender brace should fail: ratio={}",
-            result.ratio
+            result.ratio()
         );
-        assert!(result.ratio > 1.0);
+        assert!(result.ratio() > 1.0);
     }
 
     #[test]
@@ -153,11 +153,13 @@ mod tests {
             length: 1000.0,
             ..Default::default()
         };
-        let result = SteelDesign.check(&forces, &sec, &mat_v, &ctx);
+        let result = SteelDesign
+            .check(&forces, &sec, &mat_v, &ctx)
+            .unwrap_checked();
         assert!(
-            result.ok,
+            result.ok(),
             "stocky brace should pass: ratio={}",
-            result.ratio
+            result.ratio()
         );
     }
 }

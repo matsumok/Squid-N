@@ -24,7 +24,7 @@
 //! - [`joint`]: 鉄筋コンクリート造柱梁接合部の断面検定（RC 規準15条）。
 //! - [`wall`]: 鉄筋コンクリート造耐震壁の断面検定（RC 規準18条）。
 
-use crate::{CheckResult, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
+use crate::{CheckOutcome, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
@@ -84,16 +84,11 @@ impl DesignCheck for RcDesign {
         sec: &Section,
         mat: &Material,
         ctx: &DesignCtx,
-    ) -> CheckResult {
+    ) -> CheckOutcome {
         let fc_raw = mat.fc.unwrap_or(0.0);
         if fc_raw <= 0.0 {
-            return CheckResult {
-                ratio: 0.0,
-                ok: true,
-                basis: "RC 検定: Fc 未設定".to_string(),
-                detail: "Material.fc が None/0 です。コンクリート強度を設定してください。"
-                    .to_string(),
-                components: Vec::new(),
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: Fc 未設定（Material.fc が None/0 です。コンクリート強度を設定してください）".to_string(),
             };
         }
 
@@ -101,23 +96,21 @@ impl DesignCheck for RcDesign {
             Some(s @ SectionShape::RcRect { .. }) => s,
             Some(s @ SectionShape::RcCircle { .. }) => s,
             _ => {
-                return CheckResult {
-                    ratio: 0.0,
-                    ok: true,
-                    basis: "RC 検定: 配筋情報なし".to_string(),
-                    detail: "Section.shape が RcRect/RcCircle ではないため検定をスキップしました。"
-                        .to_string(),
-                    components: Vec::new(),
+                return CheckOutcome::Skipped {
+                    reason:
+                        "RC 検定: 配筋情報なし（Section.shape が RcRect/RcCircle ではありません）"
+                            .to_string(),
                 };
             }
         };
 
-        match ctx.kind {
+        let cr = match ctx.kind {
             MemberKind::Beam | MemberKind::Brace => {
                 beam::beam_check(forces, sec, mat, ctx, shape, fc_raw)
             }
             MemberKind::Column => column::column_check(forces, sec, mat, ctx, shape, fc_raw),
-        }
+        };
+        CheckOutcome::Checked(cr)
     }
 }
 

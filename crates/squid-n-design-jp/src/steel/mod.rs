@@ -28,7 +28,7 @@
 //! - [`cold_formed`][]: 冷間成形角形鋼管柱の柱梁耐力比チェック（2008年版
 //!   角形鋼管設計・施工マニュアル）。
 
-use crate::{CheckResult, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
+use crate::{CheckOutcome, DesignCheck, DesignCtx, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
@@ -199,16 +199,17 @@ impl DesignCheck for SteelDesign {
         sec: &Section,
         mat: &Material,
         ctx: &DesignCtx,
-    ) -> CheckResult {
+    ) -> CheckOutcome {
         let t = plate_thickness(sec);
         let f = steel_f_value_prefix(&mat.name, t).unwrap_or(235.0);
         let term = ctx.term;
 
-        match ctx.kind {
+        let cr = match ctx.kind {
             MemberKind::Beam => beam::check_beam(forces, sec, mat, ctx, f, term),
             MemberKind::Column => column::check_column(forces, sec, mat, ctx, f, term),
             MemberKind::Brace => brace::check_brace(forces, sec, ctx, f, term),
-        }
+        };
+        CheckOutcome::Checked(cr)
     }
 }
 

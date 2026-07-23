@@ -413,11 +413,6 @@ pub(crate) fn src_column_check(
         &seismic_y,
     );
 
-    let ratio = ratio_axial
-        .max(ratio_biaxial)
-        .max(shear_z.ratio)
-        .max(shear_y.ratio);
-
     let basis = "SRC規準(1987) 柱: 累加強度式(軸力+二軸曲げ)+ せん断弾性分担".to_string();
     let qd_note_z = if shear_z.used_qd {
         "構造規定方式"
@@ -463,8 +458,6 @@ pub(crate) fn src_column_check(
     ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
         detail,
         components,
@@ -498,8 +491,8 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let r0 = design.check(&forces, &sec, &mat, &ctx);
-        let ma_z = 1.0 / r0.ratio;
+        let r0 = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        let ma_z = 1.0 / r0.ratio();
         assert!(ma_z > 0.0 && ma_z.is_finite());
 
         let (_sa, sz_z, _) = steel_h_props(300.0, 200.0, 9.0, 14.0);
@@ -510,9 +503,9 @@ mod tests {
         assert!(ma_z >= s_mo * 0.99, "ma_z={ma_z}, s_mo={s_mo}");
     }
 
-    /// components に AxialBending・Shear が入り、最大値が ratio と一致する。
+    /// components に AxialBending・Shear が入ることを確認する。
     #[test]
-    fn test_src_column_components_axial_bending_and_shear_max_matches_ratio() {
+    fn test_src_column_components_axial_bending_and_shear() {
         let shape = src_column_shape();
         let sec = make_section(shape);
         let mat = make_material(24.0, "SD345");
@@ -526,7 +519,7 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert_eq!(result.components.len(), 2);
         assert!(result
             .components
@@ -536,12 +529,6 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
-        let max_component = result
-            .components
-            .iter()
-            .map(|c| c.ratio)
-            .fold(0.0_f64, f64::max);
-        assert_eq!(max_component, result.ratio);
     }
 
     #[test]
@@ -558,8 +545,8 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!(result.ratio.is_finite());
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(result.ratio().is_finite());
         assert!(result.detail.contains("rNc"));
         let _ = shape;
     }
@@ -578,9 +565,9 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!(result.ratio.is_finite());
-        assert!(result.ratio > 0.0);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(result.ratio().is_finite());
+        assert!(result.ratio() > 0.0);
     }
 
     #[test]
@@ -595,19 +582,19 @@ mod tests {
             mz: 1.0,
             ..zero_forces()
         };
-        let r0 = design.check(&forces_z, &sec, &mat, &ctx);
-        let ma_z = 1.0 / r0.ratio;
+        let r0 = design.check(&forces_z, &sec, &mat, &ctx).unwrap_checked();
+        let ma_z = 1.0 / r0.ratio();
 
         let mz_test = ma_z * 0.3;
         let forces = MemberForcesAt {
             mz: mz_test,
             ..zero_forces()
         };
-        let r = design.check(&forces, &sec, &mat, &ctx);
+        let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(
-            (r.ratio - 0.3).abs() < 0.05,
+            (r.ratio() - 0.3).abs() < 0.05,
             "mz 単独 0.3 割合のとき ratio ≒ 0.3 のはず: ratio={}",
-            r.ratio
+            r.ratio()
         );
     }
 
@@ -632,8 +619,12 @@ mod tests {
             n: -1.0,
             ..zero_forces()
         };
-        let r_small = design.check(&forces, &sec_small, &mat, &ctx);
-        let r_large = design.check(&forces, &sec_large, &mat, &ctx);
+        let r_small = design
+            .check(&forces, &sec_small, &mat, &ctx)
+            .unwrap_checked();
+        let r_large = design
+            .check(&forces, &sec_large, &mat, &ctx)
+            .unwrap_checked();
         assert!(r_small.detail.contains("rNc"));
         assert!(r_large.detail.contains("rNc"));
     }
@@ -655,13 +646,13 @@ mod tests {
             n: -50_000_000.0,
             ..zero_forces()
         };
-        let r_n = design.check(&forces, &sec, &mat_n, &ctx);
-        let r_l = design.check(&forces, &sec, &mat_l, &ctx);
+        let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
+        let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
         assert!(
-            r_l.ratio > r_n.ratio,
+            r_l.ratio() > r_n.ratio(),
             "軽量1種は rNc 低減で検定比が大きいはず: normal={}, light={}",
-            r_n.ratio,
-            r_l.ratio
+            r_n.ratio(),
+            r_l.ratio()
         );
     }
 

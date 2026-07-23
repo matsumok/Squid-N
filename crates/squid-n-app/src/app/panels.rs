@@ -1325,7 +1325,8 @@ impl App {
                     let t1 = m.period.first().copied().unwrap_or(0.0);
                     ui.label(format!("固有周期 T1: {:.3} s", t1));
                 }
-                ui.label(format!("検定結果数: {}", r.checks.len()));
+                let n_checks: usize = r.member_checks.iter().map(|m| m.positions.len()).sum();
+                ui.label(format!("検定結果数: {}", n_checks));
             } else {
                 ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
             }
@@ -1744,22 +1745,33 @@ impl App {
                     ui.separator();
                     // 検定結果サマリ（同一部材）
                     if let Some(r) = &self.results {
-                        let my_checks: Vec<_> = r
-                            .checks
+                        let positions = r
+                            .member_checks
                             .iter()
-                            .filter(|(id, _, _)| *id == elem_id)
-                            .collect();
-                        ui.label(format!("検定結果（{} 位置）", my_checks.len()));
-                        for (_, pos, cr) in my_checks.iter().take(8) {
-                            let ratio = cr.ratio;
-                            let color = crate::theme::status_color(ratio);
-                            ui.colored_label(
-                                color,
-                                format!("  pos={:.2} 検定比={:.3}", pos, ratio),
-                            );
+                            .find(|m| m.elem == elem_id)
+                            .map(|m| m.positions.as_slice())
+                            .unwrap_or(&[]);
+                        ui.label(format!("検定結果（{} 位置）", positions.len()));
+                        for p in positions.iter().take(8) {
+                            match &p.outcome {
+                                squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                                    let ratio = cr.ratio();
+                                    let color = crate::theme::status_color(ratio);
+                                    ui.colored_label(
+                                        color,
+                                        format!("  pos={:.2} 検定比={:.3}", p.xi, ratio),
+                                    );
+                                }
+                                squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                                    ui.colored_label(
+                                        crate::theme::GRAY_600,
+                                        format!("  pos={:.2} 検定不能（{reason}）", p.xi),
+                                    );
+                                }
+                            }
                         }
-                        if my_checks.len() > 8 {
-                            ui.label(format!("  ... 他 {} 件", my_checks.len() - 8));
+                        if positions.len() > 8 {
+                            ui.label(format!("  ... 他 {} 件", positions.len() - 8));
                         }
                     }
                 } else {

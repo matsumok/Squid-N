@@ -283,8 +283,6 @@ pub(super) fn check_walls(
                 elem.nodes[0],
                 "耐震壁(RC)せん断非線形".to_string(),
                 CheckResult {
-                    ratio,
-                    ok: ratio <= 1.0,
                     basis: "技術基準解説書 耐震壁せん断非線形(Qc/βu/Qu)".to_string(),
                     detail,
                     components: vec![CheckComponent {

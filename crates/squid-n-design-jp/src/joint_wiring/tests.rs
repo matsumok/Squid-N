@@ -125,10 +125,10 @@ fn wall_with_opening_has_larger_ratio_than_without() {
         wall_check_result(&model_with_opening, &forces).expect("小開口は耐震壁のまま検定される");
 
     assert!(
-        res_opening.ratio > res_no_opening.ratio,
+        res_opening.ratio() > res_no_opening.ratio(),
         "開口あり ratio={} <= 開口なし ratio={}",
-        res_opening.ratio,
-        res_no_opening.ratio
+        res_opening.ratio(),
+        res_no_opening.ratio()
     );
 }
 
@@ -169,7 +169,7 @@ fn wall_without_attr_is_checked_as_no_opening() {
     let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
     let model = wall_model(None);
     let res = wall_check_result(&model, &forces).expect("属性なしの壁も検定されるはず");
-    assert!(res.ratio > 0.0);
+    assert!(res.ratio() > 0.0);
 }
 
 /// 単一の個別開口（縦長: l0=750, h0=2000）と、同面積を合計面積のみで
@@ -209,10 +209,10 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         .expect("同面積を面積のみで与えた壁も耐震壁として検定されるはず");
 
     assert!(
-        (res_single_dims.ratio - res_area_only.ratio).abs() > 1e-6,
+        (res_single_dims.ratio() - res_area_only.ratio()).abs() > 1e-6,
         "個別寸法 ratio={} と面積のみ ratio={} が一致してしまっている",
-        res_single_dims.ratio,
-        res_area_only.ratio
+        res_single_dims.ratio(),
+        res_area_only.ratio()
     );
 }
 
@@ -258,10 +258,10 @@ fn wall_multiple_openings_matches_equivalent_opening() {
     let expected = rc_wall_shear_check(&inp);
 
     assert!(
-        (res.ratio - expected.ratio).abs() < 1e-9,
+        (res.ratio() - expected.ratio()).abs() < 1e-9,
         "複数開口 ratio={} と等価開口直接計算 ratio={} が不一致",
-        res.ratio,
-        expected.ratio
+        res.ratio(),
+        expected.ratio()
     );
 }
 
@@ -371,16 +371,16 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
         .expect("包絡開口相当の単一開口も耐震壁として検定されるはず");
 
     assert!(
-        (res_auto.ratio - res_single.ratio).abs() < 1e-9,
+        (res_auto.ratio() - res_single.ratio()).abs() < 1e-9,
         "Auto ratio={} と包絡開口(実寸法)直接計算 ratio={} が不一致",
-        res_auto.ratio,
-        res_single.ratio
+        res_auto.ratio(),
+        res_single.ratio()
     );
     assert!(
-        (res_auto.ratio - res_equiv.ratio).abs() > 1e-6,
+        (res_auto.ratio() - res_equiv.ratio()).abs() > 1e-6,
         "Auto ratio={} と Equivalent ratio={} が一致してしまっている",
-        res_auto.ratio,
-        res_equiv.ratio
+        res_auto.ratio(),
+        res_equiv.ratio()
     );
 }
 
@@ -513,7 +513,7 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
         "detail にトリリニア諸元が含まれる: {}",
         cr.detail
     );
-    assert!(cr.ratio > 0.0, "Qu 検定比が正: {}", cr.ratio);
+    assert!(cr.ratio() > 0.0, "Qu 検定比が正: {}", cr.ratio());
 
     // 側柱の無い壁（主筋量ゼロ）ではトリリニアは出力されない。
     let plain = collect_joint_checks(&wall_model(None), &member_forces, LoadTerm::Short);
@@ -653,6 +653,6 @@ fn rc_cross_joint_emits_ultimate_check() {
         .find(|(_, label, _)| label == "接合部終局(RC)")
         .expect("十字形 RC 接合部は終局検定が出力されるはず");
     // Vju/Qdu が有限で、詳細に κ=1.00（十字形）が含まれる。
-    assert!(ult.2.ratio.is_finite());
+    assert!(ult.2.ratio().is_finite());
     assert!(ult.2.detail.contains("κ=1.00"), "detail={}", ult.2.detail);
 }

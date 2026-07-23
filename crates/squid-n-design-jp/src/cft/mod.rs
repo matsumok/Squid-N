@@ -37,8 +37,8 @@
 use crate::rc::concrete_allowable_compression_class;
 use crate::steel::{steel_f_value_prefix, steel_fc, steel_fs, steel_ft};
 use crate::{
-    effective_slenderness, CheckComponent, CheckKind, CheckResult, DesignCheck, DesignCtx,
-    LoadTerm, MemberForcesAt,
+    effective_slenderness, CheckComponent, CheckKind, CheckOutcome, CheckResult, DesignCheck,
+    DesignCtx, LoadTerm, MemberForcesAt,
 };
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
@@ -370,8 +370,6 @@ fn cft_box_check(
     };
     let ratio_shear = ratio_shear_y.max(ratio_shear_z);
 
-    let ratio = ratio_axial.max(ratio_biaxial).max(ratio_shear);
-
     let basis = "CFT柱(角形): SRC規準に基づく累加強度式".to_string();
     let detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MAz={:.1} N·mm, MAy={:.1} N·mm, \
@@ -402,8 +400,6 @@ fn cft_box_check(
     ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
         detail,
         components,
@@ -478,8 +474,6 @@ fn cft_pipe_check(
     let q_res = (q_design_y.powi(2) + q_design_z.powi(2)).sqrt();
     let ratio_shear = if s_qa > 1e-9 { q_res / s_qa } else { 0.0 };
 
-    let ratio = ratio_axial.max(ratio_biaxial).max(ratio_shear);
-
     let basis = "CFT柱(円形): SRC規準に基づく累加強度式".to_string();
     let detail = format!(
         "cNc={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, MA={:.1} N·mm, mz={:.1} N·mm, \
@@ -499,8 +493,6 @@ fn cft_pipe_check(
     ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
         detail,
         components,
@@ -523,19 +515,15 @@ impl DesignCheck for CftDesign {
         sec: &Section,
         mat: &Material,
         ctx: &DesignCtx,
-    ) -> CheckResult {
+    ) -> CheckOutcome {
         let fc_raw = mat.fc.unwrap_or(0.0);
         if fc_raw <= 0.0 {
-            return CheckResult {
-                ratio: 0.0,
-                ok: true,
-                basis: "CFT検定: Fc未設定".to_string(),
-                detail: "Material.fc が None/0 のため検定をスキップしました。".to_string(),
-                components: Vec::new(),
+            return CheckOutcome::Skipped {
+                reason: "CFT検定: Fc未設定（Material.fc が None/0 です）".to_string(),
             };
         }
 
-        match &sec.shape {
+        let cr = match &sec.shape {
             Some(SectionShape::CftBox {
                 height,
                 width,
@@ -544,15 +532,15 @@ impl DesignCheck for CftDesign {
             Some(SectionShape::CftPipe { outer_dia, thick }) => {
                 cft_pipe_check(forces, mat, ctx, *outer_dia, *thick, fc_raw)
             }
-            _ => CheckResult {
-                ratio: 0.0,
-                ok: true,
-                basis: "CFT検定: 断面形状不一致".to_string(),
-                detail: "Section.shape が CftBox/CftPipe ではないため検定をスキップしました。"
-                    .to_string(),
-                components: Vec::new(),
-            },
-        }
+            _ => {
+                return CheckOutcome::Skipped {
+                    reason:
+                        "CFT検定: 断面形状不一致（Section.shape が CftBox/CftPipe ではありません）"
+                            .to_string(),
+                };
+            }
+        };
+        CheckOutcome::Checked(cr)
     }
 }
 
