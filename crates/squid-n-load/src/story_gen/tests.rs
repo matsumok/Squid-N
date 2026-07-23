@@ -350,6 +350,7 @@ fn two_columns_with_dl_model() -> Model {
         shear: None,
         fc: None,
         fy: None,
+        strength_factor: None,
     });
     for (i, (a, b)) in [(0u32, 2u32), (1, 3)].into_iter().enumerate() {
         model.elements.push(ElementData {
@@ -519,6 +520,7 @@ fn secondary_joist_model() -> Model {
         shear: None,
         fc: None,
         fy: None,
+        strength_factor: None,
     });
     model.secondary_members.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,

@@ -732,6 +732,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
             shear: None,
             fc: None,
             fy: Some(235.0),
+            strength_factor: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),
@@ -923,6 +924,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             shear: None,
             fc: None,
             fy: Some(235.0),
+            strength_factor: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),
@@ -1039,6 +1041,7 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
             shear: None,
             fc: None,
             fy: None,
+            strength_factor: None,
         }],
         ..Default::default()
     };
@@ -1136,6 +1139,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             shear: None,
             fc: None,
             fy: None,
+            strength_factor: None,
         }],
         ..Default::default()
     };
