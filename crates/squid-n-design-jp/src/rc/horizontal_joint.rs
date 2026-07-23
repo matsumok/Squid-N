@@ -27,7 +27,7 @@
 //!   採用する近似）。M=0 位置が求まらない場合（全長同符号）は `Δl = L/2`
 //!   とする。
 
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::Model;
 use squid_n_core::section_shape::SectionShape;
@@ -309,11 +309,16 @@ fn finish(state: &str, tau_xy: f64, tau_u: f64) -> CheckResult {
     } else {
         f64::INFINITY
     };
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis: format!("PCa 水平接合面（{state}状態）せん断検定"),
-        detail: format!("τxy={tau_xy:.4} N/mm², τu={tau_u:.4} N/mm², ratio={ratio:.4}"),
+        detail: String::new(),
+        components: vec![CheckComponent {
+            kind: CheckKind::Shear,
+            ratio,
+            detail: format!("τxy={tau_xy:.4} N/mm², τu={tau_u:.4} N/mm², ratio={ratio:.4}"),
+        }],
     }
 }
 
@@ -370,7 +375,7 @@ mod tests {
         let res = pca_horizontal_joint_service(&inp);
         let tau_xy = 200_000.0 * 16.5e6 / (400.0 * 400.0 * 700.0_f64.powi(3) / 12.0);
         let tau_u = 0.5 * 0.6 * 0.008 * 345.0;
-        assert!((res.ratio - tau_xy / tau_u).abs() < 1e-9);
+        assert!((res.ratio() - tau_xy / tau_u).abs() < 1e-9);
     }
 
     #[test]
@@ -386,14 +391,14 @@ mod tests {
             sigma_y: 300.0,
         });
         let ultimate = pca_horizontal_joint_ultimate(1.0, 1.0, 1.0, 1.0, 0.01, 300.0);
-        assert!((service.ratio / ultimate.ratio - 2.0).abs() < 1e-9);
+        assert!((service.ratio() / ultimate.ratio() - 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn pca_zero_strength_is_ng() {
         let res = pca_horizontal_joint_ultimate(1000.0, 100.0, 10.0, 0.6, 0.0, 345.0);
-        assert!(!res.ok);
-        assert!(res.ratio.is_infinite());
+        assert!(!res.ok());
+        assert!(res.ratio().is_infinite());
     }
 
     // ------------------------------------------------------------------
@@ -527,9 +532,9 @@ mod tests {
         let expected_ratio = expected_tau_xy / expected_tau_u;
         for (_, _, cr) in &service_rows {
             assert!(
-                (cr.ratio - expected_ratio).abs() < 1e-6,
+                (cr.ratio() - expected_ratio).abs() < 1e-6,
                 "ratio={} expected={}",
-                cr.ratio,
+                cr.ratio(),
                 expected_ratio
             );
         }

@@ -4,7 +4,7 @@ use super::common::{rc_dt, ForcesAt, MemberInfo};
 use crate::rc::wall::{rc_wall_shear_check, RcWallInput, WallSideColumn};
 use crate::rc::wall_nonlinear::{wall_shear_trilinear, WallShearTrilinearInput};
 use crate::wall_opening::{equivalent_opening, is_seismic_wall, opening_ratio_r0, WallJudgeInput};
-use crate::{CheckResult, LoadTerm};
+use crate::{CheckComponent, CheckKind, CheckResult, LoadTerm};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementKind, Model};
 use squid_n_core::section_shape::SectionShape;
@@ -271,6 +271,8 @@ pub(super) fn check_walls(
             let tri = wall_shear_trilinear(&tri_inp);
             // 終局せん断強度に対する設計用せん断力の比（Qu 検定）。
             let ratio = if tri.qu > 0.0 { q_design / tri.qu } else { 0.0 };
+            // 単一式（Shear）の検定のため、全文を component の detail に置き、
+            // 共通 detail は空文字列とする。
             let detail = format!(
                 "Qc={:.1} kN, βu={:.3}, Qu={:.1} kN, r={:.3}, QD={:.1} kN（せん断非線形トリリニア骨格）",
                 tri.qc / 1000.0,
@@ -283,10 +285,13 @@ pub(super) fn check_walls(
                 elem.nodes[0],
                 "耐震壁(RC)せん断非線形".to_string(),
                 CheckResult {
-                    ratio,
-                    ok: ratio <= 1.0,
                     basis: "技術基準解説書 耐震壁せん断非線形(Qc/βu/Qu)".to_string(),
-                    detail,
+                    detail: String::new(),
+                    components: vec![CheckComponent {
+                        kind: CheckKind::Shear,
+                        ratio,
+                        detail,
+                    }],
                 },
             ));
         }

@@ -137,6 +137,8 @@ pub(crate) fn compute_design_check_job(
     let mut member_force_rows: Vec<(u32, f64, [f64; 6])> = Vec::new();
     let mut n_checks = 0usize;
     let mut n_ng = 0usize;
+    // 検定不能（Fc 未設定・配筋情報なし等で検定を実施できなかった部材位置）の件数。
+    let mut n_skipped = 0usize;
     let mut max_ratio = 0.0_f64;
 
     // 柱の座屈長さ係数 K 用の節点まわり梁索引（全部材ぶんのループで使い回し、
@@ -282,18 +284,30 @@ pub(crate) fn compute_design_check_job(
                 mz: forces[5],
             };
             // BRB 属性が登録された部材はメーカー許容値による BRB 検定に差し替える
-            // （app.rs run_design_check と同じ規則）。
-            let cr = if let Some(brb) = model.brb_attrs.iter().find(|a| a.elem == *elem_id) {
-                squid_n_design_jp::brb::brb_check(brb, mfa.n, length, true)
+            // （app.rs run_design_check と同じ規則）。BRB 検定は退化ケースを
+            // 持たないため常に Checked。
+            let outcome = if let Some(brb) = model.brb_attrs.iter().find(|a| a.elem == *elem_id) {
+                squid_n_design_jp::CheckOutcome::Checked(squid_n_design_jp::brb::brb_check(
+                    brb, mfa.n, length, true,
+                ))
             } else {
                 checker.check(&mfa, sec, mat, &ctx)
             };
             n_checks += 1;
-            if !cr.ok {
-                n_ng += 1;
-            }
-            if cr.ratio > max_ratio {
-                max_ratio = cr.ratio;
+            match outcome {
+                squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                    if !cr.ok() {
+                        n_ng += 1;
+                    }
+                    if cr.ratio() > max_ratio {
+                        max_ratio = cr.ratio();
+                    }
+                }
+                // 検定不能（Fc 未設定・配筋情報なし等）は NG 扱いにせず、
+                // 別カウンタで区別する。
+                squid_n_design_jp::CheckOutcome::Skipped { .. } => {
+                    n_skipped += 1;
+                }
             }
         }
     }
@@ -307,28 +321,31 @@ pub(crate) fn compute_design_check_job(
         .iter()
         .map(|(id, mf)| (*id, mf.at.as_slice()))
         .collect();
-    // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。単一ケース＝長期扱い）。
+    // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。単一ケース＝長期扱い。
+    // 退化ケースを持たないため常に Checked）。
     for (_, _, cr) in
         squid_n_design_jp::rc::horizontal_joint::collect_pca_checks(model, &mf_slices, true)
     {
         n_checks += 1;
-        if !cr.ok {
+        if !cr.ok() {
             n_ng += 1;
         }
-        if cr.ratio > max_ratio {
-            max_ratio = cr.ratio;
+        if cr.ratio() > max_ratio {
+            max_ratio = cr.ratio();
         }
     }
+    // 節点単位の検定も同様に退化ケースを持たない（該当なしの節点は push
+    // されない）ため、常に Checked として扱う。
     let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks(
         model,
         &mf_slices,
         squid_n_design_jp::LoadTerm::Long,
     );
     let n_joint_checks = joint_checks.len();
-    let n_joint_ng = joint_checks.iter().filter(|(_, _, cr)| !cr.ok).count();
+    let n_joint_ng = joint_checks.iter().filter(|(_, _, cr)| !cr.ok()).count();
     for (_, _, cr) in &joint_checks {
-        if cr.ratio > max_ratio {
-            max_ratio = cr.ratio;
+        if cr.ratio() > max_ratio {
+            max_ratio = cr.ratio();
         }
     }
 
@@ -337,6 +354,9 @@ pub(crate) fn compute_design_check_job(
         "case": lc_id,
         "n_checks": n_checks,
         "n_ng": n_ng,
+        // 検定不能（入力不足等で検定を実施できなかった部材位置）の件数。
+        // NG には含めない。
+        "n_skipped": n_skipped,
         "n_joint_checks": n_joint_checks,
         "n_joint_ng": n_joint_ng,
         "max_ratio": max_ratio,

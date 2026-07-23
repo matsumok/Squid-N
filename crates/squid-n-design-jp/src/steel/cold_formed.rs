@@ -14,7 +14,7 @@
 //! 分岐式をそのまま用いるが、退化域（|n|≧1 等）は安全側にクランプする処理を
 //! 追加している。
 
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 
 /// 冷間成形角形鋼管柱の柱梁耐力比チェックの入力。
 pub struct ColdFormedInput {
@@ -77,26 +77,29 @@ pub fn cold_formed_column_ratio_check(inp: &ColdFormedInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let basis =
         "2008年版冷間成形角形鋼管設計・施工マニュアル 柱梁耐力比（NG時も耐力低減なし）".to_string();
-    let detail = format!(
-        "nu_upper={:.4}, nu_lower={:.4}, SumMpc={:.1} N*mm, 1.5*SumMpb={:.1} N*mm, 1.3*Mpp={:.1} N*mm, required={:.1} N*mm, ratio={:.4}",
-        nu_upper,
-        nu_lower,
-        sum_mpc,
-        beam_req,
-        1.3 * inp.panel_mpp,
-        required,
-        ratio
-    );
-
+    // 単一式（AxialBending）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok,
         basis,
-        detail,
+        detail: String::new(),
+        // 柱の軸力低減耐力νと梁の全塑性モーメント和の比較（柱梁耐力比）のため
+        // AxialBending（軸力＋曲げの複合）に分類する。
+        components: vec![CheckComponent {
+            kind: CheckKind::AxialBending,
+            ratio,
+            detail: format!(
+                "nu_upper={:.4}, nu_lower={:.4}, SumMpc={:.1} N*mm, 1.5*SumMpb={:.1} N*mm, 1.3*Mpp={:.1} N*mm, required={:.1} N*mm, ratio={:.4}",
+                nu_upper,
+                nu_lower,
+                sum_mpc,
+                beam_req,
+                1.3 * inp.panel_mpp,
+                required,
+                ratio
+            ),
+        }],
     }
 }
 
@@ -219,7 +222,7 @@ mod tests {
         let sum_mpc = nu * f * zp * 2.0;
         let expected_required = (1.5 * inp.sum_beam_mp).min(1.3 * mpp);
         let expected_ratio = expected_required / sum_mpc;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -240,6 +243,6 @@ mod tests {
         let nu = nu_factor(0.3);
         let sum_mpc = nu * f * zp * 2.0;
         let expected_ratio = (1.5 * inp.sum_beam_mp) / sum_mpc;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 }

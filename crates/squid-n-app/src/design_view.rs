@@ -84,24 +84,57 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "⚠ モデルが編集されました。解析を再実行してください。",
         );
     }
-    let checks: Vec<(squid_n_core::ids::ElemId, f64, f64, bool, String)> = app
+    // 1 行 = 1 検定位置。検定不能（Skipped）は ratio/ok を持たないため
+    // `Option` にし、根拠セルには reason を表示する（判定は「検定不能」灰色）。
+    struct CheckRow {
+        elem: squid_n_core::ids::ElemId,
+        pos: f64,
+        ratio: Option<f64>,
+        ok: Option<bool>,
+        basis: String,
+        /// 全検定式に共通の数値根拠（根拠セルのホバー表示用）。
+        detail: String,
+        components: Vec<squid_n_design_jp::CheckComponent>,
+    }
+    let checks: Vec<CheckRow> = app
         .results
         .as_ref()
         .map(|r| {
-            r.checks
+            r.member_checks
                 .iter()
-                .map(|(id, pos, cr)| (*id, *pos, cr.ratio, cr.ok, cr.basis.clone()))
+                .flat_map(|m| {
+                    m.positions.iter().map(move |p| match &p.outcome {
+                        squid_n_design_jp::CheckOutcome::Checked(cr) => CheckRow {
+                            elem: m.elem,
+                            pos: p.xi,
+                            ratio: Some(cr.ratio()),
+                            ok: Some(cr.ok()),
+                            basis: cr.basis.clone(),
+                            detail: cr.detail.clone(),
+                            components: cr.components.clone(),
+                        },
+                        squid_n_design_jp::CheckOutcome::Skipped { reason } => CheckRow {
+                            elem: m.elem,
+                            pos: p.xi,
+                            ratio: None,
+                            ok: None,
+                            basis: reason.clone(),
+                            detail: String::new(),
+                            components: Vec::new(),
+                        },
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
     // 各行の部材に割り当てられている断面（NG部材→断面編集への遷移用）。
     let section_of: Vec<Option<(squid_n_core::ids::SectionId, String)>> = checks
         .iter()
-        .map(|(elem_id, _, _, _, _)| {
+        .map(|row| {
             app.model
                 .elements
                 .iter()
-                .find(|e| e.id == *elem_id)
+                .find(|e| e.id == row.elem)
                 .and_then(|e| e.section)
                 .and_then(|sid| {
                     app.model
@@ -119,7 +152,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "検定結果がありません。解析タブから静的解析を実行してください（部材に断面と材料の割当が必要です）。",
         );
     } else {
-        let ng_count = checks.iter().filter(|(_, _, _, ok, _)| !ok).count();
+        // NG 件数集計には検定不能（ok=None）を含めない。
+        let ng_count = checks.iter().filter(|row| row.ok == Some(false)).count();
         ui.label(format!(
             "{} 位置を検定、NG {} 件（部材IDクリックで 3D ビューにハイライト）",
             checks.len(),
@@ -139,9 +173,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(60.0))
         .column(Column::initial(200.0))
+        .column(Column::initial(220.0))
         .column(Column::initial(90.0))
         .header(row_h, |mut h| {
-            for t in &["部材", "位置", "検定比", "判定", "根拠", "断面"] {
+            for t in &["部材", "位置", "検定比", "判定", "根拠", "内訳", "断面"] {
                 h.col(|ui| {
                     ui.strong(*t);
                 });
@@ -150,33 +185,66 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         .body(|body| {
             body.rows(row_h, n, |mut row| {
                 let i = row.index();
-                let (elem_id, pos, ratio, ok, basis) = &checks[i];
-                let is_focus = app.nav.focus_member == Some(*elem_id);
+                let r = &checks[i];
+                let is_focus = app.nav.focus_member == Some(r.elem);
                 row.col(|ui| {
                     if ui
-                        .selectable_label(is_focus, elem_id.0.to_string())
+                        .selectable_label(is_focus, r.elem.0.to_string())
                         .on_hover_text("クリックで部材を選択（結果タブの3Dビューで確認できます）")
                         .clicked()
                     {
-                        focus = Some(*elem_id);
+                        focus = Some(r.elem);
                     }
                 });
                 row.col(|ui| {
-                    ui.label(format!("{:.3}", pos));
+                    ui.label(format!("{:.3}", r.pos));
                 });
-                let ratio_color = crate::theme::status_color(*ratio);
-                row.col(|ui| {
-                    ui.colored_label(ratio_color, format!("{:.4}", ratio));
+                row.col(|ui| match r.ratio {
+                    Some(ratio) => {
+                        ui.colored_label(
+                            crate::theme::status_color(ratio),
+                            format!("{:.4}", ratio),
+                        );
+                    }
+                    None => {
+                        ui.label("-");
+                    }
                 });
-                row.col(|ui| {
-                    if *ok {
+                row.col(|ui| match r.ok {
+                    Some(true) => {
                         ui.label("OK");
-                    } else {
+                    }
+                    Some(false) => {
                         ui.colored_label(crate::theme::ERROR_RED, "NG");
                     }
+                    None => {
+                        ui.colored_label(crate::theme::GRAY_600, "検定不能");
+                    }
                 });
                 row.col(|ui| {
-                    ui.label(basis);
+                    if r.detail.is_empty() {
+                        ui.label(&r.basis);
+                    } else {
+                        ui.label(&r.basis).on_hover_text(&r.detail);
+                    }
+                });
+                row.col(|ui| {
+                    if r.components.is_empty() {
+                        ui.label("-");
+                    } else {
+                        ui.horizontal(|ui| {
+                            for (idx, c) in r.components.iter().enumerate() {
+                                if idx > 0 {
+                                    ui.label("／");
+                                }
+                                ui.colored_label(
+                                    crate::theme::status_color(c.ratio),
+                                    format!("{} {:.2}", c.kind.label(), c.ratio),
+                                )
+                                .on_hover_text(&c.detail);
+                            }
+                        });
+                    }
                 });
                 row.col(|ui| match &section_of[i] {
                     Some((sid, name)) => {
@@ -185,7 +253,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                             .on_hover_text("クリックでモデルタブの断面編集へ移動")
                             .clicked()
                         {
-                            jump_to_section = Some((*sid, *elem_id));
+                            jump_to_section = Some((*sid, r.elem));
                         }
                     }
                     None => {
@@ -205,20 +273,57 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // ── 一次設計: 節点単位の検定（柱梁接合部・パネルゾーン・冷間耐力比・耐震壁） ──
-    let joint_checks: Vec<(squid_n_core::ids::NodeId, String, f64, bool, String)> = app
+    struct JointCheckRow {
+        node: squid_n_core::ids::NodeId,
+        label: String,
+        ratio: Option<f64>,
+        ok: Option<bool>,
+        basis: String,
+        /// 根拠セルのホバー表示用（単一式なので component の detail。
+        /// 共通 detail がある場合はその後に連結する）。
+        detail: String,
+    }
+    let joint_checks: Vec<JointCheckRow> = app
         .results
         .as_ref()
         .map(|r| {
             r.joint_checks
                 .iter()
-                .map(|(id, label, cr)| (*id, label.clone(), cr.ratio, cr.ok, cr.basis.clone()))
+                .map(|j| match &j.outcome {
+                    squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                        let mut detail = cr.detail.clone();
+                        if let Some(c) = cr.components.first() {
+                            if !detail.is_empty() {
+                                detail.push_str(", ");
+                            }
+                            detail.push_str(&c.detail);
+                        }
+                        JointCheckRow {
+                            node: j.node,
+                            label: j.label.clone(),
+                            ratio: Some(cr.ratio()),
+                            ok: Some(cr.ok()),
+                            basis: cr.basis.clone(),
+                            detail,
+                        }
+                    }
+                    squid_n_design_jp::CheckOutcome::Skipped { reason } => JointCheckRow {
+                        node: j.node,
+                        label: j.label.clone(),
+                        ratio: None,
+                        ok: None,
+                        basis: reason.clone(),
+                        detail: String::new(),
+                    },
+                })
                 .collect()
         })
         .unwrap_or_default();
     if !joint_checks.is_empty() {
         ui.add_space(12.0);
         ui.strong("接合部・耐震壁の検定");
-        let ng = joint_checks.iter().filter(|(_, _, _, ok, _)| !ok).count();
+        // NG 件数集計には検定不能（ok=None）を含めない。
+        let ng = joint_checks.iter().filter(|j| j.ok == Some(false)).count();
         ui.label(format!("{} 箇所を検定、NG {} 件", joint_checks.len(), ng));
         let row_h = crate::theme::table_row_height(ui);
         TableBuilder::new(ui)
@@ -238,26 +343,41 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             })
             .body(|body| {
                 body.rows(row_h, joint_checks.len(), |mut row| {
-                    let (node_id, label, ratio, ok, basis) = &joint_checks[row.index()];
+                    let j = &joint_checks[row.index()];
                     row.col(|ui| {
-                        ui.label(node_id.0.to_string());
+                        ui.label(j.node.0.to_string());
                     });
                     row.col(|ui| {
-                        ui.label(label);
+                        ui.label(&j.label);
                     });
-                    let ratio_color = crate::theme::status_color(*ratio);
-                    row.col(|ui| {
-                        ui.colored_label(ratio_color, format!("{:.4}", ratio));
+                    row.col(|ui| match j.ratio {
+                        Some(ratio) => {
+                            ui.colored_label(
+                                crate::theme::status_color(ratio),
+                                format!("{:.4}", ratio),
+                            );
+                        }
+                        None => {
+                            ui.label("-");
+                        }
                     });
-                    row.col(|ui| {
-                        if *ok {
+                    row.col(|ui| match j.ok {
+                        Some(true) => {
                             ui.label("OK");
-                        } else {
+                        }
+                        Some(false) => {
                             ui.colored_label(crate::theme::ERROR_RED, "NG");
+                        }
+                        None => {
+                            ui.colored_label(crate::theme::GRAY_600, "検定不能");
                         }
                     });
                     row.col(|ui| {
-                        ui.label(basis);
+                        if j.detail.is_empty() {
+                            ui.label(&j.basis);
+                        } else {
+                            ui.label(&j.basis).on_hover_text(&j.detail);
+                        }
                     });
                 });
             });

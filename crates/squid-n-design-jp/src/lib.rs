@@ -108,11 +108,88 @@ pub struct MemberForcesAt {
     pub mz: f64,
 }
 
-pub struct CheckResult {
+/// 検定式の種別（検定比の内訳表示用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CheckKind {
+    /// 曲げ
+    Bending,
+    /// せん断
+    Shear,
+    /// 付着
+    Bond,
+    /// 軸力＋曲げの複合（組合せ応力）
+    AxialBending,
+    /// 軸力のみ（ブレース等）
+    Axial,
+    /// たわみ
+    Deflection,
+}
+
+impl CheckKind {
+    /// 表示用の日本語ラベル。
+    pub fn label(&self) -> &'static str {
+        match self {
+            CheckKind::Bending => "曲げ",
+            CheckKind::Shear => "せん断",
+            CheckKind::Bond => "付着",
+            CheckKind::AxialBending => "軸+曲げ",
+            CheckKind::Axial => "軸",
+            CheckKind::Deflection => "たわみ",
+        }
+    }
+}
+
+/// 1 検定式分の結果（検定比の内訳）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckComponent {
+    pub kind: CheckKind,
     pub ratio: f64,
-    pub ok: bool,
-    pub basis: String,
+    /// この検定式に固有の数値根拠（許容値・作用値・中間係数など）。
     pub detail: String,
+}
+
+/// 1 検定位置の検定結果（検定を実施できた場合）。
+///
+/// `ratio`/`ok` は保持せず、`components`（式別内訳）から
+/// [`CheckResult::ratio`]/[`CheckResult::ok`] で導出する（単一情報源化）。
+/// `components` は **必ず 1 件以上**（検定不能の退化ケースは
+/// [`CheckOutcome::Skipped`] で表現するため、`CheckResult` を返す時点で
+/// 検定式が確定している）。
+pub struct CheckResult {
+    pub basis: String,
+    /// 全検定式に共通の数値根拠（断面諸元など）。式固有の情報は各
+    /// `CheckComponent::detail` に持つ。
+    pub detail: String,
+    /// 式別の検定比内訳（1件以上）。
+    pub components: Vec<CheckComponent>,
+}
+
+impl CheckResult {
+    /// 全検定式中の最大検定比（`components` が空の場合は 0.0）。
+    pub fn ratio(&self) -> f64 {
+        self.components
+            .iter()
+            .map(|c| c.ratio)
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// 全検定式が許容内か（`ratio() <= 1.0`）。
+    pub fn ok(&self) -> bool {
+        self.ratio() <= 1.0
+    }
+}
+
+/// 1 検定位置・1 検定項目の結果。検定を実施できたか（`Checked`）／入力不足・
+/// 断面形状不一致等で実施できなかったか（`Skipped`）を型で区別する。
+///
+/// `Skipped` は「検定比 0・OK」という偽の安全側結果を排除するために導入した
+/// （表示側は未検定として扱い、検定比図・検定表のいずれでも NG 件数に含めない）。
+pub enum CheckOutcome {
+    Checked(CheckResult),
+    /// 検定不能（理由の例: 「Fc 未設定」「配筋情報なし」「断面形状不一致」）。
+    Skipped {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,6 +314,30 @@ pub fn effective_slenderness(
     axis_lambda(iy, lk_y).max(axis_lambda(iz, lk_z))
 }
 
+#[cfg(test)]
+impl CheckOutcome {
+    /// テスト用ヘルパー: `Checked` を展開する（`Skipped` の場合はパニック）。
+    pub(crate) fn unwrap_checked(self) -> CheckResult {
+        match self {
+            CheckOutcome::Checked(cr) => cr,
+            CheckOutcome::Skipped { reason } => {
+                panic!("expected CheckOutcome::Checked, got Skipped: {reason}")
+            }
+        }
+    }
+}
+
+/// 共通 detail と全式の detail を連結する（分割で情報が失われていないことの検証用）。
+#[cfg(test)]
+pub(crate) fn full_detail(cr: &CheckResult) -> String {
+    let mut s = cr.detail.clone();
+    for c in &cr.components {
+        s.push_str(", ");
+        s.push_str(&c.detail);
+    }
+    s
+}
+
 pub trait DesignCheck {
     fn check(
         &self,
@@ -244,5 +345,5 @@ pub trait DesignCheck {
         sec: &Section,
         mat: &Material,
         ctx: &DesignCtx,
-    ) -> CheckResult;
+    ) -> CheckOutcome;
 }

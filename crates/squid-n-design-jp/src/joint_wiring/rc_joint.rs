@@ -2,7 +2,7 @@
 
 use super::common::{rc_dt, MemberInfo};
 use crate::rc::joint::{rc_joint_shear_check, JointShape, RcJointInput};
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
 
@@ -142,18 +142,23 @@ pub(super) fn check_rc_joint(
         } else {
             f64::INFINITY
         };
+        // 単一式（Shear）の検定のため、全文を component の detail に置き、
+        // 共通 detail は空文字列とする。
         out.push((
                 nid,
                 "接合部終局(RC)".to_string(),
                 CheckResult {
-                    ratio,
-                    ok: ratio <= 1.0,
                     basis: "靭性保証型指針 柱梁接合部終局(Vju=κ·φ·Fj·bj·Dj)".to_string(),
-                    detail: format!(
-                        "κ={:.2}, φ={:.2}, Fj={:.3} N/mm², bj={:.1} mm, Dj={:.1} mm, \
-                         Vju={:.1} N, T={:.1} N, T′={:.1} N, Qcu={:.1} N, Qdu={:.1} N, 余裕率={:.3}",
-                        u.kappa, phi, u.fj, bj, col.sec.depth, u.vju, t_top, t_bottom, qcu, u.qdu, u.margin
-                    ),
+                    detail: String::new(),
+                    components: vec![CheckComponent {
+                        kind: CheckKind::Shear,
+                        ratio,
+                        detail: format!(
+                            "κ={:.2}, φ={:.2}, Fj={:.3} N/mm², bj={:.1} mm, Dj={:.1} mm, \
+                             Vju={:.1} N, T={:.1} N, T′={:.1} N, Qcu={:.1} N, Qdu={:.1} N, 余裕率={:.3}",
+                            u.kappa, phi, u.fj, bj, col.sec.depth, u.vju, t_top, t_bottom, qcu, u.qdu, u.margin
+                        ),
+                    }],
                 },
             ));
     }

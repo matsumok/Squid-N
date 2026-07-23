@@ -10,7 +10,7 @@ use super::{ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props,
 use crate::material_strength::rebar_sigma_y;
 use crate::rc::{concrete_allowable_shear_class, rebar_allowable_shear, rebar_allowable_tension};
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
-use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
+use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::Material;
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::RcRebar;
@@ -115,35 +115,41 @@ pub(crate) fn src_beam_check(
         &seismic,
     );
 
-    let ratio = ratio_m.max(shear.ratio);
-
     let basis = "SRC規準(1987) 梁: 累加強度式(曲げ)+ せん断弾性分担".to_string();
     let qd_note = if shear.used_qd {
         "構造規定方式"
     } else {
         "弾性分担"
     };
-    let detail = format!(
-        "sMo={:.1} N·mm, rMA={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm, \
-         sQ={:.1} N, rQ={:.1} N, sQA={:.1} N, rQA={:.1} N, α={:.3}, pw={:.5}, \
+    // Bending 固有: 鉄骨・RC 単純累加の許容曲げモーメントと作用モーメント。
+    let bending_detail = format!(
+        "sMo={:.1} N·mm, rMA={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm",
+        s_mo, r_ma, ma, forces.mz,
+    );
+    // Shear 固有: 鉄骨・RC の弾性分担せん断力・許容せん断力・せん断スパン比・
+    // せん断補強筋比・設計用せん断力の決定方式。
+    let shear_detail = format!(
+        "sQ={:.1} N, rQ={:.1} N, sQA={:.1} N, rQA={:.1} N, α={:.3}, pw={:.5}, \
          設計用せん断力={qd_note}",
-        s_mo,
-        r_ma,
-        ma,
-        forces.mz,
-        shear.s_q,
-        shear.r_q,
-        shear.s_qa,
-        shear.r_qa,
-        shear.alpha,
-        shear.pw
+        shear.s_q, shear.r_q, shear.s_qa, shear.r_qa, shear.alpha, shear.pw
     );
 
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
-        detail,
+        detail: String::new(),
+        components: vec![
+            CheckComponent {
+                kind: CheckKind::Bending,
+                ratio: ratio_m,
+                detail: bending_detail,
+            },
+            CheckComponent {
+                kind: CheckKind::Shear,
+                ratio: shear.ratio,
+                detail: shear_detail,
+            },
+        ],
     }
 }
 
@@ -183,8 +189,23 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!((result.ratio - 0.5).abs() < 1e-6, "ratio={}", result.ratio);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(
+            (result.ratio() - 0.5).abs() < 1e-6,
+            "ratio={}",
+            result.ratio()
+        );
         assert!(result.basis.contains("SRC規準"));
+
+        // components に Bending・Shear が入ることを確認する。
+        assert_eq!(result.components.len(), 2);
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::Bending));
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::Shear));
     }
 }

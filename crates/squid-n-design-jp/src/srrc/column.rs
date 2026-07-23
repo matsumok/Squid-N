@@ -16,7 +16,7 @@ use crate::rc::{
     rebar_allowable_tension, young_ratio_n,
 };
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
-use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
+use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::Material;
 use squid_n_core::rc_capacity::{rc_column_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::RcRebar;
@@ -413,11 +413,6 @@ pub(crate) fn src_column_check(
         &seismic_y,
     );
 
-    let ratio = ratio_axial
-        .max(ratio_biaxial)
-        .max(shear_z.ratio)
-        .max(shear_y.ratio);
-
     let basis = "SRC規準(1987) 柱: 累加強度式(軸力+二軸曲げ)+ せん断弾性分担".to_string();
     let qd_note_z = if shear_z.used_qd {
         "構造規定方式"
@@ -429,33 +424,39 @@ pub(crate) fn src_column_check(
     } else {
         "弾性分担"
     };
-    let detail = format!(
+    // AxialBending 固有: 軸耐力（RC・鉄骨、圧縮/引張）・作用軸力・
+    // 二軸曲げ耐力・作用モーメント・鉄骨フランジ食い込みによる fc' 低減
+    // （s_pc・fc' は rNc の算定に用いるため軸+曲げ側）。
+    let axial_bending_detail = format!(
         "rNc={:.1} N, rNt={:.1} N, sNc={:.1} N, sNt={:.1} N, N={:.1} N, \
-         MAz={:.1} N·mm, MAy={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, \
-         sQAz={:.1} N, rQAz={:.1} N, sQAy={:.1} N, rQAy={:.1} N, s_pc={:.5}, fc'={:.3}, \
+         MAz={:.1} N·mm, MAy={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, s_pc={:.5}, fc'={:.3}",
+        rnc, rnt, s_nc, s_nt, n_design, ma_z, ma_y, forces.mz, forces.my, s_pc, fc_prime
+    );
+    // Shear 固有: 鉄骨・RC の許容せん断力（強軸・弱軸）と設計用せん断力の決定方式。
+    let shear_detail = format!(
+        "sQAz={:.1} N, rQAz={:.1} N, sQAy={:.1} N, rQAy={:.1} N, \
          設計用せん断力(z)={qd_note_z}, 設計用せん断力(y)={qd_note_y}",
-        rnc,
-        rnt,
-        s_nc,
-        s_nt,
-        n_design,
-        ma_z,
-        ma_y,
-        forces.mz,
-        forces.my,
-        shear_z.s_qa,
-        shear_z.r_qa,
-        shear_y.s_qa,
-        shear_y.r_qa,
-        s_pc,
-        fc_prime
+        shear_z.s_qa, shear_z.r_qa, shear_y.s_qa, shear_y.r_qa,
     );
 
+    let components = vec![
+        CheckComponent {
+            kind: CheckKind::AxialBending,
+            ratio: ratio_axial.max(ratio_biaxial),
+            detail: axial_bending_detail,
+        },
+        CheckComponent {
+            kind: CheckKind::Shear,
+            ratio: shear_z.ratio.max(shear_y.ratio),
+            detail: shear_detail,
+        },
+    ];
+
+    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0 && ratio.is_finite(),
         basis,
-        detail,
+        detail: String::new(),
+        components,
     }
 }
 
@@ -486,8 +487,8 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let r0 = design.check(&forces, &sec, &mat, &ctx);
-        let ma_z = 1.0 / r0.ratio;
+        let r0 = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        let ma_z = 1.0 / r0.ratio();
         assert!(ma_z > 0.0 && ma_z.is_finite());
 
         let (_sa, sz_z, _) = steel_h_props(300.0, 200.0, 9.0, 14.0);
@@ -496,6 +497,34 @@ mod tests {
         let s_mo = sz_z * s_ft;
         // N=0 の MA は少なくとも鋼骨単体の sMo 以上であるはず（RC 分は正で加算）。
         assert!(ma_z >= s_mo * 0.99, "ma_z={ma_z}, s_mo={s_mo}");
+    }
+
+    /// components に AxialBending・Shear が入ることを確認する。
+    #[test]
+    fn test_src_column_components_axial_bending_and_shear() {
+        let shape = src_column_shape();
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let ctx = ctx_column(LoadTerm::Long);
+        let forces = MemberForcesAt {
+            n: -500_000.0,
+            qy: 30_000.0,
+            qz: 20_000.0,
+            my: 5_000_000.0,
+            mz: 8_000_000.0,
+            ..zero_forces()
+        };
+        let design = crate::SrcDesign;
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert_eq!(result.components.len(), 2);
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::AxialBending));
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::Shear));
     }
 
     #[test]
@@ -512,9 +541,9 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!(result.ratio.is_finite());
-        assert!(result.detail.contains("rNc"));
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(result.ratio().is_finite());
+        assert!(crate::full_detail(&result).contains("rNc"));
         let _ = shape;
     }
 
@@ -532,9 +561,9 @@ mod tests {
             ..zero_forces()
         };
         let design = crate::SrcDesign;
-        let result = design.check(&forces, &sec, &mat, &ctx);
-        assert!(result.ratio.is_finite());
-        assert!(result.ratio > 0.0);
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert!(result.ratio().is_finite());
+        assert!(result.ratio() > 0.0);
     }
 
     #[test]
@@ -549,19 +578,19 @@ mod tests {
             mz: 1.0,
             ..zero_forces()
         };
-        let r0 = design.check(&forces_z, &sec, &mat, &ctx);
-        let ma_z = 1.0 / r0.ratio;
+        let r0 = design.check(&forces_z, &sec, &mat, &ctx).unwrap_checked();
+        let ma_z = 1.0 / r0.ratio();
 
         let mz_test = ma_z * 0.3;
         let forces = MemberForcesAt {
             mz: mz_test,
             ..zero_forces()
         };
-        let r = design.check(&forces, &sec, &mat, &ctx);
+        let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(
-            (r.ratio - 0.3).abs() < 0.05,
+            (r.ratio() - 0.3).abs() < 0.05,
             "mz 単独 0.3 割合のとき ratio ≒ 0.3 のはず: ratio={}",
-            r.ratio
+            r.ratio()
         );
     }
 
@@ -586,10 +615,14 @@ mod tests {
             n: -1.0,
             ..zero_forces()
         };
-        let r_small = design.check(&forces, &sec_small, &mat, &ctx);
-        let r_large = design.check(&forces, &sec_large, &mat, &ctx);
-        assert!(r_small.detail.contains("rNc"));
-        assert!(r_large.detail.contains("rNc"));
+        let r_small = design
+            .check(&forces, &sec_small, &mat, &ctx)
+            .unwrap_checked();
+        let r_large = design
+            .check(&forces, &sec_large, &mat, &ctx)
+            .unwrap_checked();
+        assert!(crate::full_detail(&r_small).contains("rNc"));
+        assert!(crate::full_detail(&r_large).contains("rNc"));
     }
 
     /// SRC 柱でも軽量コンクリートの 0.9 倍低減が rNc（RC 部分の許容圧縮）に
@@ -609,13 +642,13 @@ mod tests {
             n: -50_000_000.0,
             ..zero_forces()
         };
-        let r_n = design.check(&forces, &sec, &mat_n, &ctx);
-        let r_l = design.check(&forces, &sec, &mat_l, &ctx);
+        let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
+        let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
         assert!(
-            r_l.ratio > r_n.ratio,
+            r_l.ratio() > r_n.ratio(),
             "軽量1種は rNc 低減で検定比が大きいはず: normal={}, light={}",
-            r_n.ratio,
-            r_l.ratio
+            r_n.ratio(),
+            r_l.ratio()
         );
     }
 

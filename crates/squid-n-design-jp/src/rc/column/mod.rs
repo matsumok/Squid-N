@@ -9,7 +9,7 @@ use super::{
     rc_allow, rebar_allowable_tension, rebar_sigma_y, rect_axis_props_strong, rect_axis_props_weak,
     seismic_design_shear, shear_alpha, shear_capacity_for, AxisProps,
 };
-use crate::{CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
+use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
@@ -127,31 +127,38 @@ pub(crate) fn column_check(
         );
         let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
-        let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
-
         let basis = "RC 規準14条（円形柱、等価矩形近似）".to_string();
-        let detail = format!(
-            "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm, \
-             QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw={:.5}, at={:.1} mm², d={:.1} mm",
-            na,
-            n_design,
-            ma,
-            forces.mz,
-            forces.my,
-            qay,
-            qaz,
-            alpha_y,
-            alpha_z,
-            axis.props.pw,
-            axis.props.at,
-            axis.props.d
+        // AxialBending 固有: 軸耐力・作用軸力・等価矩形近似の曲げ耐力・作用モーメント。
+        let axial_bending_detail = format!(
+            "NA={:.1} N, N={:.1} N, MA={:.1} N·mm（等価矩形近似）, mz={:.1} N·mm, my={:.1} N·mm",
+            na, n_design, ma, forces.mz, forces.my,
         );
+        // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比。
+        let shear_detail = format!(
+            "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw={:.5}",
+            qay, qaz, alpha_y, alpha_z, axis.props.pw,
+        );
+        // 共通: 軸+曲げ（N-M 相関曲線）・せん断の双方で用いる断面諸元
+        // （円形柱は強軸・弱軸で axis.props を共有するため）。
+        let detail = format!("at={:.1} mm², d={:.1} mm", axis.props.at, axis.props.d);
+
+        let components = vec![
+            CheckComponent {
+                kind: CheckKind::AxialBending,
+                ratio: ratio_axial.max(ratio_moment),
+                detail: axial_bending_detail,
+            },
+            CheckComponent {
+                kind: CheckKind::Shear,
+                ratio: ratio_qy.max(ratio_qz),
+                detail: shear_detail,
+            },
+        ];
 
         return CheckResult {
-            ratio,
-            ok: ratio <= 1.0,
             basis,
             detail,
+            components,
         };
     }
 
@@ -276,31 +283,38 @@ pub(crate) fn column_check(
     );
     let ratio_qz = if qaz > 0.0 { q_design_z / qaz } else { 0.0 };
 
-    let ratio = ratio_axial.max(ratio_moment).max(ratio_qy).max(ratio_qz);
-
     let basis = "RC 規準14条（柱、軸力+二軸曲げ+せん断）".to_string();
-    let detail = format!(
-        "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm, \
-         QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw_z={:.5}, pw_y={:.5}",
-        na,
-        n_design,
-        ma_z,
-        ma_y,
-        forces.mz,
-        forces.my,
-        qay,
-        qaz,
-        alpha_y,
-        alpha_z,
-        axis_z.props.pw,
-        axis_y.props.pw
+    // AxialBending 固有: 軸耐力・作用軸力・強軸/弱軸それぞれの曲げ耐力・作用モーメント。
+    let axial_bending_detail = format!(
+        "NA={:.1} N, N={:.1} N, MA_z={:.1} N·mm, MA_y={:.1} N·mm, mz={:.1} N·mm, my={:.1} N·mm",
+        na, n_design, ma_z, ma_y, forces.mz, forces.my,
     );
+    // Shear 固有: 二方向の許容せん断力・せん断スパン比・せん断補強筋比
+    // （矩形柱は強軸・弱軸で axis_z/axis_y が別断面諸元のため、pw も方向別）。
+    let shear_detail = format!(
+        "QAy={:.1} N, QAz={:.1} N, αy={:.3}, αz={:.3}, pw_z={:.5}, pw_y={:.5}",
+        qay, qaz, alpha_y, alpha_z, axis_z.props.pw, axis_y.props.pw
+    );
+    // 矩形柱は強軸・弱軸で断面諸元を共有しないため共通 detail は空文字列とする。
+    let detail = String::new();
+
+    let components = vec![
+        CheckComponent {
+            kind: CheckKind::AxialBending,
+            ratio: ratio_axial.max(ratio_moment),
+            detail: axial_bending_detail,
+        },
+        CheckComponent {
+            kind: CheckKind::Shear,
+            ratio: ratio_qy.max(ratio_qz),
+            detail: shear_detail,
+        },
+    ];
 
     CheckResult {
-        ratio,
-        ok: ratio <= 1.0,
         basis,
         detail,
+        components,
     }
 }
 
@@ -444,8 +458,10 @@ mod tests {
             mz: 1.0,
         };
         let design = crate::rc::RcDesign;
-        let r0 = design.check(&forces_z_only, &sec, &mat, &ctx);
-        let ma_z_approx = 1.0 / r0.ratio.max(1e-30);
+        let r0 = design
+            .check(&forces_z_only, &sec, &mat, &ctx)
+            .unwrap_checked();
+        let ma_z_approx = 1.0 / r0.ratio().max(1e-30);
 
         let mz_test = ma_z_approx * 0.3;
         let forces = MemberForcesAt {
@@ -456,11 +472,42 @@ mod tests {
             my: 0.0,
             mz: mz_test,
         };
-        let r = design.check(&forces, &sec, &mat, &ctx);
+        let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
         assert!(
-            (r.ratio - 0.3).abs() < 0.05,
+            (r.ratio() - 0.3).abs() < 0.05,
             "mz 単独 0.3 割合のとき ratio ≒ 0.3 のはず: ratio={}",
-            r.ratio
+            r.ratio()
         );
+    }
+
+    /// 矩形柱: components に AxialBending・Shear が含まれ、その最大値が
+    /// ratio と一致することを確認する。
+    #[test]
+    fn test_column_check_components_axial_bending_and_shear() {
+        let b = 400.0;
+        let d_full = 400.0;
+        let shape = rc_rect_shape(b, d_full, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let ctx = ctx_column(LoadTerm::Long);
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: -200_000.0,
+            qy: 50_000.0,
+            qz: 30_000.0,
+            my: 10.0e6,
+            mz: 20.0e6,
+        };
+        let design = crate::rc::RcDesign;
+        let result = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+        assert_eq!(result.components.len(), 2);
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::AxialBending));
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::Shear));
     }
 }

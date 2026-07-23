@@ -335,17 +335,31 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
-    if !results.checks.is_empty() {
+    if !results.member_checks.is_empty() {
         out.push_str("\n[部材検定]\n部材,位置,検定比,判定,根拠\n");
-        for (elem_id, pos, cr) in &results.checks {
-            out.push_str(&format!(
-                "{},{:.3},{:.4},{},{}\n",
-                elem_id.0,
-                pos,
-                cr.ratio,
-                if cr.ok { "OK" } else { "NG" },
-                cr.basis.replace(',', ";")
-            ));
+        for m in &results.member_checks {
+            for p in &m.positions {
+                match &p.outcome {
+                    squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                        out.push_str(&format!(
+                            "{},{:.3},{:.4},{},{}\n",
+                            m.elem.0,
+                            p.xi,
+                            cr.ratio(),
+                            if cr.ok() { "OK" } else { "NG" },
+                            cr.basis.replace(',', ";")
+                        ));
+                    }
+                    squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                        out.push_str(&format!(
+                            "{},{:.3},-,検定不能,{}\n",
+                            m.elem.0,
+                            p.xi,
+                            reason.replace(',', ";")
+                        ));
+                    }
+                }
+            }
         }
     }
 

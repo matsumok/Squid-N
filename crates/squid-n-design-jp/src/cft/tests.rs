@@ -157,8 +157,8 @@ fn test_cft_box_n0_ma_equals_sm0() {
         mz: 1.0,
         ..zero_forces()
     };
-    let r = design.check(&forces, &sec, &mat, &ctx);
-    let ma_z = 1.0 / r.ratio;
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    let ma_z = 1.0 / r.ratio();
 
     let (_sa, sz_z, _sz_y) = cft_box_steel_props(400.0, 300.0, 9.0);
     let f_value = steel_f_value_prefix("SN400B", 9.0).unwrap();
@@ -182,9 +182,42 @@ fn test_cft_box_n_exceeds_cnc_steel_only() {
         mz: 1_000_000.0,
         ..zero_forces()
     };
-    let r = design.check(&forces, &sec, &mat, &ctx);
-    assert!(r.ratio.is_finite());
-    assert!(r.detail.contains("cNc"));
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(r.ratio().is_finite());
+    assert!(crate::full_detail(&r).contains("cNc"));
+}
+
+/// 断片が意図した component に配置されていることの確認
+/// （AxialBending の detail に "cNc=" が含まれ、Shear の detail には
+/// 含まれない。逆に Shear 固有の "sQAy=" は AxialBending に含まれない）。
+#[test]
+fn test_cft_box_detail_fragments_assigned_to_intended_components() {
+    let sec = cft_box_section(400.0, 300.0, 9.0);
+    let mat = make_material(24.0, "SN400B");
+    let ctx = ctx_column(LoadTerm::Long);
+    let design = CftDesign;
+
+    let forces = MemberForcesAt {
+        n: -500_000.0,
+        mz: 1_000_000.0,
+        qy: 20_000.0,
+        ..zero_forces()
+    };
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    let axial_bending = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::AxialBending)
+        .expect("AxialBending component が存在するはず");
+    let shear = r
+        .components
+        .iter()
+        .find(|c| c.kind == crate::CheckKind::Shear)
+        .expect("Shear component が存在するはず");
+    assert!(axial_bending.detail.contains("cNc="));
+    assert!(!shear.detail.contains("cNc="));
+    assert!(shear.detail.contains("sQAy="));
+    assert!(!axial_bending.detail.contains("sQAy="));
 }
 
 #[test]
@@ -202,9 +235,20 @@ fn test_cft_pipe_biaxial_smoke() {
         my: 8_000_000.0,
         mz: 15_000_000.0,
     };
-    let r = design.check(&forces, &sec, &mat, &ctx);
-    assert!(r.ratio.is_finite() && r.ratio >= 0.0);
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!(r.ratio().is_finite() && r.ratio() >= 0.0);
     assert!(r.basis.contains("円形"));
+
+    // components に AxialBending・Shear が入ることを確認する。
+    assert_eq!(r.components.len(), 2);
+    assert!(r
+        .components
+        .iter()
+        .any(|c| c.kind == crate::CheckKind::AxialBending));
+    assert!(r
+        .components
+        .iter()
+        .any(|c| c.kind == crate::CheckKind::Shear));
 }
 
 #[test]
@@ -226,8 +270,8 @@ fn test_cft_shear_box() {
         qy: s_qa * 0.4,
         ..zero_forces()
     };
-    let r = design.check(&forces, &sec, &mat, &ctx);
-    assert!((r.ratio - 0.4).abs() < 1e-3, "ratio={}", r.ratio);
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!((r.ratio() - 0.4).abs() < 1e-3, "ratio={}", r.ratio());
 }
 
 /// 軽量コンクリート1種の充填 CFT は cNc が 0.9 倍に低減され、
@@ -248,13 +292,13 @@ fn test_cft_box_lightweight_reduces_cnc() {
         n: -50_000_000.0,
         ..zero_forces()
     };
-    let r_n = design.check(&forces, &sec, &mat_n, &ctx);
-    let r_l = design.check(&forces, &sec, &mat_l, &ctx);
+    let r_n = design.check(&forces, &sec, &mat_n, &ctx).unwrap_checked();
+    let r_l = design.check(&forces, &sec, &mat_l, &ctx).unwrap_checked();
     assert!(
-        r_l.ratio > r_n.ratio,
+        r_l.ratio() > r_n.ratio(),
         "軽量1種は cNc 低減で検定比が大きいはず: normal={}, light={}",
-        r_n.ratio,
-        r_l.ratio
+        r_n.ratio(),
+        r_l.ratio()
     );
 }
 
@@ -264,10 +308,11 @@ fn test_cft_fc_missing_skip() {
     let mat = make_material_no_fc("SN400B");
     let ctx = ctx_column(LoadTerm::Long);
     let design = CftDesign;
-    let result = design.check(&zero_forces(), &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert_eq!(result.ratio, 0.0);
-    assert!(result.basis.contains("Fc"));
+    let outcome = design.check(&zero_forces(), &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("Fc")),
+        CheckOutcome::Checked(_) => panic!("Fc 未設定は検定不能(Skipped)のはず"),
+    }
 }
 
 #[test]
@@ -290,9 +335,11 @@ fn test_cft_shape_mismatch_skip() {
     let mat = make_material(24.0, "SN400B");
     let ctx = ctx_column(LoadTerm::Long);
     let design = CftDesign;
-    let result = design.check(&zero_forces(), &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert!(result.basis.contains("断面形状不一致"));
+    let outcome = design.check(&zero_forces(), &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("断面形状不一致")),
+        CheckOutcome::Checked(_) => panic!("断面形状不一致は検定不能(Skipped)のはず"),
+    }
 }
 
 // ------------------------------------------------------------------
@@ -323,7 +370,9 @@ fn test_cft_box_seismic_qd2_scales_shear_ratio_by_n() {
     };
 
     let ctx_none = ctx_column(LoadTerm::Short);
-    let r_none = design.check(&forces, &sec, &mat, &ctx_none);
+    let r_none = design
+        .check(&forces, &sec, &mat, &ctx_none)
+        .unwrap_checked();
 
     let n_factor = 1.5;
     let ctx_qd = DesignCtx {
@@ -337,13 +386,13 @@ fn test_cft_box_seismic_qd2_scales_shear_ratio_by_n() {
         }),
         ..Default::default()
     };
-    let r_qd = design.check(&forces, &sec, &mat, &ctx_qd);
+    let r_qd = design.check(&forces, &sec, &mat, &ctx_qd).unwrap_checked();
 
     assert!(
-        (r_qd.ratio - n_factor * r_none.ratio).abs() / r_none.ratio < 1e-6,
+        (r_qd.ratio() - n_factor * r_none.ratio()).abs() / r_none.ratio() < 1e-6,
         "ratio_none={}, ratio_qd={}, n={}",
-        r_none.ratio,
-        r_qd.ratio,
+        r_none.ratio(),
+        r_qd.ratio(),
         n_factor
     );
 }
@@ -386,7 +435,7 @@ fn test_cft_box_seismic_qd1_governs_when_smaller() {
         }),
         ..Default::default()
     };
-    let r_qd = design.check(&forces, &sec, &mat, &ctx_qd);
+    let r_qd = design.check(&forces, &sec, &mat, &ctx_qd).unwrap_checked();
 
     // 期待値: QD1 = 2·Mu(N=0)/h′（強軸。qy に対応）。
     let shape = SectionShape::CftBox {
@@ -403,9 +452,9 @@ fn test_cft_box_seismic_qd1_governs_when_smaller() {
     );
     let expected_ratio = qd1 / s_qa;
     assert!(
-        (r_qd.ratio - expected_ratio).abs() / expected_ratio < 1e-6,
+        (r_qd.ratio() - expected_ratio).abs() / expected_ratio < 1e-6,
         "ratio={}, expected={}",
-        r_qd.ratio,
+        r_qd.ratio(),
         expected_ratio
     );
 }
@@ -430,6 +479,6 @@ fn test_cft_box_seismic_qd_none_uses_raw_shear() {
         qy: s_qa * 0.4,
         ..zero_forces()
     };
-    let r = design.check(&forces, &sec, &mat, &ctx);
-    assert!((r.ratio - 0.4).abs() < 1e-3, "ratio={}", r.ratio);
+    let r = design.check(&forces, &sec, &mat, &ctx).unwrap_checked();
+    assert!((r.ratio() - 0.4).abs() < 1e-3, "ratio={}", r.ratio());
 }

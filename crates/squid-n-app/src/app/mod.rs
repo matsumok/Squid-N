@@ -221,6 +221,55 @@ pub type SlabCheck = (
     squid_n_design_jp::floor::SlabDesignResult,
 );
 
+/// 1 検定位置の結果（部材内の位置 `xi` と検定結果/検定不能）。
+pub struct PositionCheck {
+    /// 部材軸方向の無次元位置 (0.0=始端, 1.0=終端)。
+    pub xi: f64,
+    pub outcome: squid_n_design_jp::CheckOutcome,
+}
+
+/// 1 部材分の断面検定結果（検定位置の列。`positions` は `xi` 昇順）。
+pub struct MemberChecks {
+    pub elem: ElemId,
+    pub positions: Vec<PositionCheck>,
+}
+
+/// 節点単位の検定（柱梁接合部・パネルゾーン・冷間成形耐力比・耐震壁など）。
+/// `label` は「接合部(RC)」等の種別表示用。
+pub struct JointCheck {
+    pub node: squid_n_core::ids::NodeId,
+    pub label: String,
+    pub outcome: squid_n_design_jp::CheckOutcome,
+}
+
+/// フラットな `(部材, 位置, 検定結果)` の列を部材単位にグループ化し、部材内を
+/// `xi` 昇順に並べ替える（`run_design_check` での検定結果組み立てに使う）。
+/// 部材の出現順は入力列での初出順を保つ。
+pub(crate) fn group_member_checks(
+    flat: Vec<(ElemId, f64, squid_n_design_jp::CheckOutcome)>,
+) -> Vec<MemberChecks> {
+    let mut order: Vec<ElemId> = Vec::new();
+    let mut by_elem: std::collections::HashMap<ElemId, Vec<PositionCheck>> =
+        std::collections::HashMap::new();
+    for (elem, xi, outcome) in flat {
+        by_elem
+            .entry(elem)
+            .or_insert_with(|| {
+                order.push(elem);
+                Vec::new()
+            })
+            .push(PositionCheck { xi, outcome });
+    }
+    order
+        .into_iter()
+        .map(|elem| {
+            let mut positions = by_elem.remove(&elem).unwrap_or_default();
+            positions.sort_by(|a, b| a.xi.partial_cmp(&b.xi).unwrap_or(std::cmp::Ordering::Equal));
+            MemberChecks { elem, positions }
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub struct ResultsBundle {
     pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
@@ -228,14 +277,10 @@ pub struct ResultsBundle {
     pub combos: Vec<(String, squid_n_solver::linear::StaticOnce)>,
     pub modal: Option<squid_n_solver::eigen::ModalResult>,
     pub member_forces: Vec<(ElemId, squid_n_element::beam::MemberForces)>,
-    pub checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)>,
+    /// 部材単位の断面検定結果（部材ごとに検定位置をグループ化）。
+    pub member_checks: Vec<MemberChecks>,
     /// 節点単位の検定結果（柱梁接合部・パネルゾーン・冷間成形耐力比など）。
-    /// ラベルは「接合部(RC)」等の種別表示用。
-    pub joint_checks: Vec<(
-        squid_n_core::ids::NodeId,
-        String,
-        squid_n_design_jp::CheckResult,
-    )>,
+    pub joint_checks: Vec<JointCheck>,
     /// 床の中での小梁設計（単純支持梁）。実部材化された小梁は全体 FEM で検定する
     /// ためここには含めない。
     pub joist_checks: Vec<JoistCheck>,
@@ -589,6 +634,12 @@ pub struct App {
     /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
     #[cfg(feature = "gui")]
     pub cmq_component: crate::viewer::CmqComponent,
+    /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）
+    #[cfg(feature = "gui")]
+    pub check_ratio_filter: crate::viewer::CheckRatioFilter,
+    /// 検定比図で検定位置ごとの正方形マーカーを表示するか
+    #[cfg(feature = "gui")]
+    pub check_ratio_markers: bool,
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
@@ -764,6 +815,10 @@ impl Default for App {
             view_mode: crate::viewer::ViewMode::default(),
             #[cfg(feature = "gui")]
             cmq_component: crate::viewer::CmqComponent::default(),
+            #[cfg(feature = "gui")]
+            check_ratio_filter: crate::viewer::CheckRatioFilter::default(),
+            #[cfg(feature = "gui")]
+            check_ratio_markers: true,
             #[cfg(feature = "gui")]
             diagram_contour: false,
             #[cfg(feature = "gui")]

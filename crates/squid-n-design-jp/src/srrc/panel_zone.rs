@@ -10,7 +10,7 @@
 //! （SRC 規準）
 
 use crate::rc::joint::JointShape;
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 
 /// SRC 造柱梁接合部（パネルゾーン）のせん断検定の入力。
 pub struct SrcPanelInput {
@@ -100,8 +100,6 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let shape_label = match inp.shape {
         JointShape::Cross => "十字形(jdelta=3)",
         JointShape::Tee => "T字形(jdelta=2)",
@@ -113,16 +111,19 @@ pub fn src_panel_zone_check(inp: &SrcPanelInput) -> CheckResult {
         "SRC規準 柱梁接合部（パネル）せん断検定 {} ({})",
         shape_label, term_label
     );
-    let detail = format!(
-        "cV={:.1} mm3, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
-        cv, beta, j_delta, fs, ma, md, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok,
         basis,
-        detail,
+        detail: String::new(),
+        components: vec![CheckComponent {
+            kind: CheckKind::Shear,
+            ratio,
+            detail: format!(
+                "cV={:.1} mm3, beta={:.4}, jdelta={:.1}, fs={:.4} N/mm2, Ma={:.1} N*mm, Md={:.1} N*mm, ratio={:.4}",
+                cv, beta, j_delta, fs, ma, md, ratio
+            ),
+        }],
     }
 }
 
@@ -159,7 +160,7 @@ mod tests {
         let ma = cv * 3.0 * fs * (1.0 + beta); // jdelta=3 (十字形)
         let expected_ratio = inp.sum_beam_moments / ma;
 
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -173,7 +174,7 @@ mod tests {
         let ma = cv * 3.0 * fs; // (1+beta) = 1
         let expected_ratio = inp.sum_beam_moments / ma;
 
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -185,7 +186,7 @@ mod tests {
 
         // Ma(十字形) = 3・Ma(L字形)（他諸元は同一）なので
         // ratio(L字形) = 3・ratio(十字形)。
-        assert!((corner.ratio / cross.ratio - 3.0).abs() < 1e-6);
+        assert!((corner.ratio() / cross.ratio() - 3.0).abs() < 1e-6);
     }
 
     #[test]
@@ -202,11 +203,11 @@ mod tests {
 
         let ma = cv * 3.0 * fs_long * (1.0 + beta);
         let expected_ratio = inp.sum_beam_moments / ma;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
 
         // 長期は fs が小さく Ma も小さいため、ratio は短期より大きい。
         let res_short = src_panel_zone_check(&base_src_panel_input());
-        assert!(res.ratio > res_short.ratio);
+        assert!(res.ratio() > res_short.ratio());
     }
 
     #[test]
@@ -219,12 +220,12 @@ mod tests {
         inp_s.beam_is_steel = true;
         let res_rc = src_panel_zone_check(&inp_rc);
         let res_s = src_panel_zone_check(&inp_s);
-        assert!((res_rc.ratio - res_s.ratio).abs() < 1e-12);
+        assert!((res_rc.ratio() - res_s.ratio()).abs() < 1e-12);
 
         let cv = inp_rc.col_width * inp_rc.m_bd * inp_rc.m_cd;
         let beta = inp_rc.n_ratio * inp_rc.j_tw * inp_rc.s_cd / (inp_rc.col_width * inp_rc.m_cd);
         let fs = crate::rc::concrete_allowable_shear(inp_rc.fc, false);
         let ma = cv * 3.0 * fs * (1.0 + beta);
-        assert!((res_rc.ratio - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
+        assert!((res_rc.ratio() - inp_rc.sum_beam_moments / ma).abs() < 1e-6);
     }
 }

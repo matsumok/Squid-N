@@ -7,7 +7,7 @@
 //!
 //! 準拠する規準: 日本建築学会「鉄筋コンクリート構造計算規準・同解説」18条
 
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 
 /// 耐震壁の側柱（壁の両側または片側に取り付く柱）の諸元。
 pub struct WallSideColumn {
@@ -127,20 +127,21 @@ pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
     } else {
         f64::INFINITY
     };
-    let ok = ratio <= 1.0;
-
     let term_label = if inp.long_term { "長期" } else { "短期" };
     let basis = format!("RC規準18条 耐震壁せん断検定 ({})", term_label);
-    let detail = format!(
-        "fs={:.4} N/mm2, r={:.4}, le={:.1} mm, Q1={:.1} N, Qw={:.1} N, SumQc={:.1} N, Q2={:.1} N, Qa={:.1} N, ratio={:.4}",
-        fs, r, le, q1, qw, sum_qc, q2, qa, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok,
         basis,
-        detail,
+        detail: String::new(),
+        components: vec![CheckComponent {
+            kind: CheckKind::Shear,
+            ratio,
+            detail: format!(
+                "fs={:.4} N/mm2, r={:.4}, le={:.1} mm, Q1={:.1} N, Qw={:.1} N, SumQc={:.1} N, Q2={:.1} N, Qa={:.1} N, ratio={:.4}",
+                fs, r, le, q1, qw, sum_qc, q2, qa, ratio
+            ),
+        }],
     }
 }
 
@@ -186,7 +187,7 @@ mod tests {
         let q1 = 1.0 * inp.t * inp.l * fs;
         // 開口なしなので r=1、Q1 のみ手計算で照合。
         assert!(q1 > 0.0);
-        assert!(res.ratio > 0.0);
+        assert!(res.ratio() > 0.0);
     }
 
     #[test]
@@ -203,7 +204,7 @@ mod tests {
         let r = gamma1.min(gamma2).min(gamma3);
         assert!((gamma1 - 0.5).abs() < 1e-9);
         assert!(r < 1.0);
-        assert!(res.ratio > 0.0);
+        assert!(res.ratio() > 0.0);
 
         // r=gamma1=0.5 が最小のはず
         assert!((r - gamma1).abs() < 1e-9);
@@ -231,7 +232,7 @@ mod tests {
         let le_1 = 0.9 * 3600.0;
         let le_0 = 0.8 * 3600.0;
         assert!(le_full > le_1 && le_1 > le_0);
-        assert!(res_full.ratio > 0.0 && res_1.ratio > 0.0 && res_0.ratio > 0.0);
+        assert!(res_full.ratio() > 0.0 && res_1.ratio() > 0.0 && res_0.ratio() > 0.0);
     }
 
     #[test]
@@ -243,7 +244,7 @@ mod tests {
         let fs = crate::rc::concrete_allowable_shear(inp.fc, true);
         let q1 = inp.t * inp.l * fs; // r=1
         let expected_ratio = inp.q_design.abs() / q1;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -267,7 +268,7 @@ mod tests {
         let q2 = qw + sum_qc;
         let qa = q1.max(q2);
         let expected_ratio = inp.q_design.abs() / qa;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     // ------------------------------------------------------------------
@@ -283,7 +284,7 @@ mod tests {
         let res_without = rc_wall_shear_check(&base_wall_input());
         // 鉄骨項の分だけ Q2（ひいては Qa）が大きくなり ratio は小さくなる
         // （安全側の増分であることを確認）。
-        assert!(res_with_steel.ratio < res_without.ratio);
+        assert!(res_with_steel.ratio() < res_without.ratio());
 
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let q1 = inp.t * inp.l * fs;
@@ -301,6 +302,6 @@ mod tests {
         let q2 = qw + sum_qc;
         let qa = q1.max(q2);
         let expected_ratio = inp.q_design.abs() / qa;
-        assert!((res_with_steel.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res_with_steel.ratio() - expected_ratio).abs() < 1e-6);
     }
 }

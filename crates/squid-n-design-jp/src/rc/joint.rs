@@ -18,7 +18,7 @@
 //!   `max` を採用する（RC 規準本文の一般的な
 //!   `min` 解釈より有効幅を大きく＝許容せん断力を大きく見積もる点に注意）。
 
-use crate::CheckResult;
+use crate::{CheckComponent, CheckKind, CheckResult};
 
 /// 柱梁接合部の形状（取り付く梁の本数・配置による分類）。
 ///
@@ -127,8 +127,6 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
     let qdj = qdj1.min(qdj2);
 
     let ratio = if qaj > 0.0 { qdj / qaj } else { f64::INFINITY };
-    let ok = ratio <= 1.0;
-
     let shape_label = match inp.shape {
         JointShape::Cross => "十字形(kappaA=10)",
         JointShape::Tee => "T字形(kappaA=7)",
@@ -136,16 +134,19 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
         JointShape::Corner => "L字形(kappaA=3)",
     };
     let basis = format!("RC規準15条 柱梁接合部せん断検定 {}", shape_label);
-    let detail = format!(
-        "fs={:.4} N/mm2, bj={:.2} mm, QAj={:.1} N, xi={:.4}, Qdj1={:.1} N, Qdj2={:.1} N, Qdj={:.1} N, ratio={:.4}",
-        fs, bj, qaj, xi, qdj1, qdj2, qdj, ratio
-    );
-
+    // 単一式（Shear）の検定のため、全文を component の detail に置き、
+    // 共通 detail は空文字列とする。
     CheckResult {
-        ratio,
-        ok,
         basis,
-        detail,
+        detail: String::new(),
+        components: vec![CheckComponent {
+            kind: CheckKind::Shear,
+            ratio,
+            detail: format!(
+                "fs={:.4} N/mm2, bj={:.2} mm, QAj={:.1} N, xi={:.4}, Qdj1={:.1} N, Qdj2={:.1} N, Qdj={:.1} N, ratio={:.4}",
+                fs, bj, qaj, xi, qdj1, qdj2, qdj, ratio
+            ),
+        }],
     }
 }
 
@@ -185,7 +186,7 @@ mod tests {
             let res = rc_joint_shear_check(&inp);
             let expected_qaj = kappa_a * (fs - 0.5) * bj * d;
             // QAj は detail 文字列比較ではなく ratio から逆算して照合する。
-            let qdj = res.ratio * expected_qaj;
+            let qdj = res.ratio() * expected_qaj;
             assert!(qdj > 0.0, "shape={:?}", shape);
             // QAj が形状で単調増加することを確認（十字 > T > ト > L）。
             assert!(expected_qaj > 0.0);
@@ -193,7 +194,7 @@ mod tests {
         // 十字形が最も許容せん断力が大きく検定比が最小になるはず。
         let cross = rc_joint_shear_check(&base_joint_input(JointShape::Cross));
         let corner = rc_joint_shear_check(&base_joint_input(JointShape::Corner));
-        assert!(cross.ratio < corner.ratio);
+        assert!(cross.ratio() < corner.ratio());
     }
 
     #[test]
@@ -212,12 +213,12 @@ mod tests {
         let bj_min = 600.0;
         let qaj_max = kappa_a * (fs - 0.5) * bj_max * inp.col_depth;
         let qaj_min = kappa_a * (fs - 0.5) * bj_min * inp.col_depth;
-        let qdj = res.ratio * qaj_max;
+        let qdj = res.ratio() * qaj_max;
         // max 採用時の ratio と、もし min を採用していた場合の ratio は異なるはず。
         let ratio_if_min = qdj / qaj_min;
-        assert!((res.ratio - ratio_if_min).abs() > 1e-9);
+        assert!((res.ratio() - ratio_if_min).abs() > 1e-9);
         // max の方が bj が大きく QAj も大きいので ratio は min のケースより小さい。
-        assert!(res.ratio < ratio_if_min);
+        assert!(res.ratio() < ratio_if_min);
     }
 
     #[test]
@@ -238,7 +239,7 @@ mod tests {
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj / qaj;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 
     #[test]
@@ -247,7 +248,7 @@ mod tests {
         let mut inp = base_joint_input(JointShape::Cross);
         inp.beam_span = inp.col_depth;
         let res = rc_joint_shear_check(&inp);
-        assert!(res.ratio.is_finite());
+        assert!(res.ratio().is_finite());
         let expected_qdj1 = inp.sum_beam_moments / inp.beam_j;
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let bi = (inp.col_width - inp.beam_width) / 2.0;
@@ -255,6 +256,6 @@ mod tests {
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj1 / qaj;
-        assert!((res.ratio - expected_ratio).abs() < 1e-6);
+        assert!((res.ratio() - expected_ratio).abs() < 1e-6);
     }
 }

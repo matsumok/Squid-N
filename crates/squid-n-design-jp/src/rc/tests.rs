@@ -606,10 +606,11 @@ fn test_fc_missing_fallback() {
         mz: 0.0,
     };
     let design = RcDesign;
-    let result = design.check(&forces, &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert_eq!(result.ratio, 0.0);
-    assert!(result.basis.contains("Fc"));
+    let outcome = design.check(&forces, &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("Fc")),
+        CheckOutcome::Checked(_) => panic!("Fc 未設定は検定不能(Skipped)のはず"),
+    }
 }
 
 #[test]
@@ -641,10 +642,11 @@ fn test_shape_missing_fallback() {
         mz: 0.0,
     };
     let design = RcDesign;
-    let result = design.check(&forces, &sec, &mat, &ctx);
-    assert!(result.ok);
-    assert_eq!(result.ratio, 0.0);
-    assert!(result.basis.contains("配筋情報なし"));
+    let outcome = design.check(&forces, &sec, &mat, &ctx);
+    match outcome {
+        CheckOutcome::Skipped { reason } => assert!(reason.contains("配筋情報なし")),
+        CheckOutcome::Checked(_) => panic!("配筋情報なしは検定不能(Skipped)のはず"),
+    }
 }
 
 #[test]
@@ -685,11 +687,11 @@ fn test_rc_circle_beam_and_column_smoke() {
     };
 
     let ctx_col = ctx_column(LoadTerm::Short);
-    let r_col = design.check(&forces, &sec, &mat, &ctx_col);
-    assert!(r_col.ratio.is_finite() && r_col.ratio >= 0.0);
+    let r_col = design.check(&forces, &sec, &mat, &ctx_col).unwrap_checked();
+    assert!(r_col.ratio().is_finite() && r_col.ratio() >= 0.0);
     assert!(r_col.basis.contains("円形柱"));
 
     let ctx_b = ctx_beam(LoadTerm::Short);
-    let r_beam = design.check(&forces, &sec, &mat, &ctx_b);
-    assert!(r_beam.ratio.is_finite() && r_beam.ratio >= 0.0);
+    let r_beam = design.check(&forces, &sec, &mat, &ctx_b).unwrap_checked();
+    assert!(r_beam.ratio().is_finite() && r_beam.ratio() >= 0.0);
 }

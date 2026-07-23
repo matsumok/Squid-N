@@ -13,7 +13,7 @@ fn test_is_steel() {
 fn test_run_design_check_empty_model() {
     let mut app = App::default();
     app.run_design_check();
-    assert!(app.results.is_none() || app.results.as_ref().unwrap().checks.is_empty());
+    assert!(app.results.is_none() || app.results.as_ref().unwrap().member_checks.is_empty());
 }
 
 /// `EventLog` の保持件数上限（1000件）: 上限を1件超えて push すると、
@@ -355,15 +355,18 @@ fn test_run_design_check_filters_to_design_positions() {
     app.run_linear_static(LoadCaseId(0));
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    let checks = &app.results.as_ref().unwrap().checks;
-    assert!(!checks.is_empty());
+    let member_checks = &app.results.as_ref().unwrap().member_checks;
+    assert!(!member_checks.is_empty());
+    let positions_of = |elem: ElemId| -> Vec<f64> {
+        member_checks
+            .iter()
+            .find(|m| m.elem == elem)
+            .map(|m| m.positions.iter().map(|p| p.xi).collect())
+            .unwrap_or_default()
+    };
 
     // 梁(id=1): 両端とも柱と直交(face>0)のため、節点芯 0.0/1.0 は検定対象外。
-    let beam_positions: Vec<f64> = checks
-        .iter()
-        .filter(|(id, _, _)| *id == ElemId(1))
-        .map(|(_, pos, _)| *pos)
-        .collect();
+    let beam_positions: Vec<f64> = positions_of(ElemId(1));
     assert!(
         !beam_positions.iter().any(|p| *p < 1e-6),
         "梁の節点芯(i端)が検定対象に残っている: {:?}",
@@ -383,11 +386,7 @@ fn test_run_design_check_filters_to_design_positions() {
     // 柱(id=0): 脚部(node0)は他要素と接続しない(face_i=0)ため節点芯 0.0 のままが
     // 危険断面位置に一致し、検定対象に残る(従来挙動と一致)。
     // 頭部(node1)は梁と直交(face_j>0)のため節点芯 1.0 は検定対象外になる。
-    let col_positions: Vec<f64> = checks
-        .iter()
-        .filter(|(id, _, _)| *id == ElemId(0))
-        .map(|(_, pos, _)| *pos)
-        .collect();
+    let col_positions: Vec<f64> = positions_of(ElemId(0));
     assert!(
         col_positions.iter().any(|p| *p < 1e-6),
         "剛域の無い柱脚(節点芯)が検定対象から抜けている: {:?}",
@@ -431,12 +430,12 @@ fn test_run_design_check_includes_member_detail_positions() {
     app.run_linear_static(LoadCaseId(0));
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    let checks = &app.results.as_ref().unwrap().checks;
-    let beam_positions: Vec<f64> = checks
+    let member_checks = &app.results.as_ref().unwrap().member_checks;
+    let beam_positions: Vec<f64> = member_checks
         .iter()
-        .filter(|(id, _, _)| *id == ElemId(1))
-        .map(|(_, pos, _)| *pos)
-        .collect();
+        .find(|m| m.elem == ElemId(1))
+        .map(|m| m.positions.iter().map(|p| p.xi).collect())
+        .unwrap_or_default();
 
     assert!(
         beam_positions.iter().any(|p| (*p - 0.2125).abs() < 1e-6),
@@ -1165,7 +1164,7 @@ fn test_async_linear_static_job_flow() {
         app.last_static,
         Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))))
     );
-    assert!(!bundle.checks.is_empty());
+    assert!(!bundle.member_checks.is_empty());
 }
 
 /// `start_combination_job` はバックグラウンドで `run_combination` と同じ結果を与える。
@@ -1196,7 +1195,7 @@ fn test_async_combination_job_flow() {
     let bundle = app.results.as_ref().unwrap();
     assert_eq!(bundle.combos.len(), 1);
     assert_eq!(bundle.combos[0].0, combo.name);
-    assert!(!bundle.checks.is_empty());
+    assert!(!bundle.member_checks.is_empty());
     assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
 }
 
@@ -1284,7 +1283,7 @@ fn test_async_seismic_job_flow() {
         app.last_static,
         Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
     );
-    assert!(!bundle.checks.is_empty());
+    assert!(!bundle.member_checks.is_empty());
 }
 
 /// `start_wind_job` はバックグラウンドで `run_wind` と同じ結果を与える
@@ -1482,7 +1481,7 @@ fn test_combination_flow() {
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     let bundle = app.results.as_ref().unwrap();
     assert_eq!(bundle.combos.len(), 1);
-    assert!(!bundle.checks.is_empty());
+    assert!(!bundle.member_checks.is_empty());
     assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
 }
 

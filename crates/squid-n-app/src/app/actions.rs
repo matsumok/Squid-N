@@ -1980,7 +1980,7 @@ impl App {
         // 柱の座屈長さ係数 K 用の節点まわり梁索引（`buckling::g_ratio_at` の全要素
         // 走査を避けるため、ループ前に 1 回だけ構築して使い回す）。
         let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(&self.model);
-        let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckResult)> = Vec::new();
+        let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckOutcome)> = Vec::new();
         for (elem_id, mf) in &results.member_forces {
             let elem = elem_by_id.get(elem_id).copied();
             let Some(elem) = elem else {
@@ -2141,19 +2141,20 @@ impl App {
                     mz: forces[5],
                 };
                 // BRB 属性が登録された部材はメーカー許容値による BRB 検定に
-                // 差し替える（座屈補剛ブレースの断面検定）。
-                let cr = if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id)
-                {
-                    squid_n_design_jp::brb::brb_check(
-                        brb,
-                        mfa.n,
-                        length,
-                        self.design_term == LoadTerm::Long,
-                    )
-                } else {
-                    checker.check(&mfa, sec, mat, &ctx)
-                };
-                checks.push((*elem_id, *pos, cr));
+                // 差し替える（座屈補剛ブレースの断面検定）。BRB 検定は退化ケース
+                // を持たないため常に Checked。
+                let outcome =
+                    if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id) {
+                        squid_n_design_jp::CheckOutcome::Checked(squid_n_design_jp::brb::brb_check(
+                            brb,
+                            mfa.n,
+                            length,
+                            self.design_term == LoadTerm::Long,
+                        ))
+                    } else {
+                        checker.check(&mfa, sec, mat, &ctx)
+                    };
+                checks.push((*elem_id, *pos, outcome));
             }
         }
         // 節点単位の検定（RC 柱梁接合部・S/SRC パネルゾーン・冷間成形耐力比・耐震壁）。
@@ -2169,23 +2170,39 @@ impl App {
                     .map(|(id, mf)| (*id, mf.at.as_slice()))
                     .collect()
             });
+        // 節点単位の検定は退化ケースを持たない（該当なしの節点はそもそも push
+        // されない）ため、常に Checked として扱う。
         let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
             &self.model,
             &mf_slices,
             long_slices.as_deref(),
             self.design_term,
-        );
+        )
+        .into_iter()
+        .map(|(node, label, cr)| JointCheck {
+            node,
+            label,
+            outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
+        })
+        .collect();
         // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。使用限界・終局限界）。
-        checks.extend(squid_n_design_jp::rc::horizontal_joint::collect_pca_checks(
-            &self.model,
-            &mf_slices,
-            self.design_term == LoadTerm::Long,
-        ));
+        // 同じく退化ケースを持たないため常に Checked。
+        checks.extend(
+            squid_n_design_jp::rc::horizontal_joint::collect_pca_checks(
+                &self.model,
+                &mf_slices,
+                self.design_term == LoadTerm::Long,
+            )
+            .into_iter()
+            .map(|(id, pos, cr)| (id, pos, squid_n_design_jp::CheckOutcome::Checked(cr))),
+        );
         // 床の中での小梁・スラブ設計（全体 FEM から独立。小梁は大梁を分割しない）。
         let (joist_checks, slab_checks) = self.floor_design_checks();
 
+        let member_checks = group_member_checks(checks);
+
         if let Some(bundle) = self.results.as_mut() {
-            bundle.checks = checks;
+            bundle.member_checks = member_checks;
             bundle.joint_checks = joint_checks;
             bundle.joist_checks = joist_checks;
             bundle.slab_checks = slab_checks;
