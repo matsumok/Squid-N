@@ -976,3 +976,154 @@ fn test_linear_static_batch_matches_individual() {
     assert!(with_missing[0].is_ok());
     assert!(matches!(with_missing[1], Err(SolveError::InvalidInput(_))));
 }
+
+/// 単純梁（i:ピン+ねじり拘束, j:ローラ）に全長 UDL を与えるモデル。
+/// LoadCaseId(1) が UDL（強度 `w`）、combinations[0] は 1.5 倍の組合せ。
+fn ss_beam_udl(l: f64, w: f64) -> Model {
+    Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask(0b001111),
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [l, 0.0, 0.0],
+                restraint: Dof6Mask(0b000110),
+                mass: None,
+                story: None,
+            },
+        ],
+        elements: vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }],
+        sections: vec![Section {
+            id: SectionId(0),
+            name: "s".into(),
+            area: 1000.0,
+            iy: 1.0e7,
+            iz: 1.0e7,
+            j: 1.0e6,
+            depth: 200.0,
+            width: 100.0,
+            as_y: 800.0,
+            as_z: 800.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        }],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "m".into(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: None,
+        }],
+        load_cases: vec![LoadCase {
+            kind: Default::default(),
+            id: LoadCaseId(1),
+            name: "udl".into(),
+            nodal: vec![],
+            member: vec![MemberLoad {
+                elem: ElemId(0),
+                dir: [0.0, 0.0, -1.0],
+                kind: MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: l,
+                    w1: w,
+                    w2: w,
+                },
+            }],
+        }],
+        combinations: vec![LoadCombination {
+            name: "1.5UDL".into(),
+            terms: vec![(LoadCaseId(1), 1.5)],
+        }],
+        ..Default::default()
+    }
+}
+
+fn mz_at(mf: &squid_n_element::beam::MemberForces, xi_target: f64) -> f64 {
+    mf.at
+        .iter()
+        .find(|(xi, _)| (xi - xi_target).abs() < 1e-9)
+        .map(|(_, v)| v[5])
+        .expect("section present")
+}
+
+/// `Analysis::linear_static` でも部材中間荷重が内力回復へ重ね合わされ、
+/// 単純梁 UDL の中央曲げが wL²/8（放物線分布）・端部が ~0 になることを検証する。
+/// （重ね合わせ欠落時は中央 Mz が 0 付近になり不合格になる。）
+#[test]
+fn analysis_linear_static_superposes_member_load() {
+    let l = 1000.0_f64;
+    let w = 2.0_f64;
+    let model = ss_beam_udl(l, w);
+    let analysis = Analysis::prepare(&model).unwrap();
+    let res = analysis.linear_static(LoadCaseId(1)).unwrap();
+    let (_, mf) = res
+        .member_forces
+        .iter()
+        .find(|(id, _)| *id == ElemId(0))
+        .expect("member forces");
+
+    let expected_mid = w * l * l / 8.0;
+    let mid = mz_at(mf, 0.5).abs();
+    assert!(
+        (mid - expected_mid).abs() / expected_mid < 1e-3,
+        "midspan Mz={} expected {}",
+        mid,
+        expected_mid
+    );
+    let end = mz_at(mf, 0.0).abs().max(mz_at(mf, 1.0).abs());
+    assert!(
+        end < expected_mid * 1e-3,
+        "end Mz should be ~0, got {}",
+        end
+    );
+}
+
+/// `Analysis::linear_combination` は各項の部材荷重を係数倍して重ね合わせる。
+/// 1.5×UDL の中央曲げは 1.5·wL²/8 になる。
+#[test]
+fn analysis_linear_combination_scales_member_load() {
+    let l = 1000.0_f64;
+    let w = 2.0_f64;
+    let model = ss_beam_udl(l, w);
+    let analysis = Analysis::prepare(&model).unwrap();
+    let res = analysis.linear_combination(&model.combinations[0]).unwrap();
+    let (_, mf) = res
+        .member_forces
+        .iter()
+        .find(|(id, _)| *id == ElemId(0))
+        .expect("member forces");
+
+    let expected_mid = 1.5 * w * l * l / 8.0;
+    let mid = mz_at(mf, 0.5).abs();
+    assert!(
+        (mid - expected_mid).abs() / expected_mid < 1e-3,
+        "combination midspan Mz={} expected {}",
+        mid,
+        expected_mid
+    );
+}

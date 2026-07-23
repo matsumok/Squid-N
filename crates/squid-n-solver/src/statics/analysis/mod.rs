@@ -15,7 +15,7 @@ use crate::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
 pub type StaticResult = StaticOnce;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::LoadCaseId;
-use squid_n_core::model::{LoadCombination, Model};
+use squid_n_core::model::{LoadCombination, MemberLoad, Model};
 use squid_n_element::factory::build_behavior;
 use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend};
 
@@ -29,6 +29,26 @@ pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
     build_seismic_load_case_from_model, building_height_mm, ground_elevation, steel_height_ratio,
 };
+
+/// 部材荷重の強度を `factor` 倍した複製を返す（荷重組合せの線形結合用）。
+/// `dir`・作用区間はそのままに、集中荷重 `p` と分布強度 `w1,w2` のみを倍する。
+fn scale_member_load(ml: &MemberLoad, factor: f64) -> MemberLoad {
+    use squid_n_core::model::MemberLoadKind;
+    let kind = match ml.kind {
+        MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a, p: p * factor },
+        MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
+            a,
+            b,
+            w1: w1 * factor,
+            w2: w2 * factor,
+        },
+    };
+    MemberLoad {
+        elem: ml.elem,
+        dir: ml.dir,
+        kind,
+    }
+}
 
 pub struct Analysis<'m> {
     model: &'m Model,
@@ -210,13 +230,21 @@ impl<'m> Analysis<'m> {
 
     /// 自由 DOF 空間の荷重ベクトルを縮約 → 解 → 展開し、
     /// 節点変位と部材断面力を復元する（線形静的系の共通経路）。
-    fn solve_and_recover(&self, f_free: &[f64]) -> Result<StaticOnce, SolveError> {
+    ///
+    /// `member_loads` は当該解（荷重ケース／組合せ）に含まれる部材中間荷重で、
+    /// 内力回復時に両端固定梁のスパン内力として重ね合わせる。節点荷重のみの
+    /// 経路（地震・風）は空スライスを渡す。
+    fn solve_and_recover(
+        &self,
+        f_free: &[f64],
+        member_loads: &[MemberLoad],
+    ) -> Result<StaticOnce, SolveError> {
         let f_red = self.reducer.reduce_f(f_free);
         let u_indep = self.solver.solve(&f_red)?;
         let u_free = self.reducer.expand_u(&u_indep);
         Ok(StaticOnce {
             disp: self.expand_disp(&u_free),
-            member_forces: self.recover_member_forces(&u_free),
+            member_forces: self.recover_member_forces(&u_free, member_loads),
         })
     }
 
@@ -235,9 +263,16 @@ impl<'m> Analysis<'m> {
     }
 
     /// 自由 DOF ベクトルから全部材の断面力を復元する。
+    ///
+    /// `K·u` 由来の回復内力に、`member_loads` の部材中間荷重を両端固定梁の
+    /// スパン内力として重ね合わせる（[`crate::linear::superpose_member_loads`]）。
+    /// これにより等分布荷重下の梁で M が放物線・Q が線形の正しい分布になる。
+    /// 分解済み K を再利用する `Analysis` 経路と、一度きりの
+    /// [`crate::linear::linear_static_once`] 経路とで内力回復の扱いを一致させる。
     fn recover_member_forces(
         &self,
         u_free: &[f64],
+        member_loads: &[MemberLoad],
     ) -> Vec<(
         squid_n_core::ids::ElemId,
         squid_n_element::beam::MemberForces,
@@ -252,7 +287,8 @@ impl<'m> Analysis<'m> {
                     u_elem[k] = u_free[g];
                 }
             }
-            if let Some(forces) = behavior.recover_forces(&u_elem) {
+            if let Some(mut forces) = behavior.recover_forces(&u_elem) {
+                crate::linear::superpose_member_loads(self.model, elem, member_loads, &mut forces);
                 member_forces.push((elem.id, forces));
             }
         }
@@ -271,7 +307,14 @@ impl<'m> Analysis<'m> {
             )));
         }
         let f_free = assemble_global_f(self.model, &self.dofmap, lc);
-        self.solve_and_recover(&f_free)
+        let member_loads = self
+            .model
+            .load_cases
+            .iter()
+            .find(|c| c.id == lc)
+            .map(|c| c.member.as_slice())
+            .unwrap_or(&[]);
+        self.solve_and_recover(&f_free, member_loads)
     }
 
     /// Solve eigenvalue problem (subspace iteration) for n_modes lowest modes.
@@ -349,13 +392,19 @@ impl<'m> Analysis<'m> {
         }
         let n_active = self.dofmap.n_active();
         let mut f_free = vec![0.0; n_active];
+        // 各項の部材荷重を係数倍して集約する。荷重ベクトル f と同じ線形結合を
+        // 内力回復のスパン内力にも適用し、組合せでも M の放物線分布を再現する。
+        let mut member_loads: Vec<MemberLoad> = Vec::new();
         for (lc_id, factor) in &combo.terms {
             let f_lc = assemble_global_f(self.model, &self.dofmap, *lc_id);
             for (fi, &v) in f_lc.iter().enumerate() {
                 f_free[fi] += v * factor;
             }
+            if let Some(lc) = self.model.load_cases.iter().find(|c| c.id == *lc_id) {
+                member_loads.extend(lc.member.iter().map(|ml| scale_member_load(ml, *factor)));
+            }
         }
-        self.solve_and_recover(&f_free)
+        self.solve_and_recover(&f_free, &member_loads)
     }
 
     /// 時刻歴応答解析（Newmark-β / HHT-α、減衰込み）。
