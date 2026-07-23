@@ -131,6 +131,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                         density,
                         fc: preset.fc,
                         fy: preset.fy,
+                        strength_factor: None,
                     }),
                 );
                 app.staleness.mark_edited();
@@ -142,15 +143,16 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 直接入力（カスタム）フォーム ─────────────────────────────
     // プリセットにない材料は直接入力する。
     let id_draft = egui::Id::new("material_custom_draft");
-    // (名称, E, ν, 密度, Fc, Fy) の文字列ドラフト
-    let mut draft: [String; 6] = ui
-        .data(|d| d.get_temp::<[String; 6]>(id_draft))
+    // (名称, E, ν, 密度, Fc, Fy, 強度割増係数) の文字列ドラフト
+    let mut draft: [String; 7] = ui
+        .data(|d| d.get_temp::<[String; 7]>(id_draft))
         .unwrap_or_else(|| {
             [
                 "新規材料".into(),
                 "205000".into(),
                 "0.3".into(),
                 "7.85e-9".into(),
+                String::new(),
                 String::new(),
                 String::new(),
             ]
@@ -164,13 +166,19 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             ui.label(label);
             ui.add(egui::TextEdit::singleline(&mut draft[k]).desired_width(60.0));
         }
+        ui.label("割増");
+        ui.add(egui::TextEdit::singleline(&mut draft[6]).desired_width(50.0))
+            .on_hover_text(
+                "保有水平耐力計算（プッシュオーバー）の材料強度割増係数。\
+                 空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
+            );
         let parsed_e = draft[1].parse::<f64>();
         let parsed_nu = draft[2].parse::<f64>();
         let parsed_rho = draft[3].parse::<f64>();
         let ok = parsed_e.is_ok() && parsed_nu.is_ok() && parsed_rho.is_ok();
         if ui
             .add_enabled(ok, egui::Button::new("+ 追加"))
-            .on_hover_text("E・ν・ρ は必須。Fc・Fy は空欄可")
+            .on_hover_text("E・ν・ρ は必須。Fc・Fy・割増は空欄可")
             .clicked()
         {
             do_add_custom = true;
@@ -179,6 +187,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     if do_add_custom {
         let fc = draft[4].parse::<f64>().ok();
         let fy = draft[5].parse::<f64>().ok();
+        let strength_factor = draft[6].parse::<f64>().ok();
         if let (Ok(e), Ok(nu), Ok(rho)) = (
             draft[1].parse::<f64>(),
             draft[2].parse::<f64>(),
@@ -193,6 +202,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     density: rho,
                     fc,
                     fy,
+                    strength_factor,
                 }),
             );
             app.staleness.mark_edited();
@@ -217,11 +227,28 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(70.0))
         .column(Column::initial(50.0))
         .column(Column::initial(50.0))
+        .column(Column::initial(50.0))
         .column(Column::auto())
         .header(20.0, |mut h| {
-            for t in &["ID", "名称", "E [N/mm²]", "ν", "ρ [t/mm³]", "Fc", "Fy", ""] {
+            for t in &[
+                "ID",
+                "名称",
+                "E [N/mm²]",
+                "ν",
+                "ρ [t/mm³]",
+                "Fc",
+                "Fy",
+                "割増",
+                "",
+            ] {
                 h.col(|ui| {
-                    ui.strong(*t);
+                    let resp = ui.strong(*t);
+                    if *t == "割増" {
+                        resp.on_hover_text(
+                            "保有水平耐力計算（プッシュオーバー）の材料強度割増係数。\
+                             空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
+                        );
+                    }
                 });
             }
         })
@@ -244,7 +271,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 });
                 // 数値セル: フォーカス喪失時に確定
-                let cells: [(MaterialField, String, bool); 5] = [
+                let cells: [(MaterialField, String, bool); 6] = [
                     (MaterialField::Young, format!("{}", mat.young), true),
                     (MaterialField::Poisson, format!("{}", mat.poisson), true),
                     (MaterialField::Density, format!("{:.3e}", mat.density), true),
@@ -256,6 +283,13 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     (
                         MaterialField::Fy,
                         mat.fy.map(|v| format!("{}", v)).unwrap_or_default(),
+                        false,
+                    ),
+                    (
+                        MaterialField::StrengthFactor,
+                        mat.strength_factor
+                            .map(|v| format!("{}", v))
+                            .unwrap_or_default(),
                         false,
                     ),
                 ];
