@@ -84,20 +84,36 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "⚠ モデルが編集されました。解析を再実行してください。",
         );
     }
-    let checks: Vec<(squid_n_core::ids::ElemId, f64, f64, bool, String)> = app
+    let checks: Vec<(
+        squid_n_core::ids::ElemId,
+        f64,
+        f64,
+        bool,
+        String,
+        Vec<squid_n_design_jp::CheckComponent>,
+    )> = app
         .results
         .as_ref()
         .map(|r| {
             r.checks
                 .iter()
-                .map(|(id, pos, cr)| (*id, *pos, cr.ratio, cr.ok, cr.basis.clone()))
+                .map(|(id, pos, cr)| {
+                    (
+                        *id,
+                        *pos,
+                        cr.ratio,
+                        cr.ok,
+                        cr.basis.clone(),
+                        cr.components.clone(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
     // 各行の部材に割り当てられている断面（NG部材→断面編集への遷移用）。
     let section_of: Vec<Option<(squid_n_core::ids::SectionId, String)>> = checks
         .iter()
-        .map(|(elem_id, _, _, _, _)| {
+        .map(|(elem_id, _, _, _, _, _)| {
             app.model
                 .elements
                 .iter()
@@ -119,7 +135,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "検定結果がありません。解析タブから静的解析を実行してください（部材に断面と材料の割当が必要です）。",
         );
     } else {
-        let ng_count = checks.iter().filter(|(_, _, _, ok, _)| !ok).count();
+        let ng_count = checks.iter().filter(|(_, _, _, ok, _, _)| !ok).count();
         ui.label(format!(
             "{} 位置を検定、NG {} 件（部材IDクリックで 3D ビューにハイライト）",
             checks.len(),
@@ -139,9 +155,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(60.0))
         .column(Column::initial(200.0))
+        .column(Column::initial(220.0))
         .column(Column::initial(90.0))
         .header(row_h, |mut h| {
-            for t in &["部材", "位置", "検定比", "判定", "根拠", "断面"] {
+            for t in &["部材", "位置", "検定比", "判定", "根拠", "内訳", "断面"] {
                 h.col(|ui| {
                     ui.strong(*t);
                 });
@@ -150,7 +167,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         .body(|body| {
             body.rows(row_h, n, |mut row| {
                 let i = row.index();
-                let (elem_id, pos, ratio, ok, basis) = &checks[i];
+                let (elem_id, pos, ratio, ok, basis, components) = &checks[i];
                 let is_focus = app.nav.focus_member == Some(*elem_id);
                 row.col(|ui| {
                     if ui
@@ -177,6 +194,23 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 });
                 row.col(|ui| {
                     ui.label(basis);
+                });
+                row.col(|ui| {
+                    if components.is_empty() {
+                        ui.label("-");
+                    } else {
+                        ui.horizontal(|ui| {
+                            for (idx, c) in components.iter().enumerate() {
+                                if idx > 0 {
+                                    ui.label("／");
+                                }
+                                ui.colored_label(
+                                    crate::theme::status_color(c.ratio),
+                                    format!("{} {:.2}", c.kind.label(), c.ratio),
+                                );
+                            }
+                        });
+                    }
                 });
                 row.col(|ui| match &section_of[i] {
                     Some((sid, name)) => {

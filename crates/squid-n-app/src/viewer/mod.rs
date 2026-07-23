@@ -77,6 +77,21 @@ pub enum CmqComponent {
     Q,
 }
 
+/// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）。
+///
+/// `Kind` を選ぶと、部材・節点の色や中点ラベル・位置別マーカーが当該検定式
+/// だけの検定比（`CheckResult::components` から抽出）に基づいて決まる。
+/// 対象の式が存在しない検定位置は「フィルタ対象外」として着色・マーカー
+/// ともに描かない（詳細は `check_ratio.rs` の `ratio_for_filter` を参照）。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum CheckRatioFilter {
+    /// 全検定式中の最大検定比（既定）
+    #[default]
+    Max,
+    /// 特定の検定式のみ
+    Kind(squid_n_design_jp::CheckKind),
+}
+
 // ===== クォータニオン（3Dカメラ回転用, [w, x, y, z]）=====
 // mn_view（M-N相関曲面ビュー）でも同じ操作感の3Dカメラを実装するため、
 // これらのヘルパは pub(crate) として公開し再利用する。
@@ -427,6 +442,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode = app.view_mode;
     let mut mode_idx = app.view_mode_idx;
     let mut cmq_component = app.cmq_component;
+    let mut check_ratio_filter = app.check_ratio_filter;
 
     // --- コントロール ---
     // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
@@ -492,6 +508,39 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             }
         });
     }
+    // 検定比図: 検定式フィルタ（最大／式別、結果に現れる式のみ選択肢に出す）と
+    // 位置別マーカーの表示切替。
+    if mode == ViewMode::CheckRatio {
+        let available_kinds = app
+            .results
+            .as_ref()
+            .map(|r| {
+                check_ratio::available_check_kinds(
+                    r.checks
+                        .iter()
+                        .map(|(_, _, cr)| cr.components.as_slice())
+                        .chain(
+                            r.joint_checks
+                                .iter()
+                                .map(|(_, _, cr)| cr.components.as_slice()),
+                        ),
+                )
+            })
+            .unwrap_or_default();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("検定式:");
+            ui.selectable_value(&mut check_ratio_filter, CheckRatioFilter::Max, "最大");
+            for k in &available_kinds {
+                ui.selectable_value(
+                    &mut check_ratio_filter,
+                    CheckRatioFilter::Kind(*k),
+                    k.label(),
+                );
+            }
+            ui.separator();
+            ui.checkbox(&mut app.check_ratio_markers, "位置別マーカー");
+        });
+    }
     if mode == ViewMode::Mode {
         let n_modes = app
             .results
@@ -520,6 +569,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     app.view_mode = mode;
     app.view_mode_idx = mode_idx;
     app.cmq_component = cmq_component;
+    app.check_ratio_filter = check_ratio_filter;
 
     // CMQ 図はモデル編集に常に追従させるため、表示中は毎フレーム再計算する
     // （スラブ数は小さい前提）。
@@ -975,6 +1025,35 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     }
     if mode == ViewMode::CheckRatio {
         check_ratio::draw_check_ratio(&painter, app, &pts);
+        // B-3: ホバー詳細（ViewCube ホバー中は除く。通常モードのクリック選択と
+        // 同じ最近傍部材探索・8px 閾値で最寄り部材を求め、ヒットしたらツールチップ表示）。
+        if cube_hover.is_none() {
+            if let Some(hover_pos) = response.hover_pos() {
+                let mut best: Option<(squid_n_core::ids::ElemId, f32)> = None;
+                for elem in &app.model.elements {
+                    if elem.nodes.len() < 2 {
+                        continue;
+                    }
+                    let n0 = elem.nodes[0].index();
+                    let n1 = elem.nodes[1].index();
+                    if n0 >= pts.len() || n1 >= pts.len() {
+                        continue;
+                    }
+                    let a = egui::pos2(pts[n0][0], pts[n0][1]);
+                    let b = egui::pos2(pts[n1][0], pts[n1][1]);
+                    let d = dist_point_to_segment(hover_pos, a, b);
+                    if best.is_none_or(|(_, bd)| d < bd) {
+                        best = Some((elem.id, d));
+                    }
+                }
+                const HOVER_PICK_THRESHOLD: f32 = 8.0;
+                if let Some((id, d)) = best {
+                    if d <= HOVER_PICK_THRESHOLD {
+                        check_ratio::show_check_tooltip(ui, app, id);
+                    }
+                }
+            }
+        }
     }
 
     // 変形の実効倍率（バウンディングボックスから自動計算）の注記。

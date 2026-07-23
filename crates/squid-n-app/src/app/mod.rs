@@ -589,6 +589,12 @@ pub struct App {
     /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
     #[cfg(feature = "gui")]
     pub cmq_component: crate::viewer::CmqComponent,
+    /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）
+    #[cfg(feature = "gui")]
+    pub check_ratio_filter: crate::viewer::CheckRatioFilter,
+    /// 検定比図で検定位置ごとの正方形マーカーを表示するか
+    #[cfg(feature = "gui")]
+    pub check_ratio_markers: bool,
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
@@ -764,6 +770,10 @@ impl Default for App {
             view_mode: crate::viewer::ViewMode::default(),
             #[cfg(feature = "gui")]
             cmq_component: crate::viewer::CmqComponent::default(),
+            #[cfg(feature = "gui")]
+            check_ratio_filter: crate::viewer::CheckRatioFilter::default(),
+            #[cfg(feature = "gui")]
+            check_ratio_markers: true,
             #[cfg(feature = "gui")]
             diagram_contour: false,
             #[cfg(feature = "gui")]
