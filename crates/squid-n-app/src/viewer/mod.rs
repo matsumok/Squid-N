@@ -964,15 +964,47 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
         let n0 = elem.nodes[0].index();
         let n1 = elem.nodes[1].index();
-        if n0 < pts.len() && n1 < pts.len() {
-            painter.line_segment(
-                [
-                    egui::pos2(pts[n0][0], pts[n0][1]),
-                    egui::pos2(pts[n1][0], pts[n1][1]),
-                ],
-                line_stroke,
-            );
+        if n0 >= pts.len() || n1 >= pts.len() {
+            continue;
         }
+
+        // 変形図・モード形の梁は、端部の並進・回転から Hermite 3 次で曲げ変形を
+        // 内挿して曲線描画する（節点間の直線ではたわみが見えないため）。
+        let curved_beam = matches!(mode, ViewMode::Deformed | ViewMode::Mode)
+            && elem.kind == squid_n_core::model::ElementKind::Beam;
+        if let (true, Some(d)) = (curved_beam, &disp) {
+            let p_i = app.model.nodes[n0].coord;
+            let p_j = app.model.nodes[n1].coord;
+            if member_len3(p_i, p_j) > 1e-9 {
+                let poly3 = beam_deformed_polyline(
+                    p_i,
+                    p_j,
+                    d[n0],
+                    d[n1],
+                    elem.local_axis.ref_vector,
+                    deform_scale_actual,
+                    DEFORM_CURVE_SEGMENTS,
+                );
+                let screen: Vec<egui::Pos2> = poly3
+                    .iter()
+                    .map(|&p| {
+                        let s = project(p, center3, &cam, scale, center);
+                        egui::pos2(s[0], s[1])
+                    })
+                    .collect();
+                painter.add(egui::Shape::line(screen, line_stroke));
+                continue;
+            }
+        }
+
+        // 通常（未変形・その他要素・ゼロ長梁）は節点間を直線で結ぶ。
+        painter.line_segment(
+            [
+                egui::pos2(pts[n0][0], pts[n0][1]),
+                egui::pos2(pts[n1][0], pts[n1][1]),
+            ],
+            line_stroke,
+        );
     }
 
     // 二次部材（小梁・間柱）: 解析対象外だが実在部材なので実線で描く
@@ -1146,6 +1178,85 @@ fn diagram_offset_dir(p_i: [f64; 3], p_j: [f64; 3], ref_vector: [f64; 3]) -> [f6
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
 fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
     ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2) + (p_j[2] - p_i[2]).powi(2)).sqrt()
+}
+
+/// 変形図・モード形で梁の曲げ変形曲線を描く際の要素分割数（点数は +1）。
+const DEFORM_CURVE_SEGMENTS: usize = 12;
+
+/// 梁要素の変形形状を Hermite 3 次多項式で内挿し、変形後の 3D 点列を返す。
+///
+/// 端部の並進・回転（節点変位 6 成分）から、要素ローカル系で
+/// - 軸方向 (x): 線形内挿（1−ξ, ξ）
+/// - 曲げ 2 面 (y, z): Hermite 3 次形状関数（等価節点力 [`squid_n_element::member_load`]
+///   と同一の形状関数・符号規約）
+///
+/// により要素内部の変位場を評価し、グローバル系へ戻して未変形材軸上の各点へ
+/// 加える。両端を含む `segments + 1` 点の折れ線を返す。ξ=0,1 では回転項が消え、
+/// 端部は節点変位に厳密に一致する（節点マーカーと連続）。
+///
+/// 本内挿は表示専用であり解析結果（節点変位・内力）は一切変更しない。要素は
+/// せん断変形を含む Timoshenko 梁だが、変形図は Euler-Bernoulli の Hermite 曲線で
+/// 近似する（変形形状の可視化として実務上標準的）。
+fn beam_deformed_polyline(
+    p_i: [f64; 3],
+    p_j: [f64; 3],
+    d_i: [f64; 6],
+    d_j: [f64; 6],
+    ref_vector: [f64; 3],
+    scale: f64,
+    segments: usize,
+) -> Vec<[f64; 3]> {
+    let l = member_len3(p_i, p_j);
+    let seg = segments.max(1);
+    let frame = squid_n_element::transform::LocalFrame::from_nodes(p_i, p_j, ref_vector);
+
+    // 端部変位（並進・回転）を表示スケール倍し、ローカル系へ回転する。
+    let g = [
+        d_i[0] * scale,
+        d_i[1] * scale,
+        d_i[2] * scale,
+        d_i[3] * scale,
+        d_i[4] * scale,
+        d_i[5] * scale,
+        d_j[0] * scale,
+        d_j[1] * scale,
+        d_j[2] * scale,
+        d_j[3] * scale,
+        d_j[4] * scale,
+        d_j[5] * scale,
+    ];
+    let u = frame.rotate_to_local(&g);
+    // i 端: 並進(ux,uy,uz)=u[0..3]、回転(-, ry, rz)=u[3..6]
+    let (uxi, uyi, uzi, ryi, rzi) = (u[0], u[1], u[2], u[4], u[5]);
+    let (uxj, uyj, uzj, ryj, rzj) = (u[6], u[7], u[8], u[10], u[11]);
+
+    let mut pts = Vec::with_capacity(seg + 1);
+    for k in 0..=seg {
+        let xi = k as f64 / seg as f64;
+        // Hermite 3 次形状関数（N2,N4 は L 倍を含む回転項）
+        let n1 = 1.0 - 3.0 * xi * xi + 2.0 * xi * xi * xi;
+        let n2 = l * (xi - 2.0 * xi * xi + xi * xi * xi);
+        let n3 = 3.0 * xi * xi - 2.0 * xi * xi * xi;
+        let n4 = l * (-xi * xi + xi * xi * xi);
+        // ローカル変位場: y 面は θz、z 面は θy（符号反転、member_load の msign=-1 と一致）
+        let ux = (1.0 - xi) * uxi + xi * uxj;
+        let uy = n1 * uyi + n2 * rzi + n3 * uyj + n4 * rzj;
+        let uz = n1 * uzi - n2 * ryi + n3 * uzj - n4 * ryj;
+        // ローカル→グローバル（rot 行 = ex,ey,ez。global = ux·ex + uy·ey + uz·ez）
+        let dg = [
+            frame.rot[0][0] * ux + frame.rot[1][0] * uy + frame.rot[2][0] * uz,
+            frame.rot[0][1] * ux + frame.rot[1][1] * uy + frame.rot[2][1] * uz,
+            frame.rot[0][2] * ux + frame.rot[1][2] * uy + frame.rot[2][2] * uz,
+        ];
+        // 未変形材軸上の点 + 変位（変位は既にスケール済み）
+        let base = [
+            p_i[0] + (p_j[0] - p_i[0]) * xi,
+            p_i[1] + (p_j[1] - p_i[1]) * xi,
+            p_i[2] + (p_j[2] - p_i[2]) * xi,
+        ];
+        pts.push([base[0] + dg[0], base[1] + dg[1], base[2] + dg[2]]);
+    }
+    pts
 }
 
 /// 3D 位置 `base3` から `dir3` 方向へ `off_world` だけ張り出した点を投影する。
@@ -2135,5 +2246,54 @@ mod tests {
         ];
         let out = interpolate_unreferenced_disp(&model, disp.clone());
         assert_eq!(out, disp);
+    }
+
+    #[test]
+    fn 変形曲線の端部は節点変位に一致する() {
+        // 水平梁（i→j が +X）。両端に異なる並進・回転を与え、ξ=0,1 が
+        // 節点変位（scale 倍）に厳密一致することを確認する。
+        let p_i = [0.0, 0.0, 0.0];
+        let p_j = [1000.0, 0.0, 0.0];
+        let d_i = [0.0, 1.0, 0.0, 0.0, 0.0, 0.001];
+        let d_j = [2.0, 3.0, 0.0, 0.0, 0.0, -0.002];
+        let scale = 2.0;
+        let poly = beam_deformed_polyline(p_i, p_j, d_i, d_j, [0.0, 0.0, 1.0], scale, 12);
+        assert_eq!(poly.len(), 13);
+        // i 端 = p_i + scale·d_i(並進)
+        for k in 0..3 {
+            assert!(
+                (poly[0][k] - (p_i[k] + scale * d_i[k])).abs() < 1e-6,
+                "i端 axis{k}: {}",
+                poly[0][k]
+            );
+            assert!(
+                (poly[12][k] - (p_j[k] + scale * d_j[k])).abs() < 1e-6,
+                "j端 axis{k}: {}",
+                poly[12][k]
+            );
+        }
+    }
+
+    #[test]
+    fn 端部回転で中央がたわむ() {
+        // 水平梁（i→j が +X）、ref=+Y とすると局所系は全体系と一致
+        // （ex=+X, ey=+Y, ez=+Z）。両端の並進を 0、i 端に正・j 端に負の
+        // θz（全体=局所 z 軸まわり）を与えると、Hermite 内挿で局所 y(=+Y)へ
+        // 中央がふくらむ。直線（節点間）内挿なら中央は原位置のまま（たわみ 0）。
+        let p_i = [0.0, 0.0, 0.0];
+        let p_j = [1000.0, 0.0, 0.0];
+        let d_i = [0.0, 0.0, 0.0, 0.0, 0.0, 0.01];
+        let d_j = [0.0, 0.0, 0.0, 0.0, 0.0, -0.01];
+        let poly = beam_deformed_polyline(p_i, p_j, d_i, d_j, [0.0, 1.0, 0.0], 1.0, 12);
+        let mid = poly[6];
+        // 中央の材軸位置は x=500、たわみは局所 y=+Y 方向へ非ゼロ
+        assert!((mid[0] - 500.0).abs() < 1e-6, "中央 x={}", mid[0]);
+        assert!(
+            mid[1].abs() > 1.0,
+            "中央のたわみが小さすぎる: dy={}",
+            mid[1]
+        );
+        // 端部は原位置（並進 0・回転のみ）
+        assert!(poly[0][1].abs() < 1e-9 && poly[12][1].abs() < 1e-9);
     }
 }

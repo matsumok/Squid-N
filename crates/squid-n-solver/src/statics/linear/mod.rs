@@ -343,7 +343,10 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
 
 /// 部材荷重の固定端内力を、`K·u` 由来の回復内力へ各断面で重ね合わせる。
 /// 線形重ね合わせ: 実内力 = （等価節点力に対する応答 K·u）＋（両端固定梁のスパン内力）。
-fn superpose_member_loads(
+///
+/// `Analysis` ファサード（分解済み K を再利用する経路）でも同じ重ね合わせが
+/// 要るため `pub(crate)` で共有する（[`crate::statics::analysis`] 参照）。
+pub(crate) fn superpose_member_loads(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
     member_loads: &[squid_n_core::model::MemberLoad],

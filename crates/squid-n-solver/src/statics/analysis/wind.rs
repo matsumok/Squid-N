@@ -222,6 +222,7 @@ impl Analysis<'_> {
         }
 
         let f_free = self.assemble_f_free_from_nodal(&nodal);
-        self.solve_and_recover(&f_free)
+        // 風荷重は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
+        self.solve_and_recover(&f_free, &[])
     }
 }

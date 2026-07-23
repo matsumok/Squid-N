@@ -225,7 +225,8 @@ impl Analysis<'_> {
         }
 
         let f_free = self.assemble_f_free_from_nodal(&lc.nodal);
-        self.solve_and_recover(&f_free)
+        // 地震水平力は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
+        self.solve_and_recover(&f_free, &[])
     }
 
     /// 地震荷重ケース構築に用いる設計用固有周期 T [s] を算定する。
@@ -318,7 +319,8 @@ impl Analysis<'_> {
         }
 
         let f_free = self.assemble_f_free_from_nodal(&lc.nodal);
-        self.solve_and_recover(&f_free)
+        // 地震水平力は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
+        self.solve_and_recover(&f_free, &[])
     }
 }
 

@@ -341,6 +341,7 @@ fn two_columns_with_dl_model() -> Model {
         shape: None,
     });
     model.materials.push(Material {
+        strength_factor: None,
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
@@ -510,6 +511,7 @@ fn secondary_joist_model() -> Model {
         shape: None,
     });
     model.materials.push(Material {
+        strength_factor: None,
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
