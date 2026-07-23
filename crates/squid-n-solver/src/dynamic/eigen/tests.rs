@@ -723,6 +723,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
         ],
         sections: vec![col_section],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
@@ -914,6 +915,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
         elements,
         sections: vec![col_section],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
@@ -1030,6 +1032,7 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
@@ -1127,6 +1130,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
