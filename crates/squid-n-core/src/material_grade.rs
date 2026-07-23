@@ -138,6 +138,31 @@ pub fn steel_material_strength_prefix(name: &str, thickness: f64) -> Option<f64>
     steel_f_value_prefix(name, thickness).map(|f| f * steel_material_strength_factor(name))
 }
 
+/// 保有水平耐力計算（プッシュオーバー）で、材料の降伏強度 fy を
+/// **鋼材**として用いる文脈（鋼材断面の集中ばね・純鋼材ファイバー・
+/// 曲げヒンジ・せん断降伏閾値）の材料強度割増係数。
+///
+/// 直接入力の割増係数（[`crate::model::Material::strength_factor`]）があれば
+/// それを優先し、無ければ材料名から自動判定する
+/// （[`steel_material_strength_factor`]: 鋼材グレード=1.1、590N 級=1.05、
+/// 名称から解決できない材料=1.0）。
+pub fn material_strength_factor_steel(mat: &crate::model::Material) -> f64 {
+    mat.strength_factor
+        .unwrap_or_else(|| steel_material_strength_factor(&mat.name))
+}
+
+/// 保有水平耐力計算（プッシュオーバー）で、材料の降伏強度 fy を
+/// **RC 主筋**として用いる文脈（RC 断面の集中ばね・主筋ファイバー・
+/// 曲げヒンジ・せん断降伏の主筋 σy）の材料強度割増係数。
+///
+/// 直接入力の割増係数（[`crate::model::Material::strength_factor`]）があれば
+/// それを優先し、無ければ 1.1（鉄筋の材料強度は基準強度の 1.1 倍以下と
+/// できる規定）。fy 未設定で既定値（SD345 相当の 345）を用いる場合にも
+/// 同係数を乗じる。**せん断補強筋は割増対象外**（本係数を用いないこと）。
+pub fn material_strength_factor_rebar(mat: &crate::model::Material) -> f64 {
+    mat.strength_factor.unwrap_or(1.1)
+}
+
 /// 鉄筋の基準強度 [N/mm²]（H12 建告第2464号）。
 ///
 /// 異形鉄筋 `SD` ・丸鋼 `SR` は続く数値が基準強度を表す
@@ -346,6 +371,36 @@ mod tests {
         assert_eq!(steel_material_strength_factor("TMCP440"), 1.05);
         assert_eq!(steel_material_strength_factor("未知の材料"), 1.0);
         assert_eq!(steel_material_strength_factor("SD345"), 1.0);
+    }
+
+    /// 文脈別係数: 直接入力の割増係数が最優先、無ければ鋼材=名称判定・主筋=1.1。
+    #[test]
+    fn test_material_strength_factor_by_context() {
+        let mk = |name: &str, factor: Option<f64>| crate::model::Material {
+            id: crate::ids::MaterialId(0),
+            name: name.to_string(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+            concrete_class: Default::default(),
+            strength_factor: factor,
+        };
+        // 鋼材文脈: 名称から自動判定。
+        assert_eq!(material_strength_factor_steel(&mk("SS400", None)), 1.1);
+        assert_eq!(material_strength_factor_steel(&mk("SA440", None)), 1.05);
+        assert_eq!(material_strength_factor_steel(&mk("カスタム", None)), 1.0);
+        // 主筋文脈: 名称によらず 1.1。
+        assert_eq!(material_strength_factor_rebar(&mk("Fc24", None)), 1.1);
+        assert_eq!(material_strength_factor_rebar(&mk("SD345", None)), 1.1);
+        // 直接入力の割増係数は両文脈で最優先。
+        assert_eq!(
+            material_strength_factor_steel(&mk("カスタム", Some(1.2))),
+            1.2
+        );
+        assert_eq!(material_strength_factor_rebar(&mk("Fc24", Some(1.0))), 1.0);
     }
 
     /// 材料強度（割増込み）: F×係数、板厚区分も引き継ぐ。
