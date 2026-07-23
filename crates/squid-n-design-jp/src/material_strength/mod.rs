@@ -121,6 +121,7 @@ mod tests {
     #[test]
     fn test_rebar_sigma_y_sources() {
         let mut m = Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: squid_n_core::ids::MaterialId(0),
             name: "SD390".to_string(),

@@ -226,6 +226,7 @@ pub(crate) mod test_support {
 
     pub(crate) fn mat(name: &str) -> Material {
         Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: name.to_string(),

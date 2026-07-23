@@ -256,6 +256,7 @@ mod tests {
                 shape: None,
             }],
             materials: vec![Material {
+                strength_factor: None,
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "mat".into(),
@@ -367,6 +368,7 @@ mod tests {
                     shape: None,
                 }],
                 materials: vec![Material {
+                    strength_factor: None,
                     concrete_class: Default::default(),
                     id: MaterialId(0),
                     name: "mat".into(),
