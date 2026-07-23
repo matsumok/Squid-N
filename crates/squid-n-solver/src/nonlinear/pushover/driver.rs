@@ -22,30 +22,10 @@ use crate::constraint::Reducer;
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
-use squid_n_core::material_grade::steel_material_strength_factor;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
-use squid_n_element::factory::build_nonlinear_behavior;
+use squid_n_element::factory::{build_nonlinear_behavior_with, StrengthBasis};
 use squid_n_math::solver::{make_solver, SolverBackend};
-
-/// 保有水平耐力計算（プッシュオーバー）用に、鋼材材料の降伏強度 fy を
-/// 材料強度（基準強度の 1.1 倍、590N 級=SA440/TMCP440 は 1.05 倍）へ
-/// 割増した複製モデルを作る。
-///
-/// 割増は材料名から鋼材グレードを解決できる材料（`SS400`・`SN490B` 等）に
-/// のみ適用する。鉄筋（`SD`/`SR`）・コンクリート（`Fc`）・名称から解決
-/// できない直接入力材料は割増しない（係数 1.0）。プッシュオーバーの
-/// 部材組み立て（集中ばね・ファイバー）とヒンジ・せん断降伏閾値のすべてが
-/// 本モデルを参照する。許容応力度計算・時刻歴応答解析には適用されない。
-pub(crate) fn scale_steel_material_strength(model: &Model) -> Model {
-    let mut scaled = model.clone();
-    for mat in &mut scaled.materials {
-        if let Some(fy) = mat.fy {
-            mat.fy = Some(fy * steel_material_strength_factor(&mat.name));
-        }
-    }
-    scaled
-}
 
 /// プッシュオーバー解析（P5 §7）
 #[allow(clippy::too_many_arguments)]
@@ -98,15 +78,12 @@ pub fn pushover_analysis_recording(
         return Err("no active DOF".into());
     }
 
-    // 保有水平耐力計算の材料強度: 鋼材の fy を基準強度の 1.1 倍
-    // （590N 級は 1.05 倍）に割増した複製モデルで以降の全処理を行う
-    // （`scale_steel_material_strength` 参照。呼び出し元のモデルは変更しない）。
-    let mut model = scale_steel_material_strength(model);
-    let model = &mut model;
-
+    // 保有水平耐力計算の材料強度: 部材組み立て時に鋼材 fy・RC 主筋 σy へ
+    // 材料強度係数（鋼材1.1倍/590N級1.05倍/RC主筋1.1倍、直接入力係数優先）を
+    // 都度乗じる（`StrengthBasis::MaterialStrength`）。モデル自体は複製しない。
     let mut behaviors: Vec<Box<dyn ElementBehavior>> = Vec::new();
     for elem in &model.elements {
-        let (b, _) = build_nonlinear_behavior(elem, model);
+        let (b, _) = build_nonlinear_behavior_with(elem, model, StrengthBasis::MaterialStrength);
         behaviors.push(b);
     }
     // 静的解析: コンクリート履歴は逆行型（本実装の既定）。

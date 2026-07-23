@@ -90,6 +90,7 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
@@ -154,6 +155,7 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
@@ -219,6 +221,7 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
@@ -555,6 +558,7 @@ fn test_yield_progression() {
                 shape: None,
             }],
             materials: vec![Material {
+                strength_factor: None,
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "steel".to_string(),
@@ -894,6 +898,7 @@ fn test_vertical_column_rz_nonsingular() {
             shape: None,
         }],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
@@ -1483,6 +1488,7 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         }],
         sections: vec![sec],
         materials: vec![Material {
+            strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC30".into(),
