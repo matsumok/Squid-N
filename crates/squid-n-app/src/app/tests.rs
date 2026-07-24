@@ -4759,7 +4759,7 @@ mod grid_headless {
         push_beam(&mut app, 0, 1);
         let before = app.model.clone();
         let (blocked, free) = {
-            let mut adapter = NodeGridAdapter {
+            let adapter = NodeGridAdapter {
                 model: &mut app.model,
                 undo: &mut app.undo,
                 edited: false,
