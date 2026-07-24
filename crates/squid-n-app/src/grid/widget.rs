@@ -23,6 +23,12 @@ const LOG_CAP: usize = 200;
 /// ログ行（本文, エラーか）を蓄積して [`GridWidget::take_log`] で引き渡す。
 pub struct GridWidget {
     pub grid: GridState,
+    /// 行末尾に 1 行削除の 🗑 ボタン列を表示するか（既存テーブルの
+    /// 削除ボタンを維持する T4 パイロット用。右クリック行削除と等価な操作）
+    pub delete_buttons: bool,
+    /// 🗑 ボタンで削除要求された行。描画中の行数変化を避けるため
+    /// テーブル描画後に処理する
+    pending_row_delete: Option<usize>,
     edit_buf: String,
     edit_needs_focus: bool,
     /// セル起点のドラッグ選択が進行中か（スクロールバー等のドラッグと区別する。§7.2）
@@ -52,6 +58,8 @@ impl Default for GridWidget {
     fn default() -> Self {
         Self {
             grid: GridState::new(0, 0),
+            delete_buttons: false,
+            pending_row_delete: None,
             edit_buf: String::new(),
             edit_needs_focus: false,
             drag_selecting: false,
@@ -142,38 +150,34 @@ impl GridWidget {
         now: f64,
     ) {
         let t = self.edit_buf.trim().to_string();
-        if t.is_empty() {
-            return;
-        }
-        if let Err(reason) = adapter.validate_cell(cell.row, cell.col, &t) {
-            self.push_err(format!(
-                "「{}」: {}。{} は変更しませんでした",
-                t,
-                reason,
-                self.cell_name(adapter, headers, cell)
-            ));
-            self.start_flash(
-                SelRect {
-                    r0: cell.row,
-                    r1: cell.row,
-                    c0: cell.col,
-                    c1: cell.col,
-                },
-                now,
-                theme::ERROR_RED,
-            );
-            return;
-        }
+        let outcome = super::commit_cell_text(adapter, cell, &t);
+        // セル名は確定後に引く（プレースホルダ確定では行が実データ化し
+        // 「N行目のX」と表示できる）
         let name = self.cell_name(adapter, headers, cell);
-        if cell.row >= adapter.rows() {
-            // 新規行プレースホルダへの確定 = 行追加＋値設定（複合コマンド 1 個）
-            adapter.apply_block(&[(cell.row, cell.col, t.clone())], 1);
-            self.push_log(format!("新規行を追加し {name} ← {t}"));
-        } else {
-            adapter.apply_block(&[(cell.row, cell.col, t.clone())], 0);
-            self.push_log(format!("{name} ← {t}"));
+        match outcome {
+            super::CommitOutcome::NoChange => {}
+            super::CommitOutcome::Rejected(reason) => {
+                self.push_err(format!("「{t}」: {reason}。{name} は変更しませんでした"));
+                self.start_flash(
+                    SelRect {
+                        r0: cell.row,
+                        r1: cell.row,
+                        c0: cell.col,
+                        c1: cell.col,
+                    },
+                    now,
+                    theme::ERROR_RED,
+                );
+            }
+            super::CommitOutcome::Applied { appended } => {
+                if appended {
+                    self.push_log(format!("新規行を追加し {name} ← {t}"));
+                } else {
+                    self.push_log(format!("{name} ← {t}"));
+                }
+                self.sync_rows(adapter);
+            }
         }
-        self.sync_rows(adapter);
     }
 
     /// 選択範囲を TSV コピー（§5.1）。選択なしはログに理由を出す（§4.4）
@@ -573,7 +577,7 @@ impl GridWidget {
             rect.left_center() + egui::vec2(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
             if is_real {
-                (row + 1).to_string()
+                adapter.row_label(row)
             } else {
                 "＋".to_string()
             },
@@ -832,6 +836,27 @@ impl GridWidget {
         }
     }
 
+    /// 1 行削除の 🗑 ボタンセル（`delete_buttons` 有効時のみ。§4.6 の
+    /// メニュー削除と同じ検証を通す）。削除は行数変化を避けるため
+    /// テーブル描画後に処理する
+    fn delete_button_cell(&mut self, ui: &mut egui::Ui, adapter: &dyn GridAdapter, row: usize) {
+        if row >= adapter.rows() {
+            return; // プレースホルダ行にはボタンを出さない
+        }
+        let deletable = adapter.validate_row_deletion(row);
+        let resp = ui.add_enabled(deletable.is_ok(), egui::Button::new("🗑").small());
+        match deletable {
+            Err(reason) => {
+                resp.on_hover_text(reason);
+            }
+            Ok(()) => {
+                if resp.on_hover_text("この行を削除").clicked() {
+                    self.pending_row_delete = Some(row);
+                }
+            }
+        }
+    }
+
     /// 編集モードのセル描画（TextEdit＋確定/キャンセル判定）。
     /// 選択モードのセルと同じ矩形・同じ左余白（4px）へ `put` で固定し、
     /// モード切替時に文字が動かないようにする（§7.4）
@@ -914,11 +939,16 @@ impl GridWidget {
         // スプレッドシート風: ストライプではなく白地＋共有罫線で見せる（§6.1）。
         // scope で囲み、テーブル領域（スクロールバー含む）の矩形を
         // 表外クリック判定用に取得する（§7.3）
+        let delete_buttons = self.delete_buttons && adapter.can_delete_rows();
         let table_scope = ui.scope(|ui| {
-            TableBuilder::new(ui)
+            let mut builder = TableBuilder::new(ui)
                 .striped(false)
                 .column(Column::auto().at_least(40.0))
-                .columns(Column::initial(90.0), adapter.cols())
+                .columns(Column::initial(90.0), adapter.cols());
+            if delete_buttons {
+                builder = builder.column(Column::auto());
+            }
+            builder
                 .header(row_h, |mut h| {
                     h.col(|ui| {
                         self.corner_header_cell(ui, adapter);
@@ -927,6 +957,9 @@ impl GridWidget {
                         h.col(|ui| {
                             self.col_header_cell(ui, headers, c);
                         });
+                    }
+                    if delete_buttons {
+                        h.col(|_ui| {});
                     }
                 })
                 .body(|body| {
@@ -947,10 +980,27 @@ impl GridWidget {
                                 }
                             });
                         }
+                        if delete_buttons {
+                            row.col(|ui| {
+                                self.delete_button_cell(ui, adapter, r);
+                            });
+                        }
                     });
                 });
         });
         self.table_rect = table_scope.response.rect;
+
+        // 🗑 ボタンの 1 行削除（描画後に処理して行数変化の齟齬を避ける）
+        if let Some(r) = self.pending_row_delete.take() {
+            if adapter.validate_row_deletion(r).is_ok() {
+                adapter.delete_rows(&[r]);
+                self.push_log(format!("{} 行目を削除", r + 1));
+                self.sync_rows(adapter);
+                // 削除位置に続く行を行選択状態にする（§4.6 と同じ後処理）
+                self.grid.select_row(r, false);
+                self.grid.clamp_selection();
+            }
+        }
 
         // 表外クリックで選択を完全解除する（§4.4。編集中・メニュー表示中は対象外）。
         // 「表外」= テーブル領域（スクロールバー含む外形矩形）の外（§7.3。

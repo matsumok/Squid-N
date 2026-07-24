@@ -266,6 +266,12 @@ pub trait GridAdapter {
     /// （表示用に丸めた文字列を返さない。§5.1）
     fn cell_text(&self, row: usize, col: usize) -> String;
 
+    /// 行ヘッダ（ID 列）の表示文字列。既定は 1 始まりの行番号。
+    /// ID＝配列位置のテーブルは ID 表記に合わせて上書きする（節点 = 0 始まり ID）
+    fn row_label(&self, row: usize) -> String {
+        (row + 1).to_string()
+    }
+
     /// ペースト・編集確定の 1 セル分の検証。Err はセル単位の不正理由。
     /// [`plan_paste`]（§3.3）がこれを全セルに適用する
     fn validate_cell(&self, row: usize, col: usize, text: &str) -> Result<(), String>;
@@ -300,6 +306,33 @@ pub trait GridAdapter {
     /// ID＝配列位置の繰り上げと undo の整合のため、行番号の**降順**で
     /// DeleteNode を並べること
     fn delete_rows(&mut self, rows: &[usize]);
+}
+
+/// 編集確定の結果。widget がログ・フラッシュ表示に変換する
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommitOutcome {
+    /// 空のまま確定 = 「変更なし」（§4.3。Backspace→Enter は no-op）
+    NoChange,
+    /// 適用した（appended = 新規行プレースホルダで行追加を伴ったか）
+    Applied { appended: bool },
+    /// 不正値のため変更しなかった（理由）
+    Rejected(String),
+}
+
+/// 編集確定（1 セル）の純ロジック。検証・空確定の扱い・プレースホルダの
+/// 行追加判定を egui 非依存で行い、適用はアダプタへ委譲する（§4.3・§4.5）。
+pub fn commit_cell_text(adapter: &mut dyn GridAdapter, cell: CellRef, raw: &str) -> CommitOutcome {
+    let t = raw.trim();
+    if t.is_empty() {
+        return CommitOutcome::NoChange;
+    }
+    if let Err(reason) = adapter.validate_cell(cell.row, cell.col, t) {
+        return CommitOutcome::Rejected(reason);
+    }
+    let appended = cell.row >= adapter.rows();
+    // プレースホルダへの確定 = 行追加＋値設定（アダプタが複合コマンド 1 個に落とす）
+    adapter.apply_block(&[(cell.row, cell.col, t.to_string())], appended as usize);
+    CommitOutcome::Applied { appended }
 }
 
 /// ペーストブロックのセル数上限（行数×最大列数。§5.2.1）。
