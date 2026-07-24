@@ -555,7 +555,7 @@ impl GridWidget {
         // ヘッダ地は gray-100、罫線は本体と共有（§6.3）
         ui.painter()
             .rect_filled(g, egui::CornerRadius::ZERO, theme::GRAY_100);
-        let grid_stroke = egui::Stroke::new(1.0, theme::GRAY_200);
+        let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
         ui.painter()
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
@@ -620,7 +620,7 @@ impl GridWidget {
         let g = rect.expand2(egui::vec2(sp.x * 0.5, sp.y * 0.5));
         ui.painter()
             .rect_filled(g, egui::CornerRadius::ZERO, theme::GRAY_100);
-        let grid_stroke = egui::Stroke::new(1.0, theme::GRAY_200);
+        let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
         ui.painter()
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
@@ -657,7 +657,7 @@ impl GridWidget {
         let g = rect.expand2(egui::vec2(sp.x * 0.5, sp.y * 0.5));
         ui.painter()
             .rect_filled(g, egui::CornerRadius::ZERO, theme::GRAY_100);
-        let grid_stroke = egui::Stroke::new(1.0, theme::GRAY_200);
+        let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
         ui.painter()
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
@@ -719,7 +719,7 @@ impl GridWidget {
         // セル間スペーシングを跨いで罫線・塗りが連続するよう半スペース分広げる（§7.5）
         let sp = ui.spacing().item_spacing;
         let g = rect.expand2(egui::vec2(sp.x * 0.5, sp.y * 0.5));
-        let grid_stroke = egui::Stroke::new(1.0, theme::GRAY_200);
+        let grid_stroke = egui::Stroke::new(1.0_f32, theme::GRAY_200);
         ui.painter()
             .line_segment([g.right_top(), g.right_bottom()], grid_stroke);
         ui.painter()
@@ -747,7 +747,7 @@ impl GridWidget {
         }
         // 選択範囲の外周に blue-500 の枠。単一セル選択ではこれがカーソル枠になる（§6.2）
         if selected {
-            let b = egui::Stroke::new(2.0, theme::BLUE_500);
+            let b = egui::Stroke::new(2.0_f32, theme::BLUE_500);
             if cell.row == sel.r0 {
                 ui.painter().line_segment([g.left_top(), g.right_top()], b);
             }
