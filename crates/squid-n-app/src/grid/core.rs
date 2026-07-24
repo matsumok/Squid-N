@@ -255,6 +255,53 @@ pub fn tile_block(block: &[Vec<String>], sel_rows: usize, sel_cols: usize) -> Ve
         .collect()
 }
 
+/// テーブルアダプタ（§3.4）。汎用グリッドレイヤとテーブルの境界で、
+/// ドメイン知識（セルの型・行追加の可否と方法）はすべてこちら側に置く。
+/// 第 2 弾以降のテーブル展開は「アダプタ実装の追加」だけで済む。
+pub trait GridAdapter {
+    fn rows(&self) -> usize;
+    fn cols(&self) -> usize;
+
+    /// コピー・編集開始用のセル文字列。**内部値の正準文字列**を返す
+    /// （表示用に丸めた文字列を返さない。§5.1）
+    fn cell_text(&self, row: usize, col: usize) -> String;
+
+    /// ペースト・編集確定の 1 セル分の検証。Err はセル単位の不正理由。
+    /// [`plan_paste`]（§3.3）がこれを全セルに適用する
+    fn validate_cell(&self, row: usize, col: usize, text: &str) -> Result<(), String>;
+
+    /// 検証済みセル群の適用。squid-n-edit の複合コマンド 1 個に落とす（§3.5）。
+    /// append_rows > 0 なら先に行を追加する（追加行の貼り付け対象外の列は
+    /// アダプタの既定値）。呼び出し規約:
+    /// - 通常のペースト: cells 全部 + append_rows = はみ出し行数（自動追加。§5.2.5）
+    /// - 行追加非対応テーブル: widget が cells を row < rows() にフィルタして渡し、
+    ///   append_rows = 0（はみ出し分は切り捨て）
+    /// - 新規行プレースホルダでの編集確定: cells = その 1 セル、append_rows = 1
+    fn apply_block(&mut self, cells: &[(usize, usize, String)], append_rows: usize);
+
+    /// 選択範囲クリア（Delete）。クリアの意味（0 埋め・既定値・禁止）は
+    /// アダプタが決める。cells は選択が跨ぐ**実データ行**のセルのみ
+    /// （プレースホルダは渡されない）。クリアしたセル数を返す
+    /// （クリア非対応のテーブルは 0 を返し、widget が理由をログする）
+    fn clear_cells(&mut self, cells: &[(usize, usize)]) -> usize;
+
+    /// はみ出し行の追加・新規行プレースホルダに対応するか
+    /// （節点 = true、非対応テーブル = false）
+    fn can_append_rows(&self) -> bool;
+
+    /// 行削除に対応するか
+    fn can_delete_rows(&self) -> bool;
+
+    /// 1 行分の削除可否検証。参照中（部材が接続された節点等）なら
+    /// Err に「なぜ削除できないか（参照元）」を返す
+    fn validate_row_deletion(&self, row: usize) -> Result<(), String>;
+
+    /// 検証済みの行削除。squid-n-edit の複合コマンド 1 個に落とす。
+    /// ID＝配列位置の繰り上げと undo の整合のため、行番号の**降順**で
+    /// DeleteNode を並べること
+    fn delete_rows(&mut self, rows: &[usize]);
+}
+
 /// ペーストブロックのセル数上限（行数×最大列数。§5.2.1）。
 /// Excel の「列全体コピー」（104 万行）の誤ペーストで UI がフリーズするのを
 /// 防ぐ暴発ガードであり、実務のモデル規模（数千〜数万セル）には影響しない。

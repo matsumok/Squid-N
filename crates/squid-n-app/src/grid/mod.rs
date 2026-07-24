@@ -9,8 +9,12 @@
 //! すべてアダプタ（§3.4）に隔離する。
 
 mod core;
+#[cfg(feature = "gui")]
+mod widget;
 
 pub use self::core::*;
+#[cfg(feature = "gui")]
+pub use self::widget::*;
 
 #[cfg(test)]
 mod tests;
