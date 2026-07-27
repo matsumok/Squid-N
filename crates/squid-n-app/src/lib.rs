@@ -1,5 +1,6 @@
 pub mod app;
 pub mod floor_grillage;
+pub mod grid;
 pub mod sample;
 pub mod summary;
 
@@ -7,6 +8,8 @@ pub mod summary;
 pub mod design_view;
 #[cfg(feature = "gui")]
 pub mod mn_view;
+#[cfg(feature = "gui")]
+pub mod prep_view;
 #[cfg(feature = "gui")]
 pub mod quantity_view;
 #[cfg(feature = "gui")]
